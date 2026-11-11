@@ -139,12 +139,29 @@ This template should help get you started developing with Tauri, React and Types
 
 Run `scripts/prepare-app-server.sh` once to fetch the verified Codex 0.163 runtimes and build the Lotse OAuth patch for both Mac architectures. The script installs the required Rust targets.
 
+For one architecture only, pass `aarch64-apple-darwin` or `x86_64-apple-darwin` to `sh scripts/prepare-app-server.sh`.
+
 - `npm run build:mac` builds Apple Silicon and Intel DMGs.
 - `npm run build:mac:arm64` or `npm run build:mac:intel` builds just one.
 
 Each build includes only its matching Codex runtime. The script packages the `.app` into an LZMA DMG and verifies it. Shareable files are written to `src-tauri/target/share/`. Plain `tauri build` still uses the shared configuration and includes both runtimes.
 
 Code signing with a Developer ID and Apple notarization are separate release steps; these local builds are not notarized automatically.
+
+### Automatic GitHub builds and releases
+
+[Build Lotse for macOS](https://github.com/appbackstube/lotse/actions/workflows/macos.yml) builds Apple Silicon and Intel DMGs on separate native macOS runners. App changes on `main` start builds automatically; **Run workflow** can start one manually. Each successful architecture is available as an Actions artifact for 14 days.
+
+To publish both builds as permanent downloads, set the app version in `src-tauri/tauri.conf.json`, keep `src-tauri/Cargo.toml` and `package.json` in sync, then push the matching version tag, for example:
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The workflow checks the tag against the app version, rebuilds the patched runtime when needed, verifies each app's architecture and signature and each DMG's integrity, and publishes the release only after both builds succeed. Releases contain `Lotse_Apple_Silicon.dmg`, `Lotse_Intel.dmg`, and `SHA256SUMS.txt`. The stable download URLs are `https://github.com/appbackstube/lotse/releases/latest/download/Lotse_Apple_Silicon.dmg` and `https://github.com/appbackstube/lotse/releases/latest/download/Lotse_Intel.dmg`.
+
+The GitHub builds use an ad-hoc signature and are not notarized. macOS may require user approval in **System Settings → Privacy & Security**. No Apple credentials are required for these builds. Developer ID signing and notarization must be configured before claiming an Apple-verified installation experience.
 
 ## OAuth MCP servers
 

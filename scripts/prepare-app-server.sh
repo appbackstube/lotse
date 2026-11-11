@@ -1,6 +1,16 @@
 #!/bin/sh
 set -eu
 
+if [ "$#" -eq 0 ]; then
+  set -- aarch64-apple-darwin x86_64-apple-darwin
+fi
+for target in "$@"; do
+  case "$target" in
+    aarch64-apple-darwin|x86_64-apple-darwin) ;;
+    *) echo "Usage: $0 [aarch64-apple-darwin] [x86_64-apple-darwin]" >&2; exit 1 ;;
+  esac
+done
+
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 out="$root/src-tauri/binaries"
 manifest="$out/manifest.json"
@@ -42,15 +52,21 @@ fetch() {
 
 mkdir -p "$out"
 test -f "$manifest"
-fetch aarch64-apple-darwin
-fetch x86_64-apple-darwin
+for target in "$@"; do
+  fetch "$target"
+done
 
 case "$(uname -m)" in
   arm64) dev_target=aarch64-apple-darwin ;;
   x86_64) dev_target=x86_64-apple-darwin ;;
   *) exit 1 ;;
 esac
-sh "$root/scripts/build-oauth-app-server.sh"
+sh "$root/scripts/build-oauth-app-server.sh" "$@"
+# Cross-compiling only the other architecture cannot run its smoke test here.
+case " $* " in
+  *" $dev_target "*) ;;
+  *) exit 0 ;;
+esac
 "$out/codex-runtime-$dev_target/bin/codex-app-server" --version
 smoke_home=$(mktemp -d -t chaoticreview-app-server-smoke.XXXXXX)
 trap 'rm -rf "$smoke_home"' EXIT INT TERM

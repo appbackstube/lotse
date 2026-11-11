@@ -1,0 +1,145 @@
+name: Build Lotse for macOS
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - "src/**"
+      - "src-tauri/**"
+      - "public/**"
+      - "vendor/**"
+      - "scripts/**"
+      - "!scripts/marketing*"
+      - "package*.json"
+      - "rust-toolchain.toml"
+      - "tsconfig*.json"
+      - "vite.config.ts"
+      - "eslint.config.mjs"
+      - "index.html"
+      - ".github/workflows/macos.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Apple Silicon
+            runner: macos-15
+            target: aarch64-apple-darwin
+            variant: arm64
+            suffix: aarch64
+            asset: Lotse_Apple_Silicon.dmg
+          - name: Intel
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+            variant: intel
+            suffix: x86_64
+            asset: Lotse_Intel.dmg
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_PROFILE_RELEASE_DEBUG: "0"
+      CARGO_INCREMENTAL: "0"
+      APPLE_SIGNING_IDENTITY: "-"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Check release version
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node --input-type=module -e 'import { readFileSync } from "node:fs"; const version = JSON.parse(readFileSync("src-tauri/tauri.conf.json", "utf8")).version; const npmVersion = JSON.parse(readFileSync("package.json", "utf8")).version; const cargoVersion = readFileSync("src-tauri/Cargo.toml", "utf8").match(/^version = "([^"]+)"/m)?.[1]; if (!/^\d+\.\d+\.\d+$/.test(version) || process.env.RELEASE_TAG !== `v${version}` || npmVersion !== version || cargoVersion !== version) throw new Error("Release tag and all app versions must match a stable version");'
+      - name: Check app and website
+        run: |
+          npm test
+          node --test scripts/marketing.test.mjs scripts/macos-build.test.mjs
+      - name: Install Rust toolchain
+        run: |
+          rustup show active-toolchain
+          rustup target add "${{ matrix.target }}"
+      - name: Cache patched runtime
+        id: runtime
+        uses: actions/cache@v4
+        with:
+          path: src-tauri/binaries/codex-runtime-${{ matrix.target }}
+          key: codex-${{ matrix.runner }}-${{ matrix.target }}-${{ hashFiles('src-tauri/binaries/manifest.json', 'scripts/prepare-app-server.sh', 'scripts/build-oauth-app-server.sh', 'scripts/patches/**', 'rust-toolchain.toml') }}
+      - name: Prepare verified runtime
+        if: steps.runtime.outputs.cache-hit != 'true'
+        run: sh scripts/prepare-app-server.sh "${{ matrix.target }}"
+      - name: Build and verify DMG
+        env:
+          VARIANT: ${{ matrix.variant }}
+          SUFFIX: ${{ matrix.suffix }}
+          ASSET: ${{ matrix.asset }}
+        run: |
+          node scripts/build-macos.mjs "$VARIANT"
+          version=$(node -p 'require("./src-tauri/tauri.conf.json").version')
+          mkdir release
+          cp "src-tauri/target/share/Lotse_${version}_${SUFFIX}.dmg" "release/$ASSET"
+      - name: Upload macOS build
+        uses: actions/upload-artifact@v4
+        with:
+          name: lotse-${{ matrix.target }}
+          path: release/*.dmg
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  release:
+    name: Publish both macOS downloads
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified builds
+        uses: actions/download-artifact@v4
+        with:
+          pattern: lotse-*
+          path: release
+          merge-multiple: true
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          test -s release/Lotse_Apple_Silicon.dmg
+          test -s release/Lotse_Intel.dmg
+          (cd release && sha256sum *.dmg > SHA256SUMS.txt)
+          cat > release-notes.md <<'NOTES'
+          Download the DMG for your Mac: **Apple Silicon** (M-series chips) or **Intel**.
+
+          Open the DMG and drag Lotse to Applications. Bring your own model-provider API key.
+
+          These builds are ad-hoc signed and **not notarized by Apple**. macOS may require approval in System Settings → Privacy & Security before opening Lotse.
+
+          SHA256SUMS.txt contains the checksums of both downloads.
+          NOTES
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "Lotse $RELEASE_TAG" --notes-file release-notes.md
+          fi
+          gh release upload "$RELEASE_TAG" release/*.dmg release/SHA256SUMS.txt --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --latest
