@@ -1,0 +1,14 @@
+{
+  "version": "0.163.0",
+  "release": "rust-v0.163.0",
+  "assets": {
+    "aarch64-apple-darwin": {
+      "file": "codex-app-server-package-aarch64-apple-darwin.tar.gz",
+      "sha256": "c64323d8d51933c3fe50489e841f3a9ebbce971d9e06dc3d734ac2f3c7ddb2cf"
+    },
+    "x86_64-apple-darwin": {
+      "file": "codex-app-server-package-x86_64-apple-darwin.tar.gz",
+      "sha256": "5f5099e28a3ee3bc4d9fbe1611bc3244fda930a51a24c0f4f258b09c3e0f33f9"
+    }
+  }
+}

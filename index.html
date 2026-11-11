@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="/lotse-icon.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lotse</title>
+    <style>
+      html, body, #root { width: 100%; min-height: 100%; margin: 0; background: #202020; }
+      #lotse-boot {
+        position: fixed; inset: 0; z-index: 2147483647;
+        display: grid; place-items: center;
+        color: #ececec; background: #202020;
+        font: 500 15px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+        transition: opacity 160ms ease;
+      }
+      #lotse-boot > div { display: grid; justify-items: center; gap: 14px; }
+      #lotse-boot i {
+        width: 22px; height: 22px; border-radius: 50%;
+        border: 2px solid rgba(255,255,255,.2); border-top-color: #ececec;
+        animation: lotse-spin .7s linear infinite;
+      }
+      @keyframes lotse-spin { to { transform: rotate(360deg); } }
+      @media (prefers-color-scheme: light) {
+        html, body, #root, #lotse-boot { background: #f5f5f5; }
+        #lotse-boot { color: #292929; }
+        #lotse-boot i { border-color: rgba(0,0,0,.14); border-top-color: #292929; }
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="root"></div>
+    <div id="lotse-boot" role="status" aria-label="Lotse wird gestartet"><div><i></i><span>Lotse wird gestartet…</span></div></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

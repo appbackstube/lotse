@@ -1,0 +1,45 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+public/excalidraw/
+*.local
+*.tsbuildinfo
+
+# Downloaded runtimes; keep binaries/manifest.json for reproducible preparation
+/src-tauri/binaries/codex-runtime-*/
+/src-tauri/src-tauri/binaries/
+
+# Local credentials and signing material
+.env
+.env.*
+!.env.example
+credentials*.json
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+*.mobileprovision
+id_rsa
+id_ed25519
+.netrc
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

@@ -1,0 +1,10 @@
+{
+  "name": "png-chunks-encode",
+  "version": "1.0.1",
+  "private": true,
+  "main": "index.cjs",
+  "license": "MIT",
+  "dependencies": {
+    "crc-32": "^0.3.0"
+  }
+}

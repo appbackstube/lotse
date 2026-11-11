@@ -1,0 +1,48 @@
+[package]
+name = "chaoticreview"
+version = "0.1.0"
+description = "Local-first branch review workspace"
+authors = ["Andreas Ehrlich-Gruber"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "chaoticreview_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+browser-qa = []
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2"
+notify = "8.2"
+portable-pty = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+sha2 = "0.10"
+reqwest = { version = "0.13.4", features = ["blocking", "json"] }
+resvg = "0.48.1"
+axum = "0.8"
+tokio = { version = "1", features = ["net", "sync", "time", "macros"] }
+tauri-plugin-opener = "2"
+tauri-plugin-notification = "2.6.0"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3.7"
+objc2 = "0.6.4"
+block2 = "0.6.2"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSObject", "NSString", "NSURL", "NSURLRequest", "NSError", "NSData", "NSDictionary", "NSGeometry", "NSProcessInfo", "NSUserDefaults", "NSBundle"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSView", "NSImage", "NSBitmapImageRep", "NSImageRep", "NSResponder", "NSWindow"] }
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "objc2-app-kit", "WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKNavigation", "WKNavigationAction", "WKNavigationDelegate", "WKNavigationResponse", "WKUIDelegate", "WKWindowFeatures", "WKFrameInfo", "WKContentWorld", "WKSnapshotConfiguration"] }
+
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }

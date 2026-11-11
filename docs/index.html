@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#090909">
+  <meta name="description" content="Put AI agents to work in your existing Git projects. Plan parallel tasks, keep their context together, and review every change in one macOS workspace.">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Lotse — Let agents build. You steer.">
+  <meta property="og:description" content="Run tasks in parallel. Keep the context. Know what you’re merging. Your desktop workspace for AI-assisted development.">
+  <meta name="twitter:card" content="summary">
+  <title>Lotse — Let agents build. You steer.</title>
+  <link rel="icon" type="image/png" href="./assets/lotse-icon.png">
+  <link rel="stylesheet" href="./styles.css">
+  <script src="./repository.js" defer></script>
+  <script type="module" src="./site.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header wrap">
+    <a class="wordmark" href="#" aria-label="Lotse home"><img src="./assets/lotse-icon.png" width="32" height="32" alt="">lotse<span>.</span></a>
+    <nav aria-label="Main navigation"><a href="#workflow">Workflow</a><a href="#workspace">Product</a><a href="#questions">Questions</a></nav>
+    <a class="button button-small" href="#get-started">Get Lotse <span aria-hidden="true">↗</span></a>
+  </header>
+
+  <main id="main">
+    <section class="hero wrap" aria-labelledby="hero-title">
+      <h1 id="hero-title"><span class="headline-line">Let agents build.</span><br><span class="headline-line headline-line-second">You <span class="headline-word">steer<svg class="headline-underline" viewBox="0 0 560 24" fill="none" preserveAspectRatio="none" aria-hidden="true"><path d="M4 17C113 3 208 7 280 11S456 20 556 7" pathLength="1"/></svg></span><span class="headline-period">.</span></span></h1>
+      <p class="hero-copy">A desktop workspace for developers who build with AI agents.<br>Run tasks in parallel, keep the context, and review every change in one place.</p>
+      <div class="hero-actions"><a class="button button-red" href="#workflow">See the workflow <span aria-hidden="true">↓</span></a><a class="text-link" href="#get-started">Get Lotse for macOS <span aria-hidden="true">↗</span></a></div>
+      <p class="hero-note">Your existing Git projects <span aria-hidden="true">·</span> Your own model provider <span aria-hidden="true">·</span> Your final say</p>
+      <figure class="hero-product" id="product">
+        <button type="button" class="screenshot screenshot-hero" data-zoom aria-label="Enlarge screenshot of the Lotse taskboard"><img src="./assets/taskboard.png" width="1600" height="1000" alt="The real Lotse taskboard, organizing an example project into Inbox, In progress, In review, and Done." fetchpriority="high"><span class="zoom-hint" aria-hidden="true">↗ Explore the detail</span></button>
+        <figcaption><span>THE BIG PICTURE. WITHOUT THE NOISE.</span><span>Actual Lotse interface</span></figcaption>
+      </figure>
+    </section>
+
+    <section class="task-section" id="tasks" aria-labelledby="tasks-title"><div class="feature-row feature-row-reversed wrap">
+      <div class="feature-copy task-copy"><h2 id="tasks-title">One task.<br>The whole story<span class="accent">.</span></h2><p>Come back to a task and find its brief, agent conversation, branch, sketches, and previews together. Pick up the work with its context still attached.</p>
+        <div class="task-tabs" role="tablist" aria-label="Explore task features" aria-orientation="vertical">
+          <button id="tab-details" type="button" role="tab" aria-selected="true" aria-controls="panel-details" tabindex="0" data-task-view="details"><span>Details</span><span class="tab-arrow" aria-hidden="true">↗</span><small>Give your agent a brief it can act on.</small></button>
+          <button id="tab-draw" type="button" role="tab" aria-selected="false" aria-controls="panel-draw" tabindex="-1" data-task-view="draw"><span>Draw</span><span class="tab-arrow" aria-hidden="true">↗</span><small>Make the tricky part visible before building it.</small></button>
+          <button id="tab-sandbox" type="button" role="tab" aria-selected="false" aria-controls="panel-sandbox" tabindex="-1" data-task-view="sandbox"><span>Sandbox</span><span class="tab-arrow" aria-hidden="true">↗</span><small>Try an agent-built prototype and give feedback.</small></button>
+          <button id="tab-browser" type="button" role="tab" aria-selected="false" aria-controls="panel-browser" tabindex="-1" data-task-view="browser"><span>Browser</span><span class="tab-arrow" aria-hidden="true">↗</span><small>Check a website beside the task conversation.</small></button>
+          <button id="tab-changes" type="button" role="tab" aria-selected="false" aria-controls="panel-changes" tabindex="-1" data-task-view="changes"><span>Changes</span><span class="tab-arrow" aria-hidden="true">↗</span><small>Decide what is ready to merge.</small></button>
+        </div>
+      </div>
+      <div class="task-gallery">
+        <figure id="panel-details" class="task-panel" role="tabpanel" aria-labelledby="tab-details" tabindex="0"><button type="button" class="screenshot" data-zoom aria-label="Enlarge screenshot of task details"><img src="./assets/task-details.png" width="1600" height="1000" alt="Actual Lotse task details: a settings-page brief, acceptance criteria, and its agent conversation." loading="lazy"><span class="zoom-hint" aria-hidden="true">↗ View task details</span></button><figcaption>Everything the task needs. Right where it belongs.</figcaption></figure>
+        <figure id="panel-draw" class="task-panel" role="tabpanel" aria-labelledby="tab-draw" tabindex="0" hidden><button type="button" class="screenshot" data-zoom aria-label="Enlarge screenshot of the drawing canvas"><img src="./assets/task-draw.png" width="1600" height="1000" alt="The real Draw tab in Lotse, with a sample workflow sketch beside the task conversation." loading="lazy"><span class="zoom-hint" aria-hidden="true">↗ View drawing</span></button><figcaption>A shared canvas for the idea behind the task.</figcaption></figure>
+        <figure id="panel-sandbox" class="task-panel" role="tabpanel" aria-labelledby="tab-sandbox" tabindex="0" hidden><button type="button" class="screenshot" data-zoom aria-label="Enlarge screenshot of the sandbox"><img src="./assets/task-sandbox.png" width="1600" height="1000" alt="The real Sandbox tab in Lotse displaying an interactive example settings-page prototype." loading="lazy"><span class="zoom-hint" aria-hidden="true">↗ View sandbox</span></button><figcaption>Turn a conversation into something you can try.</figcaption></figure>
+        <figure id="panel-browser" class="task-panel" role="tabpanel" aria-labelledby="tab-browser" tabindex="0" hidden><button type="button" class="screenshot" data-zoom aria-label="Enlarge screenshot of the task browser"><img src="./assets/task-browser.png" width="1600" height="1000" alt="Lotse’s real Browser tab, with its address bar and navigation controls beside the task agent." loading="lazy"><span class="zoom-hint" aria-hidden="true">↗ View browser</span></button><figcaption>A browser for the task you’re working on.</figcaption></figure>
+        <figure id="panel-changes" class="task-panel" role="tabpanel" aria-labelledby="tab-changes" tabindex="0" hidden><button type="button" class="screenshot" data-zoom aria-label="Enlarge screenshot of task changes"><img src="./assets/task-changes.png" width="1600" height="1000" alt="Lotse’s actual Changes tab showing a sample code diff and the agent’s explanation side by side." loading="lazy"><span class="zoom-hint" aria-hidden="true">↗ View changes</span></button><figcaption>Read the diff. Talk it through. Make the call.</figcaption></figure>
+      </div>
+    </div></section>
+
+    <section class="workflow-story wrap" id="workflow" aria-labelledby="workflow-title">
+      <div class="story-heading"><h2 id="workflow-title">Delegate the work.<br>Keep the overview<span class="accent">.</span></h2><p>As soon as you have several agents working, you have several things to keep track of. Lotse gives each task its own place, conversation, and working branch.</p></div>
+      <div class="workflow-example">
+        <div class="workflow-request"><blockquote>“Build the settings page and add keyboard shortcuts. Give each task its own worktree, then summarize what I should review.”</blockquote><p>An example instruction to a Lotse agent.</p></div>
+        <div class="workflow-result"><div class="parallel-tasks">
+          <div class="parallel-task"><span class="branch-symbol" aria-hidden="true">⑂</span><div><h3>Build the settings page</h3><code>feature/settings</code></div><span class="agent-tag">Task agent</span></div>
+          <div class="parallel-task"><span class="branch-symbol" aria-hidden="true">⑂</span><div><h3>Add keyboard shortcuts</h3><code>feature/shortcuts</code></div><span class="agent-tag">Task agent</span></div>
+        </div><div class="workflow-handoff"><span aria-hidden="true">↳</span><div><h3>Review each result.</h3><p>Its changes and conversation, together.</p></div></div></div>
+      </div>
+      <p class="workflow-repeat"><strong>Found a workflow worth repeating?</strong> Save a playbook, automate a task lane, or schedule a follow-up prompt while the repository is open.</p>
+    </section>
+
+    <section class="feature-row feature-row-reversed workspace-section wrap" id="workspace" aria-labelledby="workspace-title">
+      <div class="feature-copy"><h2 id="workspace-title">Know what<br>you’re merging<span class="accent">.</span></h2><p>An agent finishing a task is the start of your review. Read the diff beside its explanation, ask for changes, and decide when the result is ready.</p><ul class="feature-points"><li>Compare changes against your chosen base branch</li><li>Keep the conversation beside the code</li><li>Ask for revisions before you merge</li></ul><span class="section-note">Confidence comes from seeing the work.</span></div>
+      <figure class="feature-image"><button type="button" class="screenshot" data-zoom aria-label="Enlarge screenshot of the Lotse workspace"><img src="./assets/workspace.png" width="1600" height="1000" alt="Lotse’s real workspace with a changed-file list, side-by-side code diff, and agent conversation." loading="lazy"><span class="zoom-hint" aria-hidden="true">↗ View workspace</span></button><figcaption>Every change, with its context.</figcaption></figure>
+    </section>
+
+
+
+    <section class="feature-row connections-section wrap" id="connections" aria-labelledby="connections-title">
+      <div class="feature-copy"><h2 id="connections-title">Start with the<br>project you have<span class="accent">.</span></h2><p>Open a local Git repository, connect your model provider, and get to work. Add MCP servers to bring the tools and documentation your agents need into the conversation.</p><ul class="feature-points"><li>Work with existing repositories and Git worktrees</li><li>Use OpenRouter or an OpenAI-compatible provider</li><li>Connect remote and local MCP servers</li></ul><span class="section-note">Model usage is billed by your provider.</span></div>
+      <figure class="feature-image"><button type="button" class="screenshot" data-zoom aria-label="Enlarge screenshot of MCP server settings"><img src="./assets/connections.png" width="1600" height="1000" alt="Actual Lotse MCP settings with example remote and local server configurations." loading="lazy"><span class="zoom-hint" aria-hidden="true">↗ View connections</span></button><figcaption>Your tools, connected through MCP.</figcaption></figure>
+    </section>
+
+    <section class="questions wrap" id="questions" aria-labelledby="questions-title">
+      <h2 id="questions-title">A few things<br>before you start<span class="accent">.</span></h2>
+      <div class="questions-list">
+        <details open><summary>Do I have to move my code?<span aria-hidden="true">+</span></summary><p>No. Open an existing local Git repository. Tasks can work in your current workspace or in their own Git worktrees.</p></details>
+        <details><summary>Can several agents work at once?<span aria-hidden="true">+</span></summary><p>Yes. Run separate task agents concurrently, with a worktree for each task to keep their branch changes separate. You can coordinate tasks from a task chat or the Workspace chat.</p></details>
+        <details><summary>What do I need to get started?<span aria-hidden="true">+</span></summary><p>A Mac, a local Git repository, and an API key for OpenRouter or another OpenAI-compatible provider. The current build workflow supports Apple Silicon and Intel Macs.</p></details>
+        <details><summary>Is model usage included?<span aria-hidden="true">+</span></summary><p>You connect your own provider and API key. Model usage is billed by that provider under its own pricing and terms.</p></details>
+        <details><summary>How do I stay in control of the changes?<span aria-hidden="true">+</span></summary><p>Inspect diffs, ask for revisions, and review each task against a selected base branch. Agent actions follow your configured approval settings. You can stop a task run and use the merge controls when you are ready.</p></details>
+      </div>
+    </section>
+
+    <section class="get-started wrap" id="get-started" aria-labelledby="start-title"><h2 id="start-title">Give your next idea<br>a place to get done<span class="accent">.</span></h2><p>Start with one repository and one task.<br>Add more agents when you’re ready.</p><a class="button button-red" data-repository hidden>Get Lotse on GitHub <span aria-hidden="true">↗</span></a><a class="button button-red" href="#setup" data-local-start>See setup steps <span aria-hidden="true">↓</span></a><p class="start-note">Desktop app for macOS · Your own AI provider</p>
+      <details class="setup" id="setup" open><summary>Getting started <span aria-hidden="true">+</span></summary><ol><li><strong>Get the app.</strong><p>Check the project’s GitHub releases for packaged macOS builds, or follow the repository’s README to build it yourself.</p></li><li><strong>Connect your model.</strong><p>Add your API key for OpenRouter or an OpenAI-compatible provider. Model usage is billed by your provider.</p></li><li><strong>Open your repository.</strong><p>Choose a local Git project, create a task, and give your agent a clear place to start.</p></li></ol></details>
+    </section>
+  </main>
+  <footer class="site-footer wrap"><a class="wordmark" href="#" aria-label="Back to top"><img src="./assets/lotse-icon.png" width="27" height="27" alt="">lotse<span>.</span></a><p>Your project. You’re at the helm.</p><div><a data-repository hidden>GitHub ↗</a><a href="#main">Back to top ↑</a></div></footer>
+  <dialog class="image-dialog" aria-labelledby="image-dialog-title"><div class="image-dialog-bar"><p id="image-dialog-title">Lotse screenshot</p><button type="button" class="dialog-close" aria-label="Close screenshot">Close <span aria-hidden="true">×</span></button></div><img class="dialog-image" alt=""><p class="dialog-note">Actual Lotse interface with sample project data.</p></dialog>
+  <noscript><p class="noscript-note wrap">Enable JavaScript to switch between task screenshots and enlarge them. The taskboard, workspace, task details, and connections are visible below.</p></noscript>
+</body>
+</html>

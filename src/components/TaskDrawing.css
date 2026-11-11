@@ -1,0 +1,24 @@
+.excalidraw.excalidraw {
+  --color-primary: var(--ios-tint);
+  --color-primary-darker: var(--ios-tint-pressed);
+  --color-primary-darkest: var(--ios-tint-pressed);
+  --color-primary-hover: var(--ios-tint-pressed);
+  --color-primary-light: var(--ios-fill-strong);
+  --color-primary-light-darker: var(--ios-fill-strong);
+  --color-selection: var(--ios-tint);
+  --color-brand-hover: var(--ios-tint-pressed);
+  --color-brand-active: var(--ios-tint);
+  --color-on-primary-container: var(--ios-label);
+  --color-surface-primary-container: var(--ios-fill-strong);
+  --color-surface-high: var(--ios-fill-strong);
+  --color-surface-mid: var(--ios-background);
+  --color-surface-low: var(--ios-fill);
+  --color-surface-lowest: var(--ios-grouped-background);
+  --color-on-surface: var(--ios-label);
+  --color-border-outline: var(--ios-secondary-label);
+  --color-border-outline-variant: var(--ios-separator);
+  --color-logo-text: var(--ios-label);
+  --color-slider-track: var(--ios-fill-strong);
+  --focus-highlight-color: var(--ios-tint);
+  --island-bg-color: var(--ios-elevated-background);
+}

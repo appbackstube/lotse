@@ -1,0 +1,48 @@
+name: Publish Lotse website
+
+on:
+  push:
+    paths:
+      - "docs/**"
+      - "scripts/marketing.test.mjs"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Check website
+        run: node --test scripts/marketing.test.mjs
+      - name: Prepare static website
+        run: |
+          mkdir _site
+          cp -R docs/. _site/
+          rm _site/README.md
+          node --input-type=module -e 'import { writeFileSync } from "node:fs"; writeFileSync("_site/repository.js", "window.LOTSE_REPOSITORY = " + JSON.stringify("https://github.com/" + process.env.GITHUB_REPOSITORY) + ";\n");'
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+      - name: Upload website
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+      - name: Deploy website
+        id: deployment
+        uses: actions/deploy-pages@v4

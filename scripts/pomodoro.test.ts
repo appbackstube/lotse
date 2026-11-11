@@ -1,0 +1,52 @@
+import assert from "node:assert/strict";
+import { createPomodoro, defaultPomodoroSettings, formatPomodoroTime, normalizePomodoroSettings, pomodoroRemaining, updatePomodoro } from "../src/pomodoro.ts";
+
+const settings = { focus: 30, shortBreak: 7, longBreak: 20, sessionsBeforeLongBreak: 2 };
+assert.deepEqual(normalizePomodoroSettings(settings), settings);
+for (const value of [null, [], "bad", { focus: 0, shortBreak: -1, longBreak: 181, sessionsBeforeLongBreak: 13 }, { focus: "30", shortBreak: 1.5, longBreak: Infinity, sessionsBeforeLongBreak: NaN }]) {
+  assert.deepEqual(normalizePomodoroSettings(value), defaultPomodoroSettings);
+}
+assert.deepEqual(normalizePomodoroSettings({ focus: 180, sessionsBeforeLongBreak: 1 }), { ...defaultPomodoroSettings, focus: 180, sessionsBeforeLongBreak: 1 });
+assert.deepEqual(normalizePomodoroSettings(JSON.parse(JSON.stringify(settings))), settings);
+
+let timer = createPomodoro(settings);
+assert.equal(timer.remainingMs, 30 * 60_000);
+timer = updatePomodoro(timer, "start", settings, 1000);
+assert.equal(timer.endsAt, 1_801_000);
+assert.equal(updatePomodoro(timer, "start", settings, 5000), timer, "Start must not extend a running timer");
+timer = updatePomodoro(timer, "pause", settings, 91_000);
+assert.equal(timer.remainingMs, 1_710_000);
+assert.equal(timer.endsAt, null);
+assert.equal(pomodoroRemaining(timer, 999_000), 1_710_000, "Paused time must not elapse");
+timer = updatePomodoro(timer, "start", settings, 1_000_000);
+assert.equal(timer.endsAt, 2_710_000);
+assert.equal(updatePomodoro(timer, "tick", settings, 2_709_999), timer);
+timer = updatePomodoro(timer, "tick", settings, 90_000_000);
+assert.equal(timer.phase, "shortBreak", "Catch up only the active phase after sleep");
+assert.equal(timer.completed, 1);
+assert.equal(timer.remainingMs, 7 * 60_000);
+assert.equal(timer.endsAt, null, "Next phase waits for Start");
+assert.equal(updatePomodoro(timer, "tick", settings, 90_000_001), timer, "No duplicate completion");
+timer = updatePomodoro(timer, "skip", settings, 0);
+assert.equal(timer.phase, "focus");
+assert.equal(timer.completed, 1);
+timer = updatePomodoro(timer, "start", settings, 0);
+timer = updatePomodoro(timer, "tick", settings, settings.focus * 60_000);
+assert.equal(timer.phase, "longBreak");
+assert.equal(timer.completed, 2);
+assert.equal(timer.remainingMs, 20 * 60_000);
+timer = updatePomodoro(timer, "start", settings, 0);
+timer = updatePomodoro(timer, "tick", settings, settings.longBreak * 60_000);
+assert.equal(timer.phase, "focus");
+assert.equal(timer.completed, 2);
+timer = updatePomodoro(timer, "skip", settings, 0);
+assert.equal(timer.completed, 2, "Skipped focus does not count as completed");
+assert.equal(timer.phase, "shortBreak");
+timer = updatePomodoro(timer, "start", settings, 0);
+timer = updatePomodoro(timer, "reset", settings, 1000);
+assert.equal(timer.endsAt, null);
+assert.equal(timer.remainingMs, settings.shortBreak * 60_000);
+const expired = updatePomodoro(createPomodoro(settings), "start", settings, 0);
+assert.equal(updatePomodoro(expired, "pause", settings, 99_000_000).completed, 1);
+for (const [ms, text] of [[0, "00:00"], [-1000, "00:00"], [1, "00:01"], [60_001, "01:01"], [1_500_000, "25:00"], [10_800_000, "180:00"]] as const) assert.equal(formatPomodoroTime(ms), text);
+console.log("Pomodoro tests passed");
