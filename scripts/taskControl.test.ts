@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { argumentsFor, getTask, requiredText, taskMetadata, taskObservation, taskStartPoint, taskSummary } from "../src/taskControl.ts";
+import { agentMetadata, argumentsFor, getTask, playbookMetadata, requiredText, taskMetadata, taskObservation, taskStartPoint, taskSummary } from "../src/taskControl.ts";
+import { newAgent } from "../src/agents.ts";
+import { newPlaybook, preparePlaybookPrompt } from "../src/playbooks.ts";
 import { normalizeTask } from "../src/tasks.ts";
 import type { TaskCustomField } from "../src/types.ts";
 const task = normalizeTask({ id: "12345678-1234-1234-1234-123456789abc", title: "Keep model and draft", manualStatus: "inbox", chatModel: "custom/model", chatEffort: "high", attachments: [{kind:"image",path:"/draft.png",name:"draft.png"}] })!;
@@ -62,3 +64,41 @@ assert.equal(taskSummary(task).createdAt, null);
 for (const args of [{ createdAt: 1000 }, { updatedAt: 2000 }]) assert.throws(() => argumentsFor(args, ["title", "description"]), /unknown/);
 
 assert.equal(taskSummary(task).url, `#task=${task.id}`);
+
+const role = { id: "owner", title: "Owner", prompt: "Clarify goals" };
+assert.deepEqual(agentMetadata(role, { title: " Product owner " }), { ...role, title: "Product owner" });
+for (const args of [{ title: null }, { title: " " }, { title: "x".repeat(201) }, { prompt: null }, { prompt: "" }, { prompt: "x".repeat(20_001) }]) assert.throws(() => agentMetadata(role, args));
+assert.throws(() => agentMetadata(newAgent(), { title: "Missing prompt" }));
+const template = playbookMetadata(newPlaybook(), { title: "Review", description: "Check an area", prompt: "Review {{AREA}}", variables: [{ name: "AREA", label: "Which area?", type: "singleLine" }] });
+assert.equal(template.variables.length, 1);
+assert.ok(template.variables[0].id);
+assert.deepEqual(playbookMetadata(template, { description: "" }), { ...template, description: "" });
+assert.equal(playbookMetadata(template, { variables: [{ name: "AREA", label: "Area", type: "multiLine" }] }).variables[0].id, template.variables[0].id);
+assert.equal(playbookMetadata(template, { variables: [{ id: "renamed", name: "OTHER", label: "Other", type: "multiLine" }] }).variables[0].id, "renamed");
+assert.deepEqual(playbookMetadata(template, { prompt: "Review all", variables: [] }).variables, []);
+assert.equal(preparePlaybookPrompt(template, { AREA: "auth" }).prompt, "Review auth");
+const variable = template.variables[0];
+for (const args of [{ description: null }, { description: "x".repeat(20_001) }, { variables: null }, { variables: {} }, { variables: Array(101).fill(variable) },
+  { variables: [null] }, { variables: [{ ...variable, extra: true }] }, { variables: [{ ...variable, name: "1INVALID" }] }, { variables: [{ ...variable, label: " " }] },
+  { variables: [{ ...variable, type: "unknown" }] }, { variables: [{ ...variable, id: "" }] }, { variables: [variable, { ...variable, id: "other" }] }, { variables: [variable, { ...variable, name: "OTHER" }] }]) assert.throws(() => playbookMetadata(template, args));
+assert.equal(template.description, "Check an area");
+assert.equal(template.variables[0].label, "Which area?");
+
+const selectedTask = taskMetadata([task], task, { agentId: role.id }, [], [role])[0];
+assert.deepEqual(selectedTask.chatAgent, role);
+assert.deepEqual(selectedTask.attachments, task.attachments);
+assert.equal(selectedTask.chatModel, task.chatModel);
+assert.equal(selectedTask.chatEffort, task.chatEffort);
+assert.equal(selectedTask.worktree, task.worktree);
+assert.equal(task.chatAgent, null);
+assert.deepEqual(taskSummary(selectedTask).agent, { id: role.id, title: role.title });
+assert.equal(taskSummary(task).agent, null);
+assert.equal(taskMetadata([selectedTask], selectedTask, { title: "Keep role" }, [], [role])[0].chatAgent, role);
+assert.equal(taskMetadata([selectedTask], selectedTask, { agentId: null }, [], [role])[0].chatAgent, null);
+for (const agentId of ["missing", "", " ", 42, {}, false]) assert.throws(() => taskMetadata([task], task, { agentId }, [], [role]));
+for (const existing of [{ ...selectedTask, chatMessages: withResult.chatMessages }, { ...selectedTask, agentThreadId: "thread" }]) {
+  assert.throws(() => taskMetadata([existing], existing, { agentId: null }, [], [role]), /conversation/);
+  assert.throws(() => taskMetadata([existing], existing, { agentId: role.id }, [], [{ ...role, prompt: "Updated role" }]), /conversation/);
+  assert.deepEqual(taskMetadata([existing], existing, { agentId: role.id, title: "Safe metadata update" }, [], [role])[0].chatMessages, existing.chatMessages);
+}
+assert.deepEqual(taskMetadata([selectedTask], selectedTask, { agentId: role.id }, [], [{ ...role, prompt: "Updated role" }])[0].chatAgent, { ...role, prompt: "Updated role" });

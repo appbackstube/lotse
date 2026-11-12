@@ -2,8 +2,10 @@ import type { RepositoryTask, TaskCustomField } from "./types.ts";
 import { moveTask, reparentTask, taskBoardStatus, taskColors, taskSubtreeIds } from "./tasks.ts";
 import { laneStatuses } from "./laneAutomation.ts";
 import { normalizeTaskDate } from "./taskSchedule.ts";
+import { switchChatAgent, type ChatAgent } from "./agents.ts";
+import type { Playbook } from "./playbooks.ts";
 
-export const metadataKeys = ["title", "description", "status", "parentId", "position", "color", "startDate", "deadline", "customFields"];
+export const metadataKeys = ["title", "description", "status", "parentId", "position", "color", "startDate", "deadline", "customFields", "agentId"];
 export function argumentsFor(value: unknown, keys: string[]): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !keys.includes(key))) throw new Error("Invalid or unknown tool arguments.");
   return value as Record<string, unknown>;
@@ -12,13 +14,47 @@ export function requiredText(value: unknown, name: string, maximum = 20_000): st
   if (typeof value !== "string" || !value.trim() || value.length > maximum) throw new Error(`${name} must be nonempty and at most ${maximum} characters.`);
   return value.trim();
 }
+export function agentMetadata(original: ChatAgent, args: Record<string, unknown>): ChatAgent {
+  const title = requiredText("title" in args ? args.title : original.title, "Title", 200);
+  const prompt = requiredText("prompt" in args ? args.prompt : original.prompt, "Prompt");
+  return { id: original.id, title: "title" in args ? title : original.title, prompt: "prompt" in args ? prompt : original.prompt };
+}
+export function playbookMetadata(original: Playbook, args: Record<string, unknown>): Playbook {
+  const saved = { ...original, ...agentMetadata(original, args) };
+  if ("description" in args) {
+    if (typeof args.description !== "string" || args.description.length > 20_000) throw new Error("Description must be at most 20,000 characters.");
+    saved.description = args.description;
+  }
+  if ("variables" in args) {
+    if (!Array.isArray(args.variables) || args.variables.length > 100) throw new Error("Provide up to 100 playbook variables.");
+    saved.variables = args.variables.map((value) => {
+      const variable = argumentsFor(value, ["id", "name", "label", "type"]);
+      const name = requiredText(variable.name, "Variable name", 200);
+      if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(name)) throw new Error("Invalid playbook variable name.");
+      if (variable.type !== "singleLine" && variable.type !== "multiLine") throw new Error("Invalid playbook variable type.");
+      return { id: "id" in variable ? requiredText(variable.id, "Variable ID", 200) : original.variables.find((entry) => entry.name === name)?.id ?? crypto.randomUUID(),
+        name, label: requiredText(variable.label, "Variable label", 500), type: variable.type };
+    });
+    if (new Set(saved.variables.map(({ name }) => name)).size !== saved.variables.length || new Set(saved.variables.map(({ id }) => id)).size !== saved.variables.length) throw new Error("Playbook variable names and IDs must be unique.");
+  }
+  return saved;
+}
 export function getTask(tasks: RepositoryTask[], id: unknown): RepositoryTask {
   const task = tasks.find((task) => task.id === id);
   if (!task) throw new Error("Task not found. Read tasks again.");
   return task;
 }
-export function taskMetadata(tasks: RepositoryTask[], original: RepositoryTask, args: Record<string, unknown>, fields: TaskCustomField[]): RepositoryTask[] {
+export function taskMetadata(tasks: RepositoryTask[], original: RepositoryTask, args: Record<string, unknown>, fields: TaskCustomField[], agents: ChatAgent[] = []): RepositoryTask[] {
   let task = { ...original, customFields: { ...original.customFields } };
+  if ("agentId" in args) {
+    const agentId = args.agentId === null ? null : requiredText(args.agentId, "Agent ID");
+    const agent = agentId === null ? null : agents.find((agent) => agent.id === agentId);
+    if (agent === undefined) throw new Error("Agent not found. Read agents again.");
+    if (JSON.stringify(task.chatAgent ?? null) !== JSON.stringify(agent)) {
+      if (task.chatMessages.length || task.agentThreadId) throw new Error("Changing the agent role would clear this task's conversation. Ask the human to switch roles or clear the chat first.");
+      task = { ...switchChatAgent(task, agent), planReady: false, unreadAgentResult: false };
+    }
+  }
   if ("title" in args) task.title = requiredText(args.title, "Title", 500);
   if ("description" in args) { if (typeof args.description !== "string" || args.description.length > 20_000) throw new Error("Description must be at most 20,000 characters."); task.description = args.description; }
   if ("color" in args) { if (!taskColors.some((color) => color.value === args.color)) throw new Error("Invalid task color."); task.color = args.color as RepositoryTask["color"]; }
@@ -60,7 +96,7 @@ export function taskMetadata(tasks: RepositoryTask[], original: RepositoryTask, 
 }
 export function taskSummary(task: RepositoryTask) {
   return { id: task.id, url: `#task=${task.id}`, createdAt: task.createdAt, updatedAt: task.updatedAt, title: task.title, description: task.description, status: taskBoardStatus(task), parentId: task.parentId, color: task.color,
-    startDate: task.startDate, deadline: task.deadline, customFields: task.customFields, location: task.location, newBranchName: task.newBranchName ?? null, worktreeStart: task.worktreeStart, started: task.started };
+    startDate: task.startDate, deadline: task.deadline, customFields: task.customFields, agent: task.chatAgent ? { id: task.chatAgent.id, title: task.chatAgent.title } : null, location: task.location, newBranchName: task.newBranchName ?? null, worktreeStart: task.worktreeStart, started: task.started };
 }
 export function taskObservation(task: RepositoryTask, state: { starting?: boolean; running?: boolean; approvalId?: number; inputId?: number; queueIds: string[]; queuePaused?: boolean }) {
   const user = [...task.chatMessages].reverse().find((entry) => entry.role === "user");

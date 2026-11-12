@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import { mockConvertFileSrc, mockWindows } from "@tauri-apps/api/mocks";
 import { mockIPC } from "./mockTauri";
 import { emit } from "@tauri-apps/api/event";
-import { initializeFileStore } from "../src/fileStore";
+import { fileStore, initializeFileStore } from "../src/fileStore";
 import { taskStorageKey, normalizeTask } from "../src/tasks";
 import { laneStorageKey } from "../src/laneAutomation";
 import App from "../src/App";
@@ -13,7 +13,8 @@ let fixtureRoot: ReturnType<typeof createRoot> | undefined;
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let repo = { rootPath: "/synthetic-repository", name: "Monthly Report", currentBranch: "main", hasOrigin: true };
 const comparison = { mode: "workingCopy", baseRef: null, compareRef: null, baseOid: "a".repeat(40), baseCommitOid: "a".repeat(40), compareCommitOid: "a".repeat(40), snapshotId: "snapshot", files: [] };
-const first = normalizeTask({ id: "12345678-1234-1234-1234-123456789abc", title: "Polish keyboard navigation", manualStatus: "inbox", chatMode: "default", location: "workspace", attachments: [{ kind: "image", path: "/synthetic/draft.png", name: "draft.png" }] })!;
+const savedAgent = { id: "owner", title: "Product owner", prompt: "Clarify goals" };
+const first = normalizeTask({ id: "12345678-1234-1234-1234-123456789abc", title: "Polish keyboard navigation", manualStatus: "inbox", chatMode: "default", location: "workspace", chatAgent: savedAgent, attachments: [{ kind: "image", path: "/synthetic/draft.png", name: "draft.png" }] })!;
 const second = { ...first, id: "22345678-1234-1234-1234-123456789abc", title: "Wait behind my queued message", location: "worktree" as const, worktreeStart: { kind: "branch" as const, branch: "main" }, attachments: [] };
 const third = { ...first, id: "32345678-1234-1234-1234-123456789abc", title: "Review empty states", attachments: [] };
 const sends: any[] = [];
@@ -28,8 +29,11 @@ let failClaimWrite = false;
 const acknowledgements: any[] = [];
 const pending = new Set<string>();
 let failWrite = false;
+let failLibraryWrite = false;
 const storage: Record<string, string> = {
   "chaoticreview.auth-onboarding-v1": "complete",
+  "chaoticreview.agents": JSON.stringify([savedAgent]),
+  "chaoticreview.default-agent": savedAgent.id,
   "chaoticreview.review-playbooks": JSON.stringify([
     { id: "changelog", title: "Changelog", description: "Write release notes", prompt: "Update changelog for {{VERSION}}.\n{{DETAILS}}", variables: [{ id: "version", name: "VERSION", label: "Release version", type: "singleLine" }, { id: "details", name: "DETAILS", label: "Release details", type: "multiLine" }] },
     { id: "changelog-other", title: "Changelog", description: "Other release notes", prompt: "Other changelog", variables: [] }
@@ -53,6 +57,7 @@ mockIPC(async (command, args: any) => {
   if (command === "load_ai_settings") return { activeProvider: "openrouter", providers: [{ id: "openrouter", name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", envKey: "OPENROUTER_API_KEY" }], repositoryProviders: {}, ripgrepAvailable: true, mcpUrl: "" };
   if (command === "load_frontend_storage") return storage;
   if (command === "set_frontend_storage") {
+    if (failLibraryWrite && args.key === "chaoticreview.agents") throw new Error("Synthetic library write failure");
     if (failWrite && args.key === taskStorageKey(repo.rootPath)) throw new Error("Synthetic disk write failure");
     if (failClaimWrite && args.key === laneStorageKey(repo.rootPath) && args.value?.includes('"status":"running"')) throw new Error("Synthetic disk write failure");
     storage[args.key] = args.value; return;
@@ -115,6 +120,16 @@ try {
   const list = await request(null, "get_tasks", {});
   check(!list.error && list.result.tasks.length === 3, "Workspace cannot list tasks");
   check(list.result.tasks[0].url === `#task=${first.id}`, "Task tools must return clickable URLs");
+  const roles = await request(null, "get_agents", { query: "PRODUCT" });
+  check(!roles.error && roles.result.length === 1 && roles.result[0].id === savedAgent.id && !("prompt" in roles.result[0]), "Workspace cannot search saved agents");
+  const readRole = await request(null, "get_agent", { agentId: savedAgent.id });
+  check(!readRole.error && readRole.result.prompt === savedAgent.prompt, "Workspace cannot read saved agent prompts");
+  const createdRole = await request(null, "create_agent", { title: "Reviewer", prompt: "Review changes" });
+  check(!createdRole.error && JSON.parse(storage["chaoticreview.agents"]).some((agent: any) => agent.id === createdRole.result.id), "Workspace agent creation not persisted");
+  const createdTemplate = await request(null, "create_playbook", { title: "Audit", prompt: "Audit {{AREA}}", variables: [{ name: "AREA", label: "Which area?", type: "singleLine" }] });
+  check(!createdTemplate.error && JSON.parse(storage["chaoticreview.review-playbooks"]).some((playbook: any) => playbook.id === createdTemplate.result.id), "Workspace playbook creation not persisted");
+  const changedTemplate = await request(null, "update_playbook", { playbookId: createdTemplate.result.id, description: "Created by workspace" });
+  check(!changedTemplate.error && changedTemplate.result.prompt === "Audit {{AREA}}" && changedTemplate.result.variables[0].id === createdTemplate.result.variables[0].id, "Playbook patch lost untouched fields");
   await event(0, { kind: "assistantMessageCompleted", finalText: `Updated [${first.title}](${list.result.tasks[0].url}). [Missing task](#task=deleted-task).` });
   await event(0, { kind: "completed" });
   await click(document.querySelector<HTMLAnchorElement>('a[href="#task=deleted-task"]')!);
@@ -139,8 +154,21 @@ try {
   await click(document.querySelector<HTMLAnchorElement>(`a[href="#task=${first.id}"]`)!);
   check(document.querySelector<HTMLTextAreaElement>('[role="dialog"] [aria-label="Review Agent message"]')?.value === "Keep my draft after Escape", "Escape must preserve the focused task draft");
   await click(button("Close task modal"));
-  const created = await request(null, "create_task", { title: "Shared coordination", description: "From workspace", startDate: "2026-11-06", deadline: "2026-11-07" });
+  const created = await request(null, "create_task", { title: "Shared coordination", description: "From workspace", agentId: createdRole.result.id, startDate: "2026-11-06", deadline: "2026-11-07" });
   check(!created.error && storedTasks().some((task: any) => task.id === created.result.id), "Task creation not persisted");
+  check(created.result.agent.id === createdRole.result.id && storedTasks().find((task: any) => task.id === created.result.id).chatAgent.prompt === "Review changes", "Task creation did not select and persist the canonical agent role");
+  const beforeBadRole = storage[taskStorageKey(repo.rootPath)];
+  for (const agentId of ["missing", "", 42, {}]) {
+    check((await request(null, "create_task", { title: "Invalid role", agentId })).error, "Task creation accepted an invalid agent role");
+    check((await request(null, "update_task", { taskId: created.result.id, title: "Must not change", agentId })).error, "Task update accepted an invalid agent role");
+  }
+  check(storage[taskStorageKey(repo.rootPath)] === beforeBadRole, "Invalid role selection changed tasks");
+  const defaultRoleTask = await request(null, "add_task", { title: "Use default role" });
+  check(!defaultRoleTask.error && defaultRoleTask.result.agent.id === savedAgent.id, "Omitting agentId lost the default role");
+  const noRoleTask = await request(null, "create_task", { title: "Use no role", agentId: null });
+  check(!noRoleTask.error && noRoleTask.result.agent === null && storedTasks().find((task: any) => task.id === noRoleTask.result.id).chatAgent === null, "Explicit null fell back to the default role");
+  const clearedRole = await request(null, "update_task", { taskId: created.result.id, agentId: null });
+  check(!clearedRole.error && clearedRole.result.agent === null, "Cannot clear a task role");
   const id = created.result.id;
   const changed = await request(null, "update_task", { taskId: id, title: "Updated from workspace", parentId: first.id, status: "inReview" });
   check(!changed.error && changed.result.parentId === first.id, "Cross-task metadata update failed");
@@ -148,22 +176,80 @@ try {
   check(!comment.error, "Workspace comment failed");
   const update = await request(null, "update_task_comment", { taskId: second.id, commentId: comment.result.id, body: "Revised from workspace" });
   check(!update.error && storedTasks().find((task: any) => task.id === second.id).comments[0].body === "Revised from workspace", "Comment update not saved");
+  const selectedByWorkspace = await request(null, "update_task", { taskId: second.id, agentId: createdRole.result.id });
+  check(!selectedByWorkspace.error && selectedByWorkspace.result.agent.id === createdRole.result.id, "Workspace cannot select a task agent role");
   const start = await request(null, "start_task_run", { taskId: first.id, prompt: "Coordinate the other tasks" });
   check(!start.error && sends.length === 2 && sends[1].taskId === first.id, "Workspace cannot start task agent directly");
+  const taskRoles = await request(first.id, "get_agents", {});
+  check(!taskRoles.error && taskRoles.result.length === 2, "Task cannot list saved agents");
+  const taskRole = await request(first.id, "get_agent", { agentId: createdRole.result.id });
+  check(!taskRole.error && taskRole.result.prompt === "Review changes", "Task cannot read a saved agent");
+  const updatedRole = await request(first.id, "update_agent", { agentId: savedAgent.id, prompt: "Prioritize goals" });
+  check(!updatedRole.error && updatedRole.result.title === savedAgent.title && JSON.parse(storage["chaoticreview.agents"])[0].prompt === "Prioritize goals", "Task agent edit not persisted");
+  check(storedTasks()[0].chatAgent.prompt === savedAgent.prompt, "Saved-role edit changed an existing task chat role");
+  const taskCreatedRole = await request(first.id, "create_agent", { title: "Task author", prompt: "Write tasks" });
+  check(!taskCreatedRole.error, "Task cannot create saved agents");
+  const taskTemplate = await request(first.id, "get_playbook", { playbookId: createdTemplate.result.id });
+  check(!taskTemplate.error && taskTemplate.result.description === "Created by workspace", "Task cannot read workspace playbook edits");
+  const taskCreatedTemplate = await request(first.id, "create_playbook", { title: "Task audit", prompt: "Audit all" });
+  check(!taskCreatedTemplate.error, "Task cannot create playbooks");
+  const taskUpdatedTemplate = await request(first.id, "update_playbook", { playbookId: createdTemplate.result.id, title: "Task audit with area", variables: [{ name: "AREA", label: "Area", type: "multiLine" }] });
+  check(!taskUpdatedTemplate.error && taskUpdatedTemplate.result.variables[0].id === createdTemplate.result.variables[0].id, "Task playbook edit lost the variable ID");
+  const workspaceUpdatedRole = await request(null, "update_agent", { agentId: taskCreatedRole.result.id, title: "Workspace author" });
+  check(!workspaceUpdatedRole.error && workspaceUpdatedRole.result.prompt === "Write tasks", "Workspace cannot update task-created roles");
+  const beforeInvalid = storage["chaoticreview.review-playbooks"];
+  for (const [name, args] of [
+    ["update_playbook", { playbookId: createdTemplate.result.id, variables: [{ name: "INVALID!", label: "Area", type: "singleLine" }] }],
+    ["update_playbook", { playbookId: createdTemplate.result.id, prompt: "" }],
+    ["update_playbook", { playbookId: createdTemplate.result.id }],
+    ["update_playbook", { playbookId: "missing", title: "Missing" }],
+    ["update_agent", { agentId: savedAgent.id, title: null }],
+    ["update_agent", { agentId: savedAgent.id, shell: "no" }],
+    ["update_agent", { agentId: savedAgent.id }],
+    ["get_agent", { agentId: "missing" }],
+  ] as const) check((await request(first.id, name, args)).error, `${name} accepted invalid input`);
+  check(storage["chaoticreview.review-playbooks"] === beforeInvalid, "Invalid library edits changed persisted data");
+  failLibraryWrite = true;
+  const failedLibraryWrite = await request(first.id, "update_agent", { agentId: savedAgent.id, prompt: "Uncertain save" });
+  check(failedLibraryWrite.error?.includes("uncertain"), `Library write failure was reported as success: ${JSON.stringify(failedLibraryWrite)}`);
+  failLibraryWrite = false;
+  await act(async () => {
+    fileStore.setItem("chaoticreview.agents", storage["chaoticreview.agents"]);
+    window.dispatchEvent(new StorageEvent("storage", { key: "chaoticreview.agents", newValue: storage["chaoticreview.agents"] }));
+    await fileStore.flush();
+  });
+  await settle();
+  await request(first.id, "update_task_queue", { taskId: third.id, paused: true });
+  const idleQueued = await request(first.id, "start_task_run", { taskId: third.id, prompt: "Keep this queued prompt" });
+  check(!idleQueued.error && sends.length === 2, "Paused idle task unexpectedly started");
+  const idleQueueRoleChange = await request(first.id, "update_task", { taskId: third.id, agentId: null });
+  check(idleQueueRoleChange.error?.includes("queued") && storedTasks().find((task: any) => task.id === third.id).chatAgent.id === savedAgent.id, "Role switch changed an idle task with queued prompts");
+  const sameQueuedRole = await request(first.id, "update_task", { taskId: third.id, agentId: savedAgent.id });
+  // The saved owner prompt changed above, so selecting its latest snapshot is a role change too.
+  check(sameQueuedRole.error?.includes("queued"), "Refreshing the same role bypassed queued-prompt protection");
+  await request(first.id, "update_task_queue", { taskId: third.id, removeMessageIds: [idleQueued.result.messageId], paused: false });
+  const selectedByTask = await request(first.id, "update_task", { taskId: third.id, agentId: createdRole.result.id });
+  check(!selectedByTask.error && selectedByTask.result.agent.id === createdRole.result.id, "Task agent cannot select another task's agent role");
+  const runningRoleChange = await request(null, "update_task", { taskId: first.id, agentId: createdRole.result.id });
+  check(runningRoleChange.error && storedTasks()[0].chatAgent.prompt === savedAgent.prompt, "Role switch changed a running conversation");
   const other = await request(first.id, "get_task", { taskId: second.id });
   check(!other.error && other.result.comments[0].body === "Revised from workspace" && Array.isArray(other.result.chatMessages), "Task cannot read another task");
   const fromTask = await request(first.id, "add_task_comment", { taskId: second.id, body: "Task A comments on Task B" });
   check(!fromTask.error, "Task-to-task comment failed");
   const changedByTask = await request(first.id, "update_task_comment", { taskId: second.id, commentId: comment.result.id, body: "Revised from task" });
   check(!changedByTask.error, "Task-to-task comment update failed");
+  check(other.result.agent.prompt === "Review changes", "Task details omit the selected prompt snapshot");
   const next = await request(first.id, "start_task_run", { taskId: second.id, prompt: "Implement the delegated change" });
   check(!next.error && sends.length === 3 && sends[2].taskId === second.id && preparations.length === 1, "Task cannot start another task agent");
+  check(sends[2].agentPrompt === "Review changes", "Delegation ignored the selected agent template");
   check(sends[2].model === second.chatModel && sends[2].effort === second.chatEffort, "Delegation changed the target model or effort");
   check(storedTasks().find((task: any) => task.id === first.id).attachments.length === 1, "Delegation consumed existing draft attachments");
   const cycle = await request(second.id, "start_task_run", { taskId: first.id, prompt: "Start the parent again" });
   check(cycle.error?.includes("cycle") && sends.length === 3, "Reciprocal delegation cycle was allowed");
   const queued = await request(first.id, "start_task_run", { taskId: second.id, prompt: "Follow-up while running" });
   check(!queued.error && sends.length === 3 && JSON.parse(storage["chaoticreview.chat-queues"])[JSON.stringify([repo.rootPath, "task", second.id])].length === 1, "Running task prompt was not queued");
+  const queuedRoleChange = await request(first.id, "update_task", { taskId: second.id, agentId: null });
+  check(queuedRoleChange.error && storedTasks().find((task: any) => task.id === second.id).chatAgent.id === createdRole.result.id, "Role switch changed a queued conversation");
   const duplicate = await request(first.id, "start_task_run", { taskId: second.id, prompt: "Follow-up while running" }, queued.operationId);
   check(!duplicate.error && JSON.parse(storage["chaoticreview.chat-queues"])[JSON.stringify([repo.rootPath, "task", second.id])].length === 1, "Repeated operation duplicated the queue");
   const stopped = await request(first.id, "stop_task_run", { taskId: second.id });
@@ -204,8 +290,12 @@ try {
   const missing = await request(null, "get_task", { taskId: "outside-repository" });
   check(missing.error, "Foreign task accepted");
   await event(1, { kind: "completed", finalText: "Coordinator finished" });
+  const completedRoleChange = await request(null, "update_task", { taskId: first.id, agentId: null });
+  check(completedRoleChange.error?.includes("conversation") && storedTasks()[0].chatMessages.length > 0, "Role switch erased completed chat history");
   const stoppedCaller = await request(first.id, "add_task_comment", { taskId: second.id, body: "Must not run" });
   check(stoppedCaller.error?.includes("stopped"), "Stopped caller could mutate tasks");
+  const stoppedLibraryCaller = await request(first.id, "update_agent", { agentId: savedAgent.id, prompt: "Must not save" });
+  check(stoppedLibraryCaller.error?.includes("stopped"), "Stopped caller could edit the saved library");
   await click(button("Tasks"));
   await click(button("List"));
   await click(button("Workspace"));
@@ -222,7 +312,7 @@ try {
   check(document.querySelector<HTMLTextAreaElement>('[aria-label="Review Agent message"]')?.value === "Keep my workspace draft", "Sending in the task modal must preserve the workspace draft");
   await event(sends.length - 1, { kind: "completed" });
   check(!failures.length, `Unexpected IPC commands: ${failures.join(", ")}`);
-  document.getElementById("result")!.textContent = "PASS: workspace task-link modals with List/Kanban, unchanged active tab, separate drafts, task chat and changes, workspace/task agent coordination, sidebar removal, task metadata and hierarchy, cross-task comments, persisted writes, direct starts, model/worktree/draft preservation, exact queues, cycle prevention, cancellation, playbooks, lanes and stopped/foreign caller checks.";
+  document.getElementById("result")!.textContent = "PASS: workspace task-link modals with List/Kanban, unchanged active tab, separate drafts, task chat and changes, workspace/task agent coordination, sidebar removal, task metadata and hierarchy, cross-task comments, persisted writes, agent-template selection and role-switch protection, direct starts, model/worktree/draft preservation, exact queues, cycle prevention, cancellation, playbooks, lanes and stopped/foreign caller checks.";
 } catch (error) {
   document.getElementById("result")!.textContent = `FAIL: ${error instanceof Error ? error.stack : error}`;
 } finally {

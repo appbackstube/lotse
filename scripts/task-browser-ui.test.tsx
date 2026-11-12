@@ -83,6 +83,11 @@ try {
   check(!views.at(-1).visible, "Overlapping dialogs must hide native content");
   await act(async () => overlay.remove()); await tick();
   check(views.at(-1).visible, "Closing overlays must restore native content");
+  overlay.removeAttribute("role"); overlay.className = "agent-attention-stack";
+  await act(async () => document.body.append(overlay)); await tick();
+  check(!views.at(-1).visible, "Agent request cards must stay above native browser content");
+  await act(async () => overlay.remove()); await tick();
+  check(views.at(-1).visible, "Removing agent request cards must restore native content");
   const visibility = Object.getOwnPropertyDescriptor(document, "visibilityState");
   Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
   await act(async () => document.dispatchEvent(new Event("visibilitychange"))); await tick();

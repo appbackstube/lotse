@@ -1,5 +1,6 @@
 export type ChatAgent = { id: string; title: string; prompt: string };
 export const agentsStorageKey = "chaoticreview.agents";
+export const defaultAgentStorageKey = "chaoticreview.default-agent";
 
 export function normalizeAgent(value: unknown): ChatAgent | null {
   if (!value || typeof value !== "object") return null;

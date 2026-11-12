@@ -75,6 +75,30 @@ try {
   const tasksButton = [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "Tasks")!;
   await act(async () => tasksButton.click()); await settle();
   check(document.querySelectorAll(".task-board-card").length === tasks.length, "Render all 200 cards");
+  // Packaged Tauri policies can block the style element injected by dnd-kit.
+  let feedbackStyles: CSSStyleSheet | null | undefined;
+  try {
+    await scrollTo(card());
+    const original = card().getBoundingClientRect();
+    const x = original.left + original.width / 2, y = original.top + 20;
+    await pointer("pointerdown", x, y, card());
+    feedbackStyles = [...document.querySelectorAll("style")].find((style) => style.textContent?.trim().startsWith(":is(:root,:host) [data-dnd-dragging]"))?.sheet;
+    check(feedbackStyles, "Find the runtime drag stylesheet");
+    feedbackStyles!.disabled = true;
+    const checkPreview = (dx: number, dy: number) => {
+      const preview = card().getBoundingClientRect();
+      check(Math.abs(preview.width - original.width) < 1 && Math.abs(preview.height - original.height) < 1, "Bundled drag styles must preserve the card dimensions");
+      check(Math.abs(preview.left - original.left - dx) < 1 && Math.abs(preview.top - original.top - dy) < 1, "Bundled drag styles must keep the card at the pointer instead of the window corner");
+      check(getComputedStyle(card()).opacity === "1", "Bundled drag styles must keep the card readable");
+    };
+    checkPreview(0, 0);
+    await pointer("pointermove", x + 12, y + 30);
+    checkPreview(12, 30);
+  } finally {
+    if (feedbackStyles) feedbackStyles.disabled = false;
+    await key("Escape", document.body);
+  }
+  check(!document.querySelector("[data-dnd-dragging], [data-dnd-placeholder]"), "Cancel must remove the preview and placeholder");
   const before = storage[taskKey];
   const beforeWrites = writes;
   await begin();

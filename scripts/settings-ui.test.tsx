@@ -3,12 +3,20 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { mockConvertFileSrc, mockWindows } from "@tauri-apps/api/mocks";
 import { mockIPC } from "./mockTauri";
-import { initializeFileStore } from "../src/fileStore";
+import { emit } from "@tauri-apps/api/event";
+import { fileStore, initializeFileStore } from "../src/fileStore";
+import { agentsStorageKey, defaultAgentStorageKey } from "../src/agents";
+import { normalizeTask, taskStorageKey } from "../src/tasks";
 import App from "../src/App";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const repo = { rootPath: "/synthetic-settings", name: "Settings preview", currentBranch: "main", hasOrigin: true };
-const storage: Record<string, string> = { "chaoticreview.auth-onboarding-v1": "complete" };
+const agent = { id: "owner", title: "Product Owner", prompt: "Clarify goals." };
+const storage: Record<string, string> = {
+  "chaoticreview.auth-onboarding-v1": "complete",
+  [agentsStorageKey]: JSON.stringify([agent]),
+  [taskStorageKey(repo.rootPath)]: JSON.stringify([normalizeTask({ id: "existing", title: "Existing task" })]),
+};
 mockWindows("main"); mockConvertFileSrc("macos");
 mockIPC(async (command, args: any) => {
   if (command === "task_sandbox_supported" || command === "task_browser_supported") return true;
@@ -86,8 +94,51 @@ try {
   await click([...document.querySelectorAll<HTMLElement>('.github-inbox-popover button')].find((item) => item.textContent === "Connect GitHub"));
   check(active()?.dataset.settingsPage === "github", "Inbox shortcut must open GitHub directly");
   check(document.documentElement.scrollWidth <= innerWidth, "Settings must fit the viewport");
+  await change(control("Search settings") as HTMLInputElement, "default agent");
+  await click(nav("Agent preferences"));
+  const defaultAgentLabel = () => control("Default agent")?.querySelector('[data-slot="select-value"]')?.textContent;
+  check(defaultAgentLabel() === "None", "Default agent must start at None");
+  const chooseAgent = async (name: string) => {
+    await click(control("Default agent"));
+    await click([...document.querySelectorAll<HTMLElement>('[role="option"]')].find((item) => item.textContent === name));
+    await fileStore.flush();
+  };
+  await chooseAgent(agent.title);
+  check(storage[defaultAgentStorageKey] === agent.id, "Default agent selection must persist");
+  await click(control("Close settings"));
+  check(control("Agent role")?.textContent === "None", "Changing defaults must preserve the current review role");
+  await click([...document.querySelectorAll<HTMLElement>('button')].find((item) => item.textContent?.trim() === "Tasks"));
+  await click(control("New task"));
+  await change(document.querySelector<HTMLInputElement>('input[placeholder="Task title"]')!, "With default agent");
+  await click(document.querySelector<HTMLElement>('[role="dialog"] button[type="submit"]'));
+  await act(async () => { await emit("mcp-task-added", { repositoryRoot: repo.rootPath, task: { id: "mcp-new", title: "From MCP" } }); });
+  await settle(); await fileStore.flush();
+  const tasks = JSON.parse(storage[taskStorageKey(repo.rootPath)]);
+  check(tasks.find((task: any) => task.id === "existing").chatAgent === null, "Existing tasks must keep their role");
+  for (const title of ["With default agent", "From MCP"]) {
+    check(tasks.find((task: any) => task.title === title)?.chatAgent?.prompt === agent.prompt, "New tasks must inherit the default agent prompt");
+  }
+  await act(async () => root.render(null));
+  await act(async () => root.render(<App />)); await settle();
+  check(control("Agent role")?.textContent === agent.title, "New reviews must inherit the saved default after remounting");
+  await click(control("Settings")); await click(nav("Agent preferences"));
+  check(defaultAgentLabel() === agent.title, "Settings must restore the saved default");
+  await chooseAgent("None");
+  check(storage[defaultAgentStorageKey] === "", "None must clear the default");
+  await chooseAgent(agent.title);
+  await act(async () => {
+    fileStore.setItem(agentsStorageKey, "[]");
+    window.dispatchEvent(new StorageEvent("storage", { key: agentsStorageKey, newValue: "[]" }));
+  }); await settle();
+  check(defaultAgentLabel() === "None", "Missing or deleted default agents must fall back to None");
+  await click(control("Close settings"));
+  check(control("Agent role")?.textContent === agent.title, "Deleting a saved agent must preserve existing review roles");
+  await act(async () => root.render(null));
+  await act(async () => root.render(<App />)); await settle();
+  check(control("Agent role")?.textContent === "None", "New reviews must fall back to None when the default agent is missing");
+  await click(control("Settings"));
   if (new URLSearchParams(location.search).has("preview")) await click(nav("General"));
-  document.getElementById("result")!.textContent = "PASS: grouped settings, search, navigation, drafts, controls and timer shortcut.";
+  document.getElementById("result")!.textContent = "PASS: settings navigation, default agent persistence, new task/review defaults, existing roles and deleted-agent fallback.";
 } catch (error) {
   document.getElementById("result")!.textContent = `FAIL: ${error instanceof Error ? error.stack : error}`;
 } finally {

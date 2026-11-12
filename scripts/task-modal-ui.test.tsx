@@ -105,6 +105,25 @@ const dialog = () => document.querySelector<HTMLElement>('[role="dialog"][data-s
 const chat = () => dialog()?.querySelector<HTMLElement>('[aria-label="Task chat"]')!;
 const tab = (name: string) => [...dialog().querySelectorAll<HTMLButtonElement>('[role="tab"]')].find((element) => element.textContent?.startsWith(name))!;
 const composer = () => chat().querySelector<HTMLTextAreaElement>('[aria-label="Review Agent message"]')!;
+const assertComposerRow = () => {
+  const surface = composer().closest<HTMLElement>(".ios-chat-composer")!;
+  const controls = surface.querySelector<HTMLElement>(".ios-chat-controls")!;
+  const toolbar = controls.parentElement!;
+  const originalStyle = surface.style.cssText;
+  try {
+    for (const width of [660, 400, 240, 160]) {
+      surface.style.width = `${width}px`;
+      surface.style.maxWidth = "none";
+      const bounds = toolbar.getBoundingClientRect();
+      check(bounds.height <= 32, `${width}px: composer controls must occupy one row`);
+      for (const button of toolbar.querySelectorAll<HTMLElement>(":scope > button, .ios-chat-controls > button")) {
+        const rect = button.getBoundingClientRect();
+        check(Math.abs(rect.top + rect.height / 2 - bounds.top - bounds.height / 2) < 1, `${width}px: composer control wrapped`);
+        if (button.parentElement === toolbar) check(rect.left >= bounds.left && rect.right <= bounds.right + 1, `${width}px: add/send/stop must stay visible`);
+      }
+    }
+  } finally { surface.style.cssText = originalStyle; }
+};
 const assertSplit = () => {
   const left = chat().previousElementSibling!.getBoundingClientRect();
   const right = chat().getBoundingClientRect();
@@ -305,6 +324,7 @@ try {
   await click(button("Kanban"));
   await click(document.querySelector<HTMLElement>(`[aria-label="Drag ${task.title}"]`)!);
   assertSplit();
+  assertComposerRow();
   const copyButtons = chat().querySelectorAll<HTMLButtonElement>('[aria-label="Copy response"]');
   check(copyButtons.length === 2, "Both historical and latest agent responses must have a copy button");
   const originalWriteText = navigator.clipboard.writeText;
@@ -594,6 +614,7 @@ try {
   check(taskBoardStatus(savedTask()) === "inbox", "Starting a plan must preserve the task status");
   check(!agentSend.chatContext.attachments.some((attachment: any) => attachment.name === "Task drawing.png"), "Drawings must be read on demand, never attached automatically");
   check(agentSend?.collaborationMode === "plan" && planButton()?.disabled, "Plan mode must remain visible and disabled during a running response");
+  assertComposerRow();
   await click(planButton()!);
   check(savedTask().chatMode === "plan", "A disabled Plan mode button must not change the mode");
   const agentEvent = async (payload: Record<string, unknown>) => {

@@ -109,8 +109,9 @@ import "@xterm/xterm/css/xterm.css";
 import "@mdxeditor/editor/style.css";
 import "./App.css";
 import { fileStore } from "./fileStore";
-import { agentsStorageKey, normalizeAgents, switchChatAgent, type ChatAgent } from "./agents";
+import { agentsStorageKey, defaultAgentStorageKey, newAgent, normalizeAgents, switchChatAgent, type ChatAgent } from "./agents";
 import { AgentsDialog } from "./components/AgentsDialog";
+import { AgentAttentionStack, type AgentAttentionRequest } from "./components/AgentAttentionStack";
 import { useGitHubInbox } from "./useGitHubInbox";
 import { previewGitHubImage, type GitHubLink } from "./github";
 import { GitHubInbox, GitHubSettings, GitHubTaskLink } from "./components/GitHubInbox";
@@ -119,7 +120,7 @@ import { PomodoroProvider, PomodoroSettings, PomodoroTimer } from "./components/
 import { normalizePomodoroSettings, pomodoroSettingsKey } from "./pomodoro";
 import { usePromptScheduler } from "./usePromptScheduler";
 import { useTaskControl } from "./useTaskControl";
-import { argumentsFor, getTask, metadataKeys, requiredText, taskMetadata, taskObservation, taskStartPoint, taskSummary } from "./taskControl";
+import { agentMetadata, argumentsFor, getTask, metadataKeys, playbookMetadata, requiredText, taskMetadata, taskObservation, taskStartPoint, taskSummary } from "./taskControl";
 import { laneStatuses } from "./laneAutomation";
 import { useLaneAutomation } from "./useLaneAutomation";
 import { LaneAutomation } from "./components/LaneAutomation";
@@ -1370,7 +1371,7 @@ function AiChatPanel({
             aria-label="Review Agent message"
             className="ios-chat-textarea w-full resize-none border-0 bg-transparent text-sm leading-5 text-[#E8FFF0] shadow-none placeholder:text-[#7C9B88] disabled:opacity-50"
           />
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex min-w-0 items-center gap-2">
             <Popover open={addMenuOpen} onOpenChange={(open) => { setAddMenuOpen(open); setAddMenuPage("main"); }}>
               <PopoverTrigger disabled={sendPending} className="ios-chat-add-image" aria-label="Add to chat" title="Add to chat"><Plus size={14} /></PopoverTrigger>
               <PopoverContent side="top" align="start" className="w-72 overflow-hidden border border-[#294536] bg-[#111A15] p-1.5 shadow-2xl shadow-black/60">
@@ -1394,51 +1395,53 @@ function AiChatPanel({
                 </>}
               </PopoverContent>
             </Popover>
-            <Popover open={configOpen} onOpenChange={setConfigOpen}>
-              <PopoverTrigger className="ios-chat-config-trigger" aria-label="Model and effort">
-                {chatModelLabel(model, models)} <span>{effort[0].toUpperCase() + effort.slice(1)}</span><ChevronDown size={14} />
-              </PopoverTrigger>
-              <PopoverContent side="top" align="start" className="ios-chat-config-popover">
-                <PopoverTitle className="sr-only">Model and effort</PopoverTitle>
-                <div className="ios-chat-config-row"><span className="inline-flex items-center gap-2">Model{modelsStatus === "Loading models…" && <LoaderCircle size={13} className="animate-spin text-[#7C9B88]" aria-label="Loading models" />}{!taskMode && <button type="button" onClick={() => setShowDebug((visible) => !visible)} className="text-[#7C9B88] hover:text-[#2B2B2B]" aria-label="Toggle App Server model debug" title="Show App Server model"><Info size={13} /></button>}</span>
-                  <ModelPicker value={model} models={models} onChange={onModelChange} className="ios-chat-config-select" ariaLabel="Model" />
-                </div>
-                {availableFavoriteModels.length > 0 && <div className="ios-chat-config-favorites" aria-label="Favorite models">
-                  <p>Favorites</p>
-                  <div>
-                    {availableFavoriteModels.map((id) => <button key={id} type="button" onClick={() => { onModelChange(id); setConfigOpen(false); }} aria-current={model === id ? "true" : undefined} title={chatModelLabel(id, models)}><span>{chatModelLabel(id, models)}</span>{model === id && <Check size={14} />}</button>)}
+            <div className="ios-chat-controls">
+              <Popover open={configOpen} onOpenChange={setConfigOpen}>
+                <PopoverTrigger className="ios-chat-config-trigger" aria-label="Model and effort">
+                  <strong className="truncate font-medium">{chatModelLabel(model, models)}</strong> <span className="truncate">{effort[0].toUpperCase() + effort.slice(1)}</span><ChevronDown size={14} />
+                </PopoverTrigger>
+                <PopoverContent side="top" align="start" className="ios-chat-config-popover">
+                  <PopoverTitle className="sr-only">Model and effort</PopoverTitle>
+                  <div className="ios-chat-config-row"><span className="inline-flex items-center gap-2">Model{modelsStatus === "Loading models…" && <LoaderCircle size={13} className="animate-spin text-[#7C9B88]" aria-label="Loading models" />}{!taskMode && <button type="button" onClick={() => setShowDebug((visible) => !visible)} className="text-[#7C9B88] hover:text-[#2B2B2B]" aria-label="Toggle App Server model debug" title="Show App Server model"><Info size={13} /></button>}</span>
+                    <ModelPicker value={model} models={models} onChange={onModelChange} className="ios-chat-config-select" ariaLabel="Model" />
                   </div>
-                </div>}
-                {modelsStatus && modelsStatus !== "Loading models…" && <p role="status" className="text-xs text-[#7C9B88]">{modelsStatus}</p>}
-                {!taskMode && showDebug && <p className="px-1 text-xs text-[#7C9B88]">App Server: {serverModel ? chatModelLabel(serverModel, models) : "No turn started"}</p>}
-                <div className="ios-chat-config-row">Effort
-                  <Select value={effort} onValueChange={(value) => { if (value) onEffortChange(value as ChatEffort); }}>
-                    <SelectTrigger className="ios-chat-config-select" aria-label="Effort"><SelectValue /></SelectTrigger>
-                    <SelectContent side="right" className="ios-select-content">
-                      {chatEfforts.map((value) => <SelectItem key={value} value={value}>{value[0].toUpperCase() + value.slice(1)}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <button type="button" onClick={() => { onResetConfig(); setConfigOpen(false); }} className="ios-chat-config-reset"><span>Reset to default</span><RotateCcw size={15} /></button>
-              </PopoverContent>
-            </Popover>
-            <Popover open={agentMenuOpen} onOpenChange={setAgentMenuOpen}>
-              <PopoverTrigger className="ios-chat-config-trigger max-w-[200px]" aria-label="Agent role" disabled={running || sendPending || !comparison || (taskMode && !taskSelected)}><span className="truncate">{chatAgent?.title ?? "None"}</span><ChevronDown size={14} className="shrink-0" /></PopoverTrigger>
-              <PopoverContent side="top" align="start" className="w-72 overflow-hidden border border-[#294536] bg-[#111A15] p-1.5 shadow-2xl shadow-black/60">
-                <PopoverTitle className="px-2 py-2 text-xs font-bold text-[#7C9B88]">Agents</PopoverTitle>
-                <button type="button" onClick={() => { setAgentMenuOpen(false); onManageAgents(); }} className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs font-bold hover:bg-[#183522]"><Settings size={13} className="text-[#7C9B88]" /> Manage agents</button>
-                <div className="max-h-72 overflow-y-auto">
-                  <button type="button" aria-pressed={!chatAgent} onClick={() => { setAgentMenuOpen(false); onAgentChange(null); }} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-xs font-bold text-[#E8FFF0] hover:bg-[#183522]"><X size={14} className="shrink-0 text-[#7C9B88]" /><span className="flex-1">None</span>{!chatAgent && <Check size={14} className="shrink-0" />}</button>
-                  {agents.map((agent) => <button key={agent.id} type="button" aria-pressed={chatAgent?.id === agent.id && chatAgent.prompt === agent.prompt} onClick={() => { setAgentMenuOpen(false); onAgentChange(agent); }} className="flex w-full items-start gap-2.5 rounded-md px-2.5 py-2 text-left hover:bg-[#183522]"><Bot size={14} className="mt-0.5 shrink-0 text-[#A3FF12]" /><span className="min-w-0 flex-1"><span className="block truncate text-xs font-bold text-[#E8FFF0]">{agent.title}</span><span className="mt-0.5 block truncate text-[10px] text-[#7C9B88]">{agent.prompt}</span></span>{chatAgent?.id === agent.id && chatAgent.prompt === agent.prompt && <Check size={14} className="mt-0.5 shrink-0" />}</button>)}
-                </div>
-                <p className="px-2.5 pb-1 text-[10px] text-[#7C9B88]">Switching starts a new chat.</p>
-              </PopoverContent>
-            </Popover>
-            <Select value={approvalReviewer} disabled={running || (taskMode && !taskSelected)} onValueChange={(value) => { if (value === "user" || value === "auto_review") onApprovalReviewerChange(value); }}>
-              <SelectTrigger className="ios-chat-config-trigger" aria-label="Approval mode"><SelectValue>{(value) => value === "auto_review" ? "Approve for me" : "Ask for approval"}</SelectValue></SelectTrigger>
-              <SelectContent side="top" className="ios-select-content"><SelectItem value="user">Ask for approval</SelectItem><SelectItem value="auto_review">Approve for me</SelectItem></SelectContent>
-            </Select>
-            {mode === "plan" && <button type="button" className="ios-chat-plan-toggle" aria-label="Disable Plan mode" aria-pressed="true" title="Disable Plan mode" disabled={running || (taskMode && !taskSelected)} onClick={() => onModeChange("default")}>Plan <span>On</span></button>}
+                  {availableFavoriteModels.length > 0 && <div className="ios-chat-config-favorites" aria-label="Favorite models">
+                    <p>Favorites</p>
+                    <div>
+                      {availableFavoriteModels.map((id) => <button key={id} type="button" onClick={() => { onModelChange(id); setConfigOpen(false); }} aria-current={model === id ? "true" : undefined} title={chatModelLabel(id, models)}><span>{chatModelLabel(id, models)}</span>{model === id && <Check size={14} />}</button>)}
+                    </div>
+                  </div>}
+                  {modelsStatus && modelsStatus !== "Loading models…" && <p role="status" className="text-xs text-[#7C9B88]">{modelsStatus}</p>}
+                  {!taskMode && showDebug && <p className="px-1 text-xs text-[#7C9B88]">App Server: {serverModel ? chatModelLabel(serverModel, models) : "No turn started"}</p>}
+                  <div className="ios-chat-config-row">Effort
+                    <Select value={effort} onValueChange={(value) => { if (value) onEffortChange(value as ChatEffort); }}>
+                      <SelectTrigger className="ios-chat-config-select" aria-label="Effort"><SelectValue /></SelectTrigger>
+                      <SelectContent side="right" className="ios-select-content">
+                        {chatEfforts.map((value) => <SelectItem key={value} value={value}>{value[0].toUpperCase() + value.slice(1)}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <button type="button" onClick={() => { onResetConfig(); setConfigOpen(false); }} className="ios-chat-config-reset"><span>Reset to default</span><RotateCcw size={15} /></button>
+                </PopoverContent>
+              </Popover>
+              <Popover open={agentMenuOpen} onOpenChange={setAgentMenuOpen}>
+                <PopoverTrigger className="ios-chat-config-trigger max-w-[200px]" aria-label="Agent role" disabled={running || sendPending || !comparison || (taskMode && !taskSelected)}><span className="truncate">{chatAgent?.title ?? "None"}</span><ChevronDown size={14} className="shrink-0" /></PopoverTrigger>
+                <PopoverContent side="top" align="start" className="w-72 overflow-hidden border border-[#294536] bg-[#111A15] p-1.5 shadow-2xl shadow-black/60">
+                  <PopoverTitle className="px-2 py-2 text-xs font-bold text-[#7C9B88]">Agents</PopoverTitle>
+                  <button type="button" onClick={() => { setAgentMenuOpen(false); onManageAgents(); }} className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs font-bold hover:bg-[#183522]"><Settings size={13} className="text-[#7C9B88]" /> Manage agents</button>
+                  <div className="max-h-72 overflow-y-auto">
+                    <button type="button" aria-pressed={!chatAgent} onClick={() => { setAgentMenuOpen(false); onAgentChange(null); }} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-xs font-bold text-[#E8FFF0] hover:bg-[#183522]"><X size={14} className="shrink-0 text-[#7C9B88]" /><span className="flex-1">None</span>{!chatAgent && <Check size={14} className="shrink-0" />}</button>
+                    {agents.map((agent) => <button key={agent.id} type="button" aria-pressed={chatAgent?.id === agent.id && chatAgent.prompt === agent.prompt} onClick={() => { setAgentMenuOpen(false); onAgentChange(agent); }} className="flex w-full items-start gap-2.5 rounded-md px-2.5 py-2 text-left hover:bg-[#183522]"><Bot size={14} className="mt-0.5 shrink-0 text-[#A3FF12]" /><span className="min-w-0 flex-1"><span className="block truncate text-xs font-bold text-[#E8FFF0]">{agent.title}</span><span className="mt-0.5 block truncate text-[10px] text-[#7C9B88]">{agent.prompt}</span></span>{chatAgent?.id === agent.id && chatAgent.prompt === agent.prompt && <Check size={14} className="mt-0.5 shrink-0" />}</button>)}
+                  </div>
+                  <p className="px-2.5 pb-1 text-[10px] text-[#7C9B88]">Switching starts a new chat.</p>
+                </PopoverContent>
+              </Popover>
+              <Select value={approvalReviewer} disabled={running || (taskMode && !taskSelected)} onValueChange={(value) => { if (value === "user" || value === "auto_review") onApprovalReviewerChange(value); }}>
+                <SelectTrigger className="ios-chat-config-trigger" aria-label="Approval mode"><SelectValue>{(value) => value === "auto_review" ? "Approve for me" : "Ask for approval"}</SelectValue></SelectTrigger>
+                <SelectContent side="top" className="ios-select-content"><SelectItem value="user">Ask for approval</SelectItem><SelectItem value="auto_review">Approve for me</SelectItem></SelectContent>
+              </Select>
+              {mode === "plan" && <button type="button" className="ios-chat-plan-toggle" aria-label="Disable Plan mode" aria-pressed="true" title="Disable Plan mode" disabled={running || (taskMode && !taskSelected)} onClick={() => onModeChange("default")}>Plan <span>On</span></button>}
+            </div>
             {running ? (
               <><button type="button" disabled={!canSend} onClick={send} className="accent-button ml-auto !size-[30px] shrink-0 !p-0 disabled:opacity-40" aria-label="Queue Review Agent message" title="Queue message"><ArrowUp size={14} /></button><button
                 type="button"
@@ -2198,6 +2201,9 @@ function App() {
   const [runError, setRunError] = useState("");
   const [runExitCode, setRunExitCode] = useState<number | null>(null);
   const [chatDefaults, setChatDefaults] = useState(storedChatDefaults);
+  const [agents, setAgents] = useState<ChatAgent[]>(storedAgents);
+  const [defaultAgentId, setDefaultAgentId] = useState(() => fileStore.getItem(defaultAgentStorageKey) ?? "");
+  const defaultAgent = agents.find((agent) => agent.id === defaultAgentId) ?? null;
   const [favoriteModels, setFavoriteModels] = useState(storedChatModelFavorites);
   const [commitMessageModel, setCommitMessageModel] = useState(storedCommitMessageModel);
   const [autoClearChatAfterCommit, setAutoClearChatAfterCommit] = useState(() => fileStore.getItem(autoClearChatAfterCommitStorageKey) === "true");
@@ -2264,7 +2270,7 @@ function App() {
   const githubInbox = useGitHubInbox({
     rootPath: repository?.rootPath, ready: !!repository && taskStorageRoot === repository.rootPath, tasks, setTasks,
     makeTask: (item) => normalizeTask({ id: crypto.randomUUID(), title: item.title, ...taskLocationFields(taskLocationDefault),
-      chatMode: "default" }, chatDefaults)!,
+      chatMode: "default", chatAgent: defaultAgent }, chatDefaults)!,
   });
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
 
@@ -2273,7 +2279,6 @@ function App() {
   const [taskRuns, setTaskRuns] = useState<Record<string, TaskRun>>({});
   const [taskStartingIds, setTaskStartingIds] = useState<Set<string>>(() => new Set());
   const [newTaskDrafts, setNewTaskDrafts] = useState<Record<string, string>>({});
-  const [agents, setAgents] = useState<ChatAgent[]>(storedAgents);
   const [agentsOpen, setAgentsOpen] = useState(false);
   const [playbooks, setPlaybooks] = useState<Playbook[]>(storedPlaybooks);
   const [selectedPlaybookId, setSelectedPlaybookId] = useState(playbooks[0]?.id ?? "");
@@ -2598,6 +2603,10 @@ function App() {
   }, [agents]);
 
   useEffect(() => {
+    fileStore.setItem(defaultAgentStorageKey, defaultAgentId);
+  }, [defaultAgentId]);
+
+  useEffect(() => {
     fileStore.setItem(playbookStorageKey, JSON.stringify(playbooks));
   }, [playbooks]);
 
@@ -2676,6 +2685,7 @@ function App() {
   useEffect(() => {
     const sync = (event: StorageEvent) => {
       if (event.key === agentsStorageKey) setAgents(storedAgents());
+      if (event.key === defaultAgentStorageKey) setDefaultAgentId(fileStore.getItem(defaultAgentStorageKey) ?? "");
       if (event.key === playbookStorageKey) setPlaybooks(storedPlaybooks());
       if (event.key === runCommandStorageKey) setRunCommands(storedRunCommands());
       if (event.key === chatDefaultsStorageKey) setChatDefaults(storedChatDefaults());
@@ -2898,6 +2908,10 @@ function App() {
     if (event.type === "chat") {
       if (event.payload.kind === "completed" || event.payload.kind === "cancelled" || event.payload.kind === "failed") {
         setMcpApprovals((current) => current.filter((approval) => approval.taskId !== (taskId ?? null)));
+        if (!taskId) {
+          agentApprovalRef.current = null; agentInputRef.current = null;
+          setAgentApproval(null); setAgentUserInput(null);
+        }
       }
       if (taskId) {
         if (event.payload.kind === "status") {
@@ -3113,7 +3127,7 @@ function App() {
       if (event.payload.repositoryRoot !== repository?.rootPath) return;
       const task = normalizeTask(event.payload.task, chatDefaults);
       if (task) {
-        setTasks((current) => current.some((currentTask) => currentTask.id === task.id) ? current : [...current, { ...task, ...taskLocationFields(taskLocationDefault) }]);
+        setTasks((current) => current.some((currentTask) => currentTask.id === task.id) ? current : [...current, { ...task, chatAgent: task.chatAgent ?? defaultAgent, ...taskLocationFields(taskLocationDefault) }]);
       }
     });
     const updated = listen<{ repositoryRoot: string; tasks: Pick<RepositoryTask, "id" | "createdAt" | "updatedAt" | "title" | "parentId" | "color" | "manualStatus" | "completed" | "planReady">[]; fieldChanges?: { taskId: string; values: Record<string, string | null> }; descriptionChange?: { taskId: string; description: string } }>("mcp-tasks-updated", (event) => {
@@ -3136,7 +3150,7 @@ function App() {
         ? { ...task, updatedAt: event.payload.updatedAt, comments: task.comments.map((comment) => comment.id === event.payload.comment.id && comment.author === "agent" ? event.payload.comment : comment) } : task));
     });
     return () => { void added.then((unlisten) => unlisten()); void updated.then((unlisten) => unlisten()); void assetsAdded.then((unlisten) => unlisten()); void commentAdded.then((unlisten) => unlisten()); void commentUpdated.then((unlisten) => unlisten()); };
-  }, [repository?.rootPath, chatDefaults, taskLocationDefault, setTasks]);
+  }, [repository?.rootPath, chatDefaults, defaultAgent, taskLocationDefault, setTasks]);
 
   const visibleFiles = useMemo(() => {
     const query = filter.trim().toLowerCase();
@@ -3371,6 +3385,7 @@ function App() {
           comments: [],
           chatMessages: [],
           agentThreadId: null,
+          chatAgent: defaultAgent,
           approvedFiles: [],
           approvedFileSnapshots: {},
           approvedSnapshotId: result.snapshotId,
@@ -4154,7 +4169,7 @@ function App() {
     const title = draft.title.trim();
     const chatMode = "default";
     const now = Date.now();
-    const task: RepositoryTask = { id: crypto.randomUUID(), createdAt: now, updatedAt: now, title, description: draft?.description ?? "", customFields: {}, startDate: null, deadline: null, parentId, color: "clear", manualStatus: boardStatus === "inProgress" || boardStatus === "inReview" ? boardStatus : boardStatus === "clear" ? null : "inbox", completed: boardStatus === "done", attachments: [], assets: [], comments: [], chatMessages: [], agentThreadId: null, planReady: false, unreadAgentResult: false, chatMode, chatModel: chatDefaults[chatMode].model, chatEffort: chatDefaults[chatMode].effort, ...taskLocationFields(taskLocationDefault), worktree: null, started: false };
+    const task: RepositoryTask = { id: crypto.randomUUID(), createdAt: now, updatedAt: now, title, description: draft?.description ?? "", customFields: {}, startDate: null, deadline: null, parentId, color: "clear", manualStatus: boardStatus === "inProgress" || boardStatus === "inReview" ? boardStatus : boardStatus === "clear" ? null : "inbox", completed: boardStatus === "done", attachments: [], assets: [], comments: [], chatMessages: [], agentThreadId: null, chatAgent: defaultAgent, planReady: false, unreadAgentResult: false, chatMode, chatModel: chatDefaults[chatMode].model, chatEffort: chatDefaults[chatMode].effort, ...taskLocationFields(taskLocationDefault), worktree: null, started: false };
     return task;
   };
 
@@ -4973,10 +4988,21 @@ function App() {
   const visibleTaskIndexes = useMemo(() => new Map(visibleTasks.map((task, index) => [task.id, index])), [visibleTasks]);
   const selectedTaskRun = selectedTask ? taskRuns[selectedTask.id] : null;
   const visibleAgentApproval = taskMode ? selectedTaskRun?.approval ?? null : agentApproval;
-  const pendingMcpApproval = mcpApprovals[0] ?? null;
-  const mcpApprovalInline = !!pendingMcpApproval && (taskMode ? !!selectedTask && pendingMcpApproval.taskId === selectedTask.id : pendingMcpApproval.taskId === null);
-  const inlineAgentApproval = mcpApprovalInline ? pendingMcpApproval : visibleAgentApproval?.source === "mcp" ? null : visibleAgentApproval;
-  const globalMcpApproval = mcpApprovalInline ? null : pendingMcpApproval;
+  const inlineMcpApproval = mcpApprovals.find((approval) => taskMode ? approval.taskId === selectedTask?.id : approval.taskId === null);
+  const inlineAgentApproval = inlineMcpApproval ?? (visibleAgentApproval?.source === "mcp" ? null : visibleAgentApproval);
+  const attentionRequests: AgentAttentionRequest[] = [];
+  const addAttention = (taskId: string | null, input: AgentUserInput | null, approval: AgentApproval | null) => {
+    const taskTitle = tasks.find((task) => task.id === taskId)?.title || "Workspace";
+    if (input) attentionRequests.push({ id: `question:${input.requestId}`, requestId: input.requestId, taskId, taskTitle, kind: "question", title: input.questions[0].question });
+    if (approval) attentionRequests.push({ id: `approval:${approval.requestId}`, requestId: approval.requestId, taskId, taskTitle, kind: "approval", title: approval.title });
+  };
+  addAttention(null, agentUserInput, agentApproval?.source === "mcp" ? null : agentApproval);
+  for (const task of tasks) {
+    const run = taskRuns[task.id];
+    if (run) addAttention(task.id, run.input, run.approval?.source === "mcp" ? null : run.approval);
+  }
+  for (const approval of mcpApprovals) addAttention(approval.taskId, null, approval);
+  attentionRequests.sort((a, b) => a.requestId - b.requestId);
   const selectedTaskRootBusy = !!taskGitAction || !!selectedTaskRun || !!(selectedTask && taskStartingIds.has(selectedTask.id))
     || (selectedTask?.location === "workspace" && (aiChatRunning || tasks.some((task) => task.location === "workspace" && (!!taskRuns[task.id] || taskStartingIds.has(task.id)))));
   const taskGitToolbar = selectedTask && repository ? <TaskGitToolbar
@@ -5011,7 +5037,10 @@ function App() {
     onError: setError,
     cancelConfirmation: () => { if (taskControlConfirmationRef.current) { taskControlConfirmationRef.current(); taskControlConfirmationRef.current = null; setConfirmation(null); } },
     execute: async (request, active) => {
-      const toolKeys: Record<string, string[]> = { get_playbooks: ["query"], get_playbook: ["playbookId"], run_task_playbook: ["taskId", "playbookId", "values"], get_tasks: ["query", "status"], add_task: metadataKeys, update_task_comment: ["taskId", "commentId", "body"], get_github_notifications: [], get_task: ["taskId"], get_task_execution: ["taskId"], create_task: metadataKeys, update_task: ["taskId", ...metadataKeys], add_task_comment: ["taskId", "body"], delete_task: ["taskId"], start_task_run: ["taskId", "prompt", "startPoint", "mode"], stop_task_run: ["taskId"], update_task_queue: ["taskId", "paused", "removeMessageIds"], get_lanes: [], update_lane: ["status", "enabled", "prompt", "baseBranch", "baseKind", "workers"], retry_lane_task: ["status", "taskId"], get_task_start_context: [] };
+      const toolKeys: Record<string, string[]> = {
+        get_agents: ["query"], get_agent: ["agentId"], create_agent: ["title", "prompt"], update_agent: ["agentId", "title", "prompt"],
+        create_playbook: ["title", "description", "prompt", "variables"], update_playbook: ["playbookId", "title", "description", "prompt", "variables"],
+        get_playbooks: ["query"], get_playbook: ["playbookId"], run_task_playbook: ["taskId", "playbookId", "values"], get_tasks: ["query", "status"], add_task: metadataKeys, update_task_comment: ["taskId", "commentId", "body"], get_github_notifications: [], get_task: ["taskId"], get_task_execution: ["taskId"], create_task: metadataKeys, update_task: ["taskId", ...metadataKeys], add_task_comment: ["taskId", "body"], delete_task: ["taskId"], start_task_run: ["taskId", "prompt", "startPoint", "mode"], stop_task_run: ["taskId"], update_task_queue: ["taskId", "paused", "removeMessageIds"], get_lanes: [], update_lane: ["status", "enabled", "prompt", "baseBranch", "baseKind", "workers"], retry_lane_task: ["status", "taskId"], get_task_start_context: [] };
       if (!Object.prototype.hasOwnProperty.call(toolKeys, request.name)) throw new Error("Unknown task control tool.");
       const args = argumentsFor(request.arguments, toolKeys[request.name]);
       const ensureActive = async () => { if (!await active()) throw new Error("Task control stopped or repository changed."); };
@@ -5041,6 +5070,41 @@ function App() {
         const playbook = matches[0];
         return playbook;
       }
+      if (request.name === "get_agents") {
+        if (args.query !== undefined && typeof args.query !== "string") throw new Error("Query must be text.");
+        const query = String(args.query ?? "").toLowerCase();
+        return storedAgents().filter((agent) => agent.title.toLowerCase().includes(query)).map(({ id, title }) => ({ id, title }));
+      }
+      if (request.name === "get_agent") {
+        const agent = storedAgents().find((agent) => agent.id === args.agentId);
+        if (!agent) throw new Error("Agent not found. Read agents again.");
+        return agent;
+      }
+      if (request.name === "create_agent" || request.name === "update_agent") {
+        await ensureActive();
+        const current = storedAgents();
+        const original = request.name === "create_agent" ? newAgent() : current.find((agent) => agent.id === args.agentId);
+        if (!original) throw new Error("Agent not found. Read agents again.");
+        if (request.name === "update_agent" && Object.keys(args).length < 2) throw new Error("Provide at least one agent change.");
+        const saved = agentMetadata(original, args);
+        const next = request.name === "create_agent" ? [...current, saved] : current.map((agent) => agent.id === saved.id ? saved : agent);
+        fileStore.setItem(agentsStorageKey, JSON.stringify(next)); setAgents(next);
+        try { await fileStore.flush(); } catch (error) { throw new Error(`Operation outcome uncertain: ${message(error)}`); }
+        return saved;
+      }
+      if (request.name === "create_playbook" || request.name === "update_playbook") {
+        await ensureActive();
+        const current = storedPlaybooks();
+        const matches = current.filter((playbook) => playbook.id === args.playbookId);
+        const original = request.name === "create_playbook" ? newPlaybook() : matches.length === 1 ? matches[0] : undefined;
+        if (!original) throw new Error("Playbook not found or ID is ambiguous. Read playbooks again.");
+        if (request.name === "update_playbook" && Object.keys(args).length < 2) throw new Error("Provide at least one playbook change.");
+        const saved = playbookMetadata(original, args);
+        const next = request.name === "create_playbook" ? [...current, saved] : current.map((playbook) => playbook.id === saved.id ? saved : playbook);
+        fileStore.setItem(playbookStorageKey, JSON.stringify(next)); setPlaybooks(next);
+        try { await fileStore.flush(); } catch (error) { throw new Error(`Operation outcome uncertain: ${message(error)}`); }
+        return saved;
+      }
       if (request.name === "get_github_notifications") return githubInbox.notificationsContext;
       if (request.name === "get_tasks") {
         if (args.query !== undefined && typeof args.query !== "string") throw new Error("Query must be text.");
@@ -5049,17 +5113,25 @@ function App() {
         return { repositoryRoot: request.repositoryRoot, customFields, tasks: tasksRef.current.filter((task) => (!args.status || taskBoardStatus(task) === args.status) && `${task.title}\n${task.description}`.toLowerCase().includes(query)).map(taskSummary) };
       }
       if (request.name === "get_task_execution") { const task = getTask(tasksRef.current, args.taskId); return { id: task.id, execution: snapshot(task) }; }
-      if (request.name === "get_task") { const task = getTask(tasksRef.current, args.taskId); return { ...taskSummary(task), drawing: readTaskDrawing(task.drawing), comments: task.comments, assets: task.assets, chatMessages: task.chatMessages, model: task.chatModel, effort: task.chatEffort, mode: task.chatMode, worktree: task.worktree, queue: (chatQueuesRef.current[taskQueueKey(request.repositoryRoot, task.id)] ?? []).map(({ id, body, mode, model, effort }) => ({ id, body, mode, model, effort })), execution: { ...snapshot(task), progress: taskRunsRef.current[task.id]?.status ?? null, liveMessages: taskRunsRef.current[task.id]?.timeline ?? [], question: taskRunsRef.current[task.id]?.input ?? null, approval: taskRunsRef.current[task.id]?.approval ?? null } }; }
+      if (request.name === "get_task") { const task = getTask(tasksRef.current, args.taskId); return { ...taskSummary(task), agent: task.chatAgent ?? null, drawing: readTaskDrawing(task.drawing), comments: task.comments, assets: task.assets, chatMessages: task.chatMessages, model: task.chatModel, effort: task.chatEffort, mode: task.chatMode, worktree: task.worktree, queue: (chatQueuesRef.current[taskQueueKey(request.repositoryRoot, task.id)] ?? []).map(({ id, body, mode, model, effort }) => ({ id, body, mode, model, effort })), execution: { ...snapshot(task), progress: taskRunsRef.current[task.id]?.status ?? null, liveMessages: taskRunsRef.current[task.id]?.timeline ?? [], question: taskRunsRef.current[task.id]?.input ?? null, approval: taskRunsRef.current[task.id]?.approval ?? null } }; }
       if (request.name === "get_task_start_context") { const branches = await invoke<BranchRefs>("list_branch_refs"); return { branches: branches.refs, remoteBranches: branches.remoteRefs, customFields, defaultLocation: taskLocationDefault, newBranchPrefix: loadBranchPrefix(repositoryRef.current!.rootPath), defaultPlanMode: false, locations: ["workspace", "worktree", "existing"], startKinds: ["workspace", "branch", "remote", "existing"] }; }
       if (request.name === "create_task" || request.name === "add_task") {
         const title = requiredText(args.title, "Title", 500);
         const task = newRepositoryTask(null, (args.status as TaskBoardStatus) ?? "inbox", { title, description: "" });
-        const next = await commit((current) => taskMetadata([...current, task], task, args, customFields)); return taskSummary(getTask(next, task.id));
+        const next = await commit((current) => taskMetadata([...current, task], task, args, customFields, storedAgents())); return taskSummary(getTask(next, task.id));
       }
       if (request.name === "update_task") {
         const task = getTask(tasksRef.current, args.taskId);
         if (Object.keys(args).length < 2) throw new Error("Provide at least one task change.");
-        const next = await commit((current) => taskMetadata(current, getTask(current, task.id), args, customFields)); return taskSummary(getTask(next, task.id));
+        const next = await commit((current) => {
+          const original = getTask(current, task.id);
+          const updated = taskMetadata(current, original, args, customFields, storedAgents());
+          if (JSON.stringify(original.chatAgent ?? null) !== JSON.stringify(getTask(updated, task.id).chatAgent ?? null)) {
+            const key = taskQueueKey(request.repositoryRoot, task.id);
+            if (taskRunsRef.current[task.id] || taskStartingRef.current.has(task.id) || queueBusyRef.current.has(key) || chatQueuesRef.current[key]?.length) throw new Error("Task is running or has queued prompts. Finish or stop its work and clear its queue before changing the agent role.");
+          }
+          return updated;
+        }); return taskSummary(getTask(next, task.id));
       }
       if (request.name === "update_task_comment") {
         const task = getTask(tasksRef.current, args.taskId);
@@ -5523,6 +5595,13 @@ function App() {
               <h2 className="mb-4 text-[17px] font-semibold text-[#E8FFF0]">Defaults & personalization</h2>
               <div className="overflow-hidden rounded-xl border border-[#294536] bg-[#111A15] px-5">
                 <div className="py-5">
+                  <div className="mb-5 grid gap-2 sm:grid-cols-[140px_minmax(0,1fr)] sm:items-center">
+                    <div><p className="text-sm font-semibold text-[#E8FFF0]">Default agent</p><p className="mt-1 text-xs text-[#7C9B88]">For new tasks and review chats.</p></div>
+                    <Select value={defaultAgent?.id ?? ""} onValueChange={(value) => setDefaultAgentId(value ?? "")}>
+                      <SelectTrigger className="h-9 w-full border-[#294536] bg-[#050807] text-[#E8FFF0]" aria-label="Default agent"><SelectValue>{() => defaultAgent?.title ?? "None"}</SelectValue></SelectTrigger>
+                      <SelectContent className="ios-select-content"><SelectItem value="">None</SelectItem>{agents.map((agent) => <SelectItem key={agent.id} value={agent.id}>{agent.title}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </div>
                   <h3 className="font-semibold text-[#E8FFF0]">Mode defaults</h3>
                   <p className="mt-1 text-sm text-[#7C9B88]">Applied whenever you switch modes.</p>
                   {modelsStatus && <p role="status" className="mt-2 text-sm text-[#7C9B88]">{modelsStatus} <button type="button" className="underline" onClick={() => setModelsRevision((value) => value + 1)}>Refresh</button></p>}
@@ -6434,26 +6513,20 @@ function App() {
         </Dialog>
       )}
 
-      {globalMcpApproval && (
-        <AlertDialog open onOpenChange={() => {}}>
-          <AlertDialogContent className="ios-alert-dialog border-0 bg-[var(--ios-elevated-background)]">
-            <AlertDialogHeader>
-              <AlertDialogTitle>{globalMcpApproval.title}</AlertDialogTitle>
-              <AlertDialogDescription className="whitespace-pre-wrap">
-                {globalMcpApproval.serverName && <span className="mb-2 block">Server: {globalMcpApproval.serverName}</span>}
-                {globalMcpApproval.description}
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel disabled={mcpRespondingRequestId === globalMcpApproval.requestId} onClick={() => respondToApproval(globalMcpApproval, false)}>Deny</AlertDialogCancel>
-              <AlertDialogAction disabled={mcpRespondingRequestId === globalMcpApproval.requestId} onClick={() => respondToApproval(globalMcpApproval, true)}>Allow</AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
-      )}
+      <AgentAttentionStack key={repository?.rootPath ?? "no-repository"} requests={attentionRequests} onOpen={({ taskId, kind, requestId }) => discardFileEdit(() => {
+        setSettingsOpen(false); setZenMode(false); setTerminalOpen(false);
+        if (kind === "approval") setMcpApprovals((current) => [...current.filter((approval) => approval.requestId === requestId), ...current.filter((approval) => approval.requestId !== requestId)]);
+        if (taskId === null) { setWorkspaceMode("workspace"); setBoardDrawerOpen(false); }
+        else {
+          const task = tasksRef.current.find((task) => task.id === taskId);
+          if (!task) { setError("This task is no longer available in this repository."); return; }
+          if (workspaceMode !== "workspace") setWorkspaceMode("tasks");
+          openBoardTask(task, "detail");
+        }
+      })} />
 
       {automationStatus && repository && <LaneAutomation key={`${repository.rootPath}:${automationStatus}`} status={automationStatus} label={boardStatusColumns.find((column) => column.id === automationStatus)?.label ?? automationStatus} controller={laneAutomation} branches={branchRefs} tasks={tasks} onClose={() => setAutomationStatus(null)} onOpenTask={(task) => { setAutomationStatus(null); setWorkspaceMode("tasks"); if (taskView === "list") selectTask(task); else openBoardTask(task); }} />}
-      {confirmation && !agentApproval && !pendingMcpApproval && (
+      {confirmation && (
         <AlertDialog open onOpenChange={(open) => { if (!open) { confirmation.cancel?.(); setConfirmation(null); } }}>
           <AlertDialogContent className="ios-alert-dialog border-0 bg-[var(--ios-elevated-background)]">
             <AlertDialogHeader>

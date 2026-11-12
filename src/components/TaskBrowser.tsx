@@ -50,7 +50,7 @@ export function TaskBrowser({ repositoryRoot, taskId, active }: { repositoryRoot
       const element = viewport.current;
       const rect = element?.getBoundingClientRect();
       const bounds: Bounds | null = rect ? { x: Math.max(0, rect.x), y: Math.max(0, rect.y), width: rect.width, height: rect.height } : null;
-      const overlays = document.querySelectorAll('[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], [data-slot="popover-content"]');
+      const overlays = document.querySelectorAll('[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], [data-slot="popover-content"], .agent-attention-stack');
       const obstructed = !!rect && Array.from(overlays).some((overlay) => {
         if (element && overlay.contains(element)) return false;
         const other = overlay.getBoundingClientRect();

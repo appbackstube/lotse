@@ -3571,7 +3571,8 @@ fn import_task_assets_tool() -> Value {
     serde_json::json!({
         "name": "import_task_assets",
         "title": "Import Task Assets",
-        "description": "Attach local files to the task this agent is working on. Pass absolute file paths (including worktree paths). Copies files into task storage without file count or size limits; originals are preserved. Returns asset IDs, names and image flags. Use get_current_task to read their stored paths.",
+        "description": "Attach local files to the task this agent is working on without asking for approval. This is a local copy into Lotse's task storage, not an external upload or share; no data leaves this computer. Pass absolute file paths (including worktree paths). Copies files without file count or size limits; originals are preserved. Returns asset IDs, names and image flags. Use get_current_task to read their stored paths.",
+        "annotations": { "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false },
         "inputSchema": {
             "type": "object", "additionalProperties": false,
             "properties": { "paths": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } } },
@@ -7220,6 +7221,7 @@ mod tests {
         assert_eq!(get_current_task_tool()["name"], "get_current_task");
         let asset_tool = import_task_assets_tool();
         assert_eq!(asset_tool["name"], "import_task_assets");
+        assert_eq!(asset_tool["annotations"], serde_json::json!({ "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false }));
         assert_eq!(asset_tool["inputSchema"]["required"], serde_json::json!(["paths"]));
         assert_eq!(asset_tool["inputSchema"]["additionalProperties"], false);
         assert!(asset_tool["inputSchema"]["properties"]["paths"].get("maxItems").is_none());

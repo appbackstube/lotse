@@ -8,7 +8,7 @@ const pages = [
   { id: "tasks", label: "Tasks", group: "Personal", icon: ListTodo, keywords: "kanban gantt list modal custom fields options" },
   { id: "pomodoro", label: "Pomodoro", group: "Personal", icon: Timer, keywords: "focus timer sessions breaks" },
   { id: "providers", label: "Model providers", group: "Agent", icon: SlidersHorizontal, keywords: "api keys openrouter global repository default credentials setup onboarding" },
-  { id: "agent", label: "Agent preferences", group: "Agent", icon: Bot, keywords: "models favorites effort approval mode task location branch prefix commit user rules personalization" },
+  { id: "agent", label: "Agent preferences", group: "Agent", icon: Bot, keywords: "default agent role models favorites effort approval mode task location branch prefix commit user rules personalization" },
   { id: "mcp", label: "MCP servers", group: "Connections", icon: Plug, keywords: "tools integrations figma slack oauth" },
   { id: "github", label: "GitHub", group: "Connections", icon: GitPullRequest, keywords: "account token inbox refresh issues pull requests" },
   { id: "credentials", label: "Website credentials", group: "Connections", icon: KeyRound, keywords: "browser login password keychain" },

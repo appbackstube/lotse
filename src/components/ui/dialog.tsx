@@ -5,8 +5,15 @@ import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { XIcon } from "lucide-react"
 
-function Dialog({ ...props }: DialogPrimitive.Root.Props) {
-  return <DialogPrimitive.Root data-slot="dialog" {...props} />
+function Dialog({ onOpenChange, ...props }: DialogPrimitive.Root.Props) {
+  return <DialogPrimitive.Root data-slot="dialog" {...props} onOpenChange={(open, details) => {
+    // Global agent cards stay interactive without dismissing the current dialog.
+    if (!open && details.reason === "outside-press" && details.event.target instanceof Element && details.event.target.closest(".agent-attention-stack")) {
+      details.cancel()
+      return
+    }
+    onOpenChange?.(open, details)
+  }} />
 }
 
 function DialogTrigger({ ...props }: DialogPrimitive.Trigger.Props) {

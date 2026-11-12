@@ -4,6 +4,21 @@
 
 @custom-variant dark (&:is(.dark *));
 
+.agent-attention-stack { position: fixed; top: max(60px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); z-index: 1000; display: flex; flex-direction: column; width: min(300px, calc(100% - 24px)); color: var(--ios-label); }
+.agent-attention-heading { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; }
+.agent-attention-heading > svg { flex-shrink: 0; color: var(--ios-secondary-label); }
+.agent-attention-heading > button { margin-left: auto; }
+.agent-attention-count { margin-left: auto; color: var(--ios-secondary-label); font-size: 11px; font-weight: 400; white-space: nowrap; }
+.agent-attention-pile { position: relative; }
+.agent-attention-behind { position: absolute; border: 1px solid var(--ios-separator); border-radius: 11px; background: var(--ios-elevated-background); box-shadow: 0 2px 8px rgb(0 0 0 / .06); }
+.agent-attention-card { position: relative; z-index: 3; max-height: min(220px, calc(100dvh - 90px)); overflow-y: auto; border: 1px solid var(--ios-separator); border-radius: 11px; background: var(--ios-elevated-background); padding: 10px 12px 12px; box-shadow: 0 8px 24px rgb(0 0 0 / .16), 0 2px 6px rgb(0 0 0 / .06); }
+.agent-attention-task { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-attention-kind { display: block; margin-top: 4px; color: var(--ios-secondary-label); font-size: 11px; }
+.agent-attention-card h2 { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin: 5px 0 12px; font-size: 14px; line-height: 1.4; font-weight: 500; overflow-wrap: anywhere; white-space: pre-wrap; }
+.agent-attention-card footer { display: flex; align-items: center; gap: 5px; }
+.agent-attention-compact { align-self: center; max-width: 100%; background: var(--ios-elevated-background); box-shadow: 0 4px 20px rgb(0 0 0 / .12); }
+@media (pointer: coarse) { .agent-attention-stack button { min-height: 44px; } }
+
 .settings-layout {
   display: grid;
   grid-template-columns: 248px minmax(0, 1fr);
@@ -462,6 +477,32 @@ textarea:focus-visible {
 .task-row { position: relative; transition: opacity .15s ease, background .15s ease; }
 .task-create-row { color: var(--ios-tertiary-label); }
 .task-create-row:focus-within { background: var(--ios-fill); }
+/* Keep dnd-kit's positioning in the bundle when the WebView blocks injected styles. */
+[data-dnd-dragging] {
+  position: fixed !important;
+  pointer-events: none !important;
+  touch-action: none;
+  z-index: 2147483647;
+  top: var(--dnd-top, 0px) !important;
+  left: var(--dnd-left, 0px) !important;
+  right: auto !important;
+  bottom: auto !important;
+  width: var(--dnd-width, auto);
+  max-width: var(--dnd-width, auto);
+  height: var(--dnd-height, auto);
+  max-height: var(--dnd-height, auto);
+  margin: 0;
+  overflow: visible;
+  transform: var(--dnd-transform, none) !important;
+  transition: var(--dnd-transition) !important;
+  will-change: translate;
+}
+[data-dnd-dragging]:not([data-dnd-dropping]) { translate: var(--dnd-translate) !important; }
+[data-dnd-dragging][style*="--dnd-scale"] { scale: var(--dnd-scale) !important; transform-origin: var(--dnd-transform-origin) !important; }
+[data-dnd-dragging] * { pointer-events: none !important; }
+[data-dnd-placeholder] { transition: none; }
+[data-dnd-placeholder="hidden"] { visibility: hidden; }
+[data-dnd-dragging]::backdrop { display: none; visibility: hidden; }
 .task-row-dragging { opacity: .38; pointer-events: none; }
 .task-unread-indicator { width: 8px; height: 8px; flex: 0 0 8px; margin-top: 11px; border-radius: 50%; background: var(--ios-tint); }
 .task-check { border-color: var(--ios-separator); }
@@ -527,9 +568,8 @@ textarea:focus-visible {
 .task-board-card[data-drop-position]::after { content: ""; position: absolute; left: 0; right: 0; height: 3px; border-radius: 2px; background: var(--ios-tint); pointer-events: none; }
 .task-board-card[data-drop-position="before"]::after { top: -6px; }
 .task-board-card[data-drop-position="after"]::after { bottom: -6px; }
-.task-attention { display: inline-flex; width: fit-content; height: 16px; flex-shrink: 0; align-items: center; gap: 4px; border-radius: 5px; background: var(--ios-fill-strong); padding: 0 6px; color: var(--ios-label); font-size: 11px; font-weight: 600; white-space: nowrap; }
-.task-attention-waiting { background: #fff1c7; color: #684b00; }
-@media (prefers-color-scheme: dark) { .task-attention-waiting { background: #463413; color: #ffd28a; } }
+.task-attention { display: inline-flex; width: fit-content; height: 16px; flex-shrink: 0; align-items: center; gap: 4px; border-radius: 5px; background: #fff1c7; padding: 0 6px; color: #684b00; font-size: 11px; font-weight: 600; white-space: nowrap; }
+@media (prefers-color-scheme: dark) { .task-attention { background: #463413; color: #ffd28a; } }
 .task-board-modal-tab { display: inline-flex; align-items: center; min-height: 32px; padding: 0 12px; border-radius: 6px; color: var(--ios-secondary-label); font-size: 13px; }
 .task-board-modal-tab[data-active] { background: var(--ios-fill); color: var(--ios-label); }
 .task-board-modal-tab:focus-visible { outline: 2px solid var(--ios-tint); outline-offset: 2px; }
@@ -1147,7 +1187,11 @@ button.task-asset-thumbnail:hover, button.task-asset-thumbnail:focus-visible { b
 .chat-image img { display: block; width: 74px; height: 58px; object-fit: cover; }
 .chat-image span { display: block; overflow: hidden; padding: 3px 5px; color: var(--ios-secondary-label); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .chat-image button { position: absolute; top: 3px; right: 3px; display: grid; width: 18px; height: 18px; place-items: center; border: 0; border-radius: 50%; background: rgba(0,0,0,.72); color: white; }
-.ios-chat-add-image { display: grid; width: 30px; height: 30px; place-items: center; border: 0; border-radius: 8px; background: var(--ios-fill); color: var(--ios-label); }
+.ios-chat-controls { display: flex; flex: 1; min-width: 0; align-items: center; gap: 8px; overflow-x: auto; scrollbar-width: none; }
+.ios-chat-controls > .ios-chat-config-trigger { min-width: 48px; white-space: nowrap; }
+.ios-chat-controls > .ios-chat-config-trigger > svg, .ios-chat-controls > .ios-chat-plan-toggle { flex-shrink: 0; }
+.ios-chat-controls [data-slot="select-value"] { display: block; overflow: hidden; text-overflow: ellipsis; }
+.ios-chat-add-image { display: grid; flex-shrink: 0; width: 30px; height: 30px; place-items: center; border: 0; border-radius: 8px; background: var(--ios-fill); color: var(--ios-label); }
 .ios-chat-add-image:hover { background: var(--ios-fill-strong); }
 .ios-chat-add-image:disabled { opacity: .45; }
 .ios-chat-config-trigger {
