@@ -79,6 +79,18 @@ try {
     await click(nav(name));
     check(active()?.dataset.settingsPage === id, `${name} page is not reachable`);
   }
+  await click(nav("Agent preferences"));
+  await click(control("Default approval mode"));
+  await click([...document.querySelectorAll<HTMLElement>('[role="option"]')].find((item) => item.textContent === "YOLO mode"));
+  await fileStore.flush();
+  check(storage["chaoticreview.approval-reviewer-default"] === "yolo", "YOLO default must persist");
+  await click(control("Close settings"));
+  check(control("Approval mode")?.textContent?.includes("YOLO mode"), "Composer must use the YOLO default");
+  await click(control("Approval mode"));
+  await click([...document.querySelectorAll<HTMLElement>('[role="option"]')].find((item) => item.textContent === "Approve for me"));
+  check(control("Approval mode")?.textContent?.includes("Approve for me"), "Composer must allow leaving YOLO");
+  await click(control("Settings")); await click(nav("Agent preferences"));
+  check(control("Default approval mode")?.textContent?.includes("YOLO mode"), "Chat overrides must preserve the default");
   await click(nav("General"));
   const diff = control("Default diff view");
   await click(diff);
@@ -121,6 +133,7 @@ try {
   await act(async () => root.render(null));
   await act(async () => root.render(<App />)); await settle();
   check(control("Agent role")?.textContent === agent.title, "New reviews must inherit the saved default after remounting");
+  check(control("Approval mode")?.textContent?.includes("YOLO mode"), "Saved YOLO default must survive remounting");
   await click(control("Settings")); await click(nav("Agent preferences"));
   check(defaultAgentLabel() === agent.title, "Settings must restore the saved default");
   await chooseAgent("None");
@@ -138,7 +151,7 @@ try {
   check(control("Agent role")?.textContent === "None", "New reviews must fall back to None when the default agent is missing");
   await click(control("Settings"));
   if (new URLSearchParams(location.search).has("preview")) await click(nav("General"));
-  document.getElementById("result")!.textContent = "PASS: settings navigation, default agent persistence, new task/review defaults, existing roles and deleted-agent fallback.";
+  document.getElementById("result")!.textContent = "PASS: settings navigation, YOLO selection and saved defaults, composer overrides, default agent persistence, new task/review defaults, existing roles and deleted-agent fallback.";
 } catch (error) {
   document.getElementById("result")!.textContent = `FAIL: ${error instanceof Error ? error.stack : error}`;
 } finally {

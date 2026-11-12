@@ -91,6 +91,8 @@ try {
   await click([...document.querySelectorAll<HTMLElement>('[role="option"]')].find((item) => visible(item) && item.textContent === "High")!);
   await act(async () => document.querySelector('.ios-chat-config-popover')!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
   await settle();
+  await click(button("Approval mode"));
+  await click([...document.querySelectorAll<HTMLElement>('[role="option"]')].find((item) => visible(item) && item.textContent === "YOLO mode")!);
   await enableGoal();
   check(button("Model and effort").textContent?.includes("Custom model") && button("Model and effort").textContent?.includes("High"), "Enabling Goal must preserve the selected model and effort");
   await click(button("Goal settings"));
@@ -110,6 +112,7 @@ try {
   await click(button("Send Review Agent message"));
   check(sends[0].model === "custom-model" && sends[0].effort === "high", "Editing Goal settings must preserve the selected model and effort in the request");
   check(sends[0].goal.enabled && sends[0].goal.tokenBudget === 25000, "Workspace sends must forward enabled Goal and the edited budget");
+  check(sends[0].approvalMode === "yolo", "Goal sends must preserve the selected YOLO approval mode");
   check(button("Goal settings").hasAttribute("disabled"), "Goal settings must not mutate during a run");
   await event(0, { kind: "completed" });
   await click(button("Goal settings"));

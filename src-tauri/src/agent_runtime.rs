@@ -30,7 +30,7 @@ pub struct ChatStart<'a> {
     pub user_rules: String,
     pub agent_prompt: String,
     pub images: Vec<PathBuf>,
-    pub auto_review: bool,
+    pub approval_mode: ApprovalMode,
     pub events: Channel<AgentTurnEvent>,
 }
 
@@ -326,6 +326,29 @@ impl ChatMode {
         }
     }
 }
+#[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalMode {
+    #[default]
+    User,
+    AutoReview,
+    Yolo,
+}
+impl ApprovalMode {
+    fn policy(self) -> &'static str {
+        if self == Self::Yolo { "never" } else { "on-request" }
+    }
+    fn reviewer(self) -> &'static str {
+        if self == Self::AutoReview { "auto_review" } else { "user" }
+    }
+    fn permissions(self, mode: ChatMode) -> &'static str {
+        if self == Self::Yolo && mode == ChatMode::Default {
+            ":danger-full-access"
+        } else {
+            mode.permissions()
+        }
+    }
+}
 #[derive(Clone)]
 struct ActiveTurn {
     request_id: String,
@@ -338,7 +361,7 @@ struct ActiveTurn {
     model: String,
     effort: String,
     mode: ChatMode,
-    auto_review: bool,
+    approval_mode: ApprovalMode,
     attempt: u8,
     meaningful_activity: bool,
     retry_pending: bool,
@@ -1212,7 +1235,7 @@ impl AgentRuntime {
         custom_provider_completion(app, provider, &model, &instructions, &format!("<working_copy_diff>\n{diff}\n</working_copy_diff>"), &[])
     }
     pub fn start_chat(&self, app: &AppHandle, request: ChatStart<'_>) -> Result<ChatAccepted, String> {
-        let ChatStart { window_label, root, repository, mcp_url, prior_thread, model, effort, mode, goal, goal_objective, input, user_rules, agent_prompt, images, auto_review, events } = request;
+        let ChatStart { window_label, root, repository, mcp_url, prior_thread, model, effort, mode, goal, goal_objective, input, user_rules, agent_prompt, images, approval_mode, events } = request;
         let developer_instructions = developer_instructions(&user_rules, &agent_prompt);
         let provider = self.active_provider(app, Some(repository))?;
         let input = chat_input(input, images);
@@ -1227,7 +1250,7 @@ impl AgentRuntime {
             }
         }
         let mcp_servers = effective_mcp_servers(self.mcp_servers(app)?);
-        let options = ThreadOptions { root, provider: &provider, model: &model, effort: &effort, mcp_url: &mcp_url, developer_instructions: &developer_instructions, mode, auto_review, user_mcp_servers: &mcp_servers };
+        let options = ThreadOptions { root, provider: &provider, model: &model, effort: &effort, mcp_url: &mcp_url, developer_instructions: &developer_instructions, mode, approval_mode, user_mcp_servers: &mcp_servers };
         let resuming = prior_thread.as_ref().is_some_and(|id| !id.is_empty());
         let thread_id = match prior_thread.filter(|id| !id.is_empty()) {
             Some(id) => match self.request("thread/resume", thread_config(&options, Some(&id)), Duration::from_secs(20)) {
@@ -1263,7 +1286,7 @@ impl AgentRuntime {
                     model: model.clone(),
                     effort: effort.clone(),
                     mode,
-                    auto_review,
+                    approval_mode,
                     attempt: 0,
                     meaningful_activity: false,
                     retry_pending: false,
@@ -1275,7 +1298,7 @@ impl AgentRuntime {
         }
         let response = match self.request(
             "turn/start",
-            turn_config(&thread_id, input, &request_id, &model, &effort, mode, auto_review),
+            turn_config(&thread_id, input, &request_id, &model, &effort, mode, approval_mode),
             Duration::from_secs(30),
         ) {
             Ok(v) => v,
@@ -1441,17 +1464,17 @@ impl AgentRuntime {
                         turn.model.clone(),
                         turn.effort.clone(),
                         turn.mode,
-                        turn.auto_review,
+                        turn.approval_mode,
                     )
                 })
             });
-            let Some((thread_id, input, model, effort, mode, auto_review)) = retry else {
+            let Some((thread_id, input, model, effort, mode, approval_mode)) = retry else {
                 return;
             };
             let client_message_id = nonce();
             let response = runtime.request(
                 "turn/start",
-                turn_config(&thread_id, input, &client_message_id, &model, &effort, mode, auto_review),
+                turn_config(&thread_id, input, &client_message_id, &model, &effort, mode, approval_mode),
                 Duration::from_secs(30),
             );
             let turn_id = response.ok().and_then(|value| {
@@ -2515,7 +2538,7 @@ for line in sys.stdin:
             request_id: "goal".into(), thread_id: "thread".into(), turn_id: Some("first".into()),
             window_label: "main".into(), root: PathBuf::from("/tmp/goal"), events: events.clone(),
             input: Vec::new(), model: String::new(), effort: String::new(), mode: ChatMode::Default,
-            auto_review: false, attempt: 0, meaningful_activity: true, retry_pending: false,
+            approval_mode: ApprovalMode::User, attempt: 0, meaningful_activity: true, retry_pending: false,
             cancel_requested: false, goal_enabled: true, goal_initializing: false,
         };
         let mut server = Command::new("python3").args(["-u", "-c", "import json,sys\ncount=0\nfor line in sys.stdin:\n r=json.loads(line); count+=1\n print(json.dumps({'id':r['id'],'method':r['method'],'params':r['params'],'result':{'goal':{'status':'active' if count==1 else 'complete'}}}),flush=True)"])
@@ -2897,12 +2920,12 @@ struct ThreadOptions<'a> {
     mcp_url: &'a str,
     developer_instructions: &'a str,
     mode: ChatMode,
-    auto_review: bool,
+    approval_mode: ApprovalMode,
     user_mcp_servers: &'a [McpServerSettings],
 }
 
 fn thread_config(options: &ThreadOptions<'_>, thread_id: Option<&str>) -> Value {
-    let ThreadOptions { root, provider, model, effort, mcp_url, developer_instructions, mode, auto_review, user_mcp_servers } = *options;
+    let ThreadOptions { root, provider, model, effort, mcp_url, developer_instructions, mode, approval_mode, user_mcp_servers } = *options;
     let mcp = json!({
         "url": mcp_url,
         "bearer_token_env_var": MCP_TOKEN_ENV,
@@ -2952,8 +2975,8 @@ fn thread_config(options: &ThreadOptions<'_>, thread_id: Option<&str>) -> Value 
     for server in user_mcp_servers {
         mcp_servers.insert(server.name.clone(), mcp_server_config(server));
     }
-    let reviewer = if auto_review { "auto_review" } else { "user" };
-    let mut v = json!({"model":model,"cwd":root,"approvalPolicy":"on-request","approvalsReviewer":reviewer,"permissions":mode.permissions(),"developerInstructions":developer_instructions,"serviceName":"chaoticreview","config":{"check_for_update_on_startup":false,"model_provider":provider,"model_reasoning_effort":effort,"features":{"multi_agent":false,"default_mode_request_user_input":true},"mcp_servers":mcp_servers}});
+    let reviewer = approval_mode.reviewer();
+    let mut v = json!({"model":model,"cwd":root,"approvalPolicy":approval_mode.policy(),"approvalsReviewer":reviewer,"permissions":approval_mode.permissions(mode),"developerInstructions":developer_instructions,"serviceName":"chaoticreview","config":{"check_for_update_on_startup":false,"model_provider":provider,"model_reasoning_effort":effort,"features":{"multi_agent":false,"default_mode_request_user_input":true},"mcp_servers":mcp_servers}});
     if let Some(id) = thread_id {
         v["threadId"] = Value::String(id.into());
     }
@@ -2967,11 +2990,11 @@ fn turn_config(
     model: &str,
     effort: &str,
     mode: ChatMode,
-    auto_review: bool,
+    approval_mode: ApprovalMode,
 ) -> Value {
     let turn_instructions = if mode == ChatMode::Plan { Some(PLAN_INSTRUCTIONS) } else { None };
-    let reviewer = if auto_review { "auto_review" } else { "user" };
-    json!({"threadId":thread_id,"input":input,"clientUserMessageId":request_id,"approvalPolicy":"on-request","approvalsReviewer":reviewer,"permissions":mode.permissions(),"collaborationMode":{"mode":mode.name(),"settings":{"model":model,"reasoning_effort":effort,"developer_instructions":turn_instructions}}})
+    let reviewer = approval_mode.reviewer();
+    json!({"threadId":thread_id,"input":input,"clientUserMessageId":request_id,"approvalPolicy":approval_mode.policy(),"approvalsReviewer":reviewer,"permissions":approval_mode.permissions(mode),"collaborationMode":{"mode":mode.name(),"settings":{"model":model,"reasoning_effort":effort,"developer_instructions":turn_instructions}}})
 }
 
 fn mcp_approval_form(params: &Value) -> bool {
@@ -3160,12 +3183,43 @@ mod tests {
     fn question_forms_are_enabled_for_new_and_resumed_chats_in_both_modes() {
         for mode in [ChatMode::Default, ChatMode::Plan] {
             for thread_id in [None, Some("existing-thread")] {
-                let config = thread_config(&ThreadOptions { root: Path::new("/repo"), provider: "openai", model: "gpt-5.6-terra", effort: "medium", mcp_url: "http://127.0.0.1:8080/mcp", developer_instructions: &developer_instructions("", ""), mode, auto_review: false, user_mcp_servers: &[] }, thread_id);
+                let config = thread_config(&ThreadOptions { root: Path::new("/repo"), provider: "openai", model: "gpt-5.6-terra", effort: "medium", mcp_url: "http://127.0.0.1:8080/mcp", developer_instructions: &developer_instructions("", ""), mode, approval_mode: ApprovalMode::User, user_mcp_servers: &[] }, thread_id);
                 assert_eq!(config["config"]["features"]["default_mode_request_user_input"], true);
                 assert_eq!(config["approvalPolicy"], "on-request");
                 assert_eq!(config["permissions"], mode.permissions());
                 assert_eq!(config["config"]["mcp_servers"]["chaoticreview"]["tools"]["import_task_assets"]["approval_mode"], "approve");
                 assert_eq!(config.get("threadId").and_then(Value::as_str), thread_id);
+            }
+        }
+    }
+    #[test]
+    fn approval_modes_apply_to_new_resumed_and_subsequent_turns() {
+        for mode in [ChatMode::Default, ChatMode::Plan] {
+            for (approval_mode, policy, reviewer) in [
+                (ApprovalMode::User, "on-request", "user"),
+                (ApprovalMode::AutoReview, "on-request", "auto_review"),
+                (ApprovalMode::Yolo, "never", "user"),
+            ] {
+                let permissions = match (mode, approval_mode) {
+                    (ChatMode::Plan, _) => ":read-only",
+                    (_, ApprovalMode::Yolo) => ":danger-full-access",
+                    _ => ":workspace",
+                };
+                for thread_id in [None, Some("existing-thread")] {
+                    let config = thread_config(&ThreadOptions {
+                        root: Path::new("/repo"), provider: "openai", model: "synthetic",
+                        effort: "medium", mcp_url: "http://127.0.0.1:8080/mcp",
+                        developer_instructions: "", mode, approval_mode, user_mcp_servers: &[],
+                    }, thread_id);
+                    assert_eq!(config["approvalPolicy"], policy);
+                    assert_eq!(config["approvalsReviewer"], reviewer);
+                    assert_eq!(config["permissions"], permissions);
+                }
+                let turn = turn_config("existing-thread", vec![], "request", "synthetic", "medium", mode, approval_mode);
+                assert_eq!(turn["approvalPolicy"], policy);
+                assert_eq!(turn["approvalsReviewer"], reviewer);
+                assert_eq!(turn["permissions"], permissions);
+                assert_eq!(turn["collaborationMode"]["mode"], mode.name());
             }
         }
     }
@@ -3177,11 +3231,11 @@ mod tests {
             bearer_token_env_var: "DOCS_TOKEN".into(), oauth_client_id: String::new(), oauth_callback_url: String::new(), oauth_scopes: Vec::new(), oauth_client_secret: None, oauth_secret_stored: false, oauth_error: None, enabled: true,
         }];
         assert!(validate_mcp_servers(&servers).is_ok());
-        let config = thread_config(&ThreadOptions { root: Path::new("/repo"), provider: "openai", model: "gpt-5.6-terra", effort: "medium", mcp_url: "http://127.0.0.1:8080/mcp", developer_instructions: &developer_instructions("Explain in plain language.", ""), mode: ChatMode::Default, auto_review: false, user_mcp_servers: &servers }, None);
+        let config = thread_config(&ThreadOptions { root: Path::new("/repo"), provider: "openai", model: "gpt-5.6-terra", effort: "medium", mcp_url: "http://127.0.0.1:8080/mcp", developer_instructions: &developer_instructions("Explain in plain language.", ""), mode: ChatMode::Default, approval_mode: ApprovalMode::User, user_mcp_servers: &servers }, None);
         assert_eq!(config["permissions"], ":workspace");
         assert_eq!(config["model"], "gpt-5.6-terra");
         assert_eq!(config["config"]["model_provider"], "openai");
-        let custom = thread_config(&ThreadOptions { root: Path::new("/repo"), provider: "openrouter", model: "custom-model", effort: "medium", mcp_url: "http://127.0.0.1:8080/mcp", developer_instructions: "Review the code.", mode: ChatMode::Default, auto_review: true, user_mcp_servers: &[] }, None);
+        let custom = thread_config(&ThreadOptions { root: Path::new("/repo"), provider: "openrouter", model: "custom-model", effort: "medium", mcp_url: "http://127.0.0.1:8080/mcp", developer_instructions: "Review the code.", mode: ChatMode::Default, approval_mode: ApprovalMode::AutoReview, user_mcp_servers: &[] }, None);
         assert_eq!(custom["config"]["model_provider"], "openrouter");
         assert_eq!(config["approvalsReviewer"], "user");
         assert_eq!(custom["approvalsReviewer"], "auto_review");
@@ -3429,7 +3483,7 @@ mod tests {
                 model: String::new(),
                 effort: String::new(),
                 mode: ChatMode::Default,
-                auto_review: false,
+                approval_mode: ApprovalMode::User,
                 attempt: 0,
                 meaningful_activity: false,
                 retry_pending: false,
@@ -3451,7 +3505,7 @@ mod tests {
                 model: String::new(),
                 effort: String::new(),
                 mode: ChatMode::Default,
-                auto_review: false,
+                approval_mode: ApprovalMode::User,
                 attempt: 0,
                 meaningful_activity: false,
                 retry_pending: false,
@@ -3524,7 +3578,7 @@ mod tests {
             "gpt-5.6-terra",
             "medium",
             ChatMode::Default,
-            false,
+            ApprovalMode::User,
         );
         let plan = turn_config(
             "thread",
@@ -3533,7 +3587,7 @@ mod tests {
             "gpt-5.6-terra",
             "medium",
             ChatMode::Plan,
-            true,
+            ApprovalMode::AutoReview,
         );
         assert_eq!(default["permissions"], ":workspace");
         assert_eq!(default["approvalsReviewer"], "user");
