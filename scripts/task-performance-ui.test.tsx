@@ -12,12 +12,13 @@ import App from "../src/App";
 let fixtureRoot: ReturnType<typeof createRoot> | undefined;
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+const listOnly = location.pathname.endsWith("task-list-ui.html");
 const tabsOnly = location.pathname.endsWith("task-tabs-ui.html");
 const foldersOnly = location.pathname.endsWith("task-folders-ui.html");
 const repo = { rootPath: "/synthetic-repository", name: "Monthly Report", currentBranch: "main", hasOrigin: true };
 let currentRepository = repo;
 const comparison = { mode: "workingCopy", baseRef: null, compareRef: null, baseOid: "a".repeat(40), baseCommitOid: "a".repeat(40), compareCommitOid: "a".repeat(40), snapshotId: "snapshot", files: [] };
-const task = normalizeTask({ ...(tabsOnly ? { sandboxHtml: "<!doctype html><h1>Sandbox state fixture</h1>" } : {}), id: "12345678-1234-1234-1234-123456789abc", title: "Monthly Report", manualStatus: "inbox", description: "## Monthly report\n\nReview the changes alongside the agent conversation.\n\n" + "A longer task description with details to review.\n\n".repeat(30), location: "worktree", worktree: { branch: "feature/monthly-report", baseOid: comparison.baseOid, baseBranch: "main" }, startDate: "2026-10-28", deadline: "2026-10-30", unreadAgentResult: true,
+const task = normalizeTask({ ...((tabsOnly || listOnly) ? { sandboxHtml: "<!doctype html><h1>Sandbox state fixture</h1>" } : {}), id: "12345678-1234-1234-1234-123456789abc", title: "Monthly Report", manualStatus: "inbox", description: "## Monthly report\n\nReview the changes alongside the agent conversation.\n\n" + "A longer task description with details to review.\n\n".repeat(30), location: "worktree", worktree: { branch: "feature/monthly-report", baseOid: comparison.baseOid, baseBranch: "main" }, startDate: "2026-10-28", deadline: "2026-10-30", unreadAgentResult: true,
   comments: [{ id: "review-comment", author: "user", body: "- [ ] Review the report\n" + "- Keep the comment visible while reading.\n".repeat(100), createdAt: 1_793_174_400_000 }],
   chatMessages: [{ id: "response", role: "assistant", body: "The monthly report is ready for review. Open Changes to inspect it while we continue here.", createdAt: "2026-10-28T12:00:00Z", selection: null, snapshotId: null, suggestions: [], contexts: [] }] })!;
 const auditTask = normalizeTask({ ...task, id: "field-audit", title: "Field audit", sandboxHtml: undefined, started: false, chatMessages: [], agentThreadId: null, unreadAgentResult: false, worktree: null, newBranchName: "feature/audit", worktreeStart: { kind: "workspace" }, github: { accountId: 1, accountLogin: "synthetic", repositoryId: 2, repository: "qa/fields", number: 7, kind: "issue", url: "https://github.com/qa/fields/issues/7", state: "open", synced: { title: "Field audit", description: task.description, completed: false } } })!;
@@ -32,7 +33,7 @@ const storage: Record<string, string> = {
   "chaoticreview.task-plan-mode-default": "true",
   "chaoticreview.chat-defaults": JSON.stringify({ default: { model: "synthetic-default", effort: "low" }, plan: { model: "synthetic-plan", effort: "high" } }),
   [taskStorageKey(repo.rootPath)]: JSON.stringify([task, auditTask, ...Array.from({ length: 6 }, (_, index) => ({ ...task, id: `terminal-${index}`, title: `Terminal ${index}`, unreadAgentResult: false })), { ...task, id: "workspace-one", title: "Workspace one", location: "workspace", worktree: null }, { ...task, id: "workspace-two", title: "Workspace two", location: "workspace", worktree: null }]),
-  "chaoticreview.task-view": JSON.stringify({ [repo.rootPath]: "list" }),
+  "chaoticreview.task-view": JSON.stringify({ [repo.rootPath]: tabsOnly ? "kanban" : "list" }),
   "chaoticreview.task-board-tabs": JSON.stringify({ [repo.rootPath]: { [task.id]: "chat" } }),
 };
 const merges: any[] = [];
@@ -121,8 +122,73 @@ try {
   await initializeFileStore();
   await act(async () => root.render(<Profiler id="app" onRender={() => { appCommits++; }}><App /></Profiler>)); await settle(400);
   await click(button("Tasks"));
+  if (listOnly) {
+    check(document.querySelector('[aria-label="Task workspace"]'), "List mode must show an inline task workspace before selecting a task");
+    check(!([...document.querySelectorAll('[role="dialog"]')].some(visible)) && document.body.textContent?.includes("Select a task to see its details."), "An unselected list must show an empty state without a modal");
+  }
   await click(button(task.title));
   await settle(400);
+  if (listOnly) {
+    const workspace = () => document.querySelector<HTMLElement>('[aria-label="Task workspace"]')!;
+    const list = () => document.querySelector<HTMLElement>('.task-mode-list')!;
+    const chat = () => workspace().querySelector<HTMLElement>('[aria-label="Task chat"]')!;
+    check(!([...document.querySelectorAll('[role="dialog"]')].some(visible)) && visible(workspace()) && visible(list()) && visible(chat()), "Selecting a list task must keep list, panels and chat visible without a modal");
+    const bounds = [list(), workspace().querySelector<HTMLElement>('[aria-label="Task details"]')!, chat()].map(el => el.getBoundingClientRect());
+    check(bounds[0].right <= bounds[1].left && bounds[1].right <= bounds[2].left && bounds.every(b => b.height > 100), "List, task details and chat must appear side by side");
+    if (new URLSearchParams(location.search).get("preview") === "1") {
+      document.getElementById("result")!.hidden = true;
+      // Native background previews can pause animations at their first frame.
+      document.querySelectorAll('.task-board-modal-panel').forEach(el => el.getAnimations().forEach(animation => animation.finish()));
+      await new Promise<void>(() => {});
+    }
+    const draft = workspace().querySelector<HTMLTextAreaElement>('[aria-label="Review Agent message"]')!;
+    await act(async () => {
+      draft.focus();
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(draft, "Keep my task draft");
+      draft.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await click(button(auditTask.title));
+    check(workspace().querySelector<HTMLInputElement>('.task-details-title-input')?.value === auditTask.title && workspace().querySelector<HTMLTextAreaElement>('[aria-label="Review Agent message"]')?.value === "", "Switching tasks must update details and isolate chat drafts");
+    await click(button(task.title));
+    check(workspace().querySelector<HTMLTextAreaElement>('[aria-label="Review Agent message"]')?.value === "Keep my task draft", "Returning to a task must restore its draft");
+    for (const label of ["Resize Tasks and Details columns", "Resize Details and Agent columns"]) {
+      const handle = [...document.querySelectorAll<HTMLElement>('[role="separator"]')].find(el => el.getAttribute("aria-label") === label && visible(el))!;
+      const before = handle.getAttribute("aria-valuetext");
+      await act(async () => handle.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })));
+      await settle();
+      check(handle.getAttribute("aria-valuetext") !== before, "Both list dividers must resize using the keyboard");
+    }
+    await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    check(visible(workspace()) && visible(list()), "Escape must not dismiss the inline workspace");
+    for (const view of ["Kanban", "Gantt"]) {
+      await click(button(view));
+      check(!document.querySelector('[aria-label="Task workspace"]') && ![...document.querySelectorAll('[role="dialog"]')].some(visible), "Switching to a board must not automatically open the previous list task");
+      await click(button(task.title));
+      check([...document.querySelectorAll('[role="dialog"]')].some(visible), view + " tasks must still open their modal");
+      await click(document.querySelector<HTMLElement>('[aria-label="Close task modal"]'));
+      await click(button("List"));
+      check(visible(workspace()) && ![...document.querySelectorAll('[role="dialog"]')].some(visible), "Returning to List must restore the inline workspace");
+    }
+    const changesTab = () => [...workspace().querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(el => el.textContent?.startsWith("Changes"))!;
+    await click(changesTab());
+    await click(button(auditTask.title));
+    check(workspace().querySelector('[role="tab"][aria-selected="true"]')?.textContent === "Detail", "Each task must restore its own selected tab");
+    await click(button(task.title));
+    check(changesTab().getAttribute("aria-selected") === "true", "Returning to a task must restore its selected Changes tab");
+    const addTask = document.querySelector<HTMLTextAreaElement>('[aria-label="Add task…"]')!;
+    await act(async () => {
+      addTask.focus();
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(addTask, "New inline task");
+      addTask.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => addTask.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+    await settle();
+    check(workspace().querySelector<HTMLInputElement>('.task-details-title-input')?.value === "New inline task" && ![...document.querySelectorAll('[role="dialog"]')].some(visible), "Creating a task must select its Detail tab inline even when another tab was open");
+    await click(button(task.title));
+    await click([...workspace().querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(el => el.textContent === "Detail")!);
+    await checkTaskPanelTransitions({ repositoryRoot: repo.rootPath, taskId: task.id, taskTitle: task.title, otherTaskTitle: auditTask.title, storage,
+      preparedPreviews, releasedPreviews, openedUrls, deferPreview, failNextPreview: () => { prepareFailure = true; } });
+  }
   if (foldersOnly) {
     for (const current of [task, auditTask]) {
       await click(button(current.title));
@@ -138,7 +204,7 @@ try {
     await click(button(task.title));
   }
   const fieldsOnly = location.pathname.endsWith("task-fields-ui.html");
-  if (!fieldsOnly && !tabsOnly && !foldersOnly) {
+  if (!listOnly && !fieldsOnly && !tabsOnly && !foldersOnly) {
   check(document.querySelector('[aria-label="Changes, uncommitted changes"]'), "The lightweight Git status must preserve the dirty marker while Changes is hidden");
   const field = document.querySelector<HTMLInputElement>('#task-custom-perf')!;
   check(field, "The task custom field must be available");
@@ -247,7 +313,7 @@ try {
   }
   await act(async () => root.unmount()); await settle();
   check(startedTerminals.every((session) => stoppedTerminals.includes(session.sessionId)), "Unmount must stop every retained terminal");
-  document.getElementById("result")!.textContent = foldersOnly ? "PASS: folder menu waits for selection and opens Finder or Terminal with task/worktree or repository scope." : tabsOnly ? "PASS: early drawing preparation, immediate tab selection, retained canvas/zoom/pan and sandbox state, preview retry, inactive link blocking, task isolation and cleanup." : fieldsOnly ? "PASS: every task detail field; local typing, validation, links, attachments, checklist/comments, native close and pending edits across task/repository changes." : "PASS: explicit terminal disposal, reuse across task switches, shared workspace terminal, five-session limit, unmount cleanup; visible-only Git refresh and immediate reload; coalesced task/MCP writes, trimmed context, scheduler isolation and background visibility; frame-batched task streaming and boundary flushes.";
+  document.getElementById("result")!.textContent = listOnly ? "PASS: inline list empty state, side-by-side details/chat, task switching and isolated drafts, keyboard dividers, Escape, Kanban/Gantt modal regressions; retained drawing/sandbox state and cleanup." : foldersOnly ? "PASS: folder menu waits for selection and opens Finder or Terminal with task/worktree or repository scope." : tabsOnly ? "PASS: early drawing preparation, immediate tab selection, retained canvas/zoom/pan and sandbox state, preview retry, inactive link blocking, task isolation and cleanup." : fieldsOnly ? "PASS: every task detail field; local typing, validation, links, attachments, checklist/comments, native close and pending edits across task/repository changes." : "PASS: explicit terminal disposal, reuse across task switches, shared workspace terminal, five-session limit, unmount cleanup; visible-only Git refresh and immediate reload; coalesced task/MCP writes, trimmed context, scheduler isolation and background visibility; frame-batched task streaming and boundary flushes.";
 } catch (error) {
   document.getElementById("result")!.textContent = `FAIL: ${error instanceof Error ? error.stack : String(error)}`;
   console.error(error);

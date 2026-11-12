@@ -591,8 +591,9 @@ textarea:focus-visible {
 .task-git-compact .quiet-button:hover:not(:disabled) { background: var(--ios-fill); }
 .task-git-notice { position: absolute; top: calc(100% + 12px); right: 0; z-index: 20; width: min(400px, 80vw); border: 1px solid var(--ios-separator); border-radius: 10px; background: var(--ios-elevated-background); padding: 10px 12px; box-shadow: 0 6px 24px rgb(0 0 0 / .12); }
 @media (max-width: 800px) { .task-modal-toolbar { gap: 10px; padding: 12px 10px; } .task-modal-title { max-width: 140px; } }
-.task-board-modal-panel { min-height: 0; flex: 1; overflow: hidden; background: var(--ios-background); --ios-grouped-background: var(--ios-background); }
-.task-board-modal-panel[data-hidden] { display: none; }
+.task-board-modal-panel { position: absolute; inset: 0; min-height: 0; overflow: hidden; background: var(--ios-background); --ios-grouped-background: var(--ios-background); }
+/* Keep retained iframe viewports stable while Base UI hides inactive tabs. */
+.task-board-modal-panel[data-hidden], .task-board-modal-panel[inert] { visibility: hidden; pointer-events: none; }
 .task-board-modal-panel:not([data-hidden]), .task-tab-panel[data-active="true"], .task-panel-ready { animation: task-panel-reveal 100ms ease-out; }
 .task-panel-placeholder { background: var(--ios-background); }
 .task-sandbox-frame { transition: opacity 100ms ease-out; }
@@ -1745,3 +1746,8 @@ button.task-asset-thumbnail:hover, button.task-asset-thumbnail:focus-visible { b
   }
 }
 
+/* The list keeps the existing task surface beside its source list. */
+.task-inline-toolbar { flex-wrap: wrap; gap: 8px 16px; }
+.task-inline-toolbar .task-modal-title { flex: 1 1 160px; max-width: none; }
+.task-inline-toolbar .task-modal-tabs { flex-wrap: wrap; min-width: 0; flex-shrink: 1; }
+.task-inline-toolbar .task-modal-actions { flex-wrap: wrap; }

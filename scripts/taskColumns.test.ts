@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { defaultTaskColumnRatios, resizeTaskColumn, taskColumnPixels } from "../src/taskColumns.ts";
 
 const width = 1200;
-assert.deepEqual(taskColumnPixels(width, defaultTaskColumnRatios), { tasks: 400, changes: 400 });
+assert.deepEqual(taskColumnPixels(width, defaultTaskColumnRatios), { tasks: 300, changes: 400 });
 const resizedTasks = resizeTaskColumn(width, defaultTaskColumnRatios, "tasks", 550);
 assert.deepEqual(taskColumnPixels(width, resizedTasks), { tasks: 540, changes: 400 });
 const resizedChanges = resizeTaskColumn(width, resizedTasks, "changes", 300);

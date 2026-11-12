@@ -1,7 +1,7 @@
 export type TaskColumnRatios = { tasks: number; changes: number };
 export type TaskDivider = keyof TaskColumnRatios;
 
-export const defaultTaskColumnRatios: TaskColumnRatios = { tasks: 1 / 3, changes: 1 / 3 };
+export const defaultTaskColumnRatios: TaskColumnRatios = { tasks: 1 / 4, changes: 1 / 3 };
 
 export function taskColumnPixels(width: number, ratios: TaskColumnRatios) {
   const scale = Math.min(1, width / 840);

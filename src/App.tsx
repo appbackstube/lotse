@@ -2250,6 +2250,7 @@ function App() {
   const [workspaceMode, setWorkspaceMode] = useState<"workspace" | "tasks" | "memory">("workspace");
   const tasksTabActive = workspaceMode === "tasks";
   const taskMode = tasksTabActive || (workspaceMode === "workspace" && boardDrawerOpen);
+  const inlineTaskMode = tasksTabActive && taskView === "list" && !zenMode;
   const boardMode = taskMode && !zenMode;
   const memoryMode = workspaceMode === "memory";
   const memoryFlushRef = useRef<(() => Promise<boolean>) | null>(null);
@@ -4191,13 +4192,14 @@ function App() {
     const task = newRepositoryTask(parentId, boardStatus, { title, description: draft?.description ?? "" });
     setTasks((current) => parentId ? moveTask([...current, task], task.id, parentId, "inside") : [...current, task]);
     setSelectedTaskId(task.id);
-    { setBoardFolderError(""); if (openNewTaskInDrawer) setBoardTab("detail"); setBoardDrawerOpen(openNewTaskInDrawer); }
+    { setBoardFolderError(""); if (openNewTaskInDrawer || inlineTaskMode) setBoardTab("detail"); setBoardDrawerOpen(openNewTaskInDrawer); }
     if (!draft) setNewTaskDrafts((current) => ({ ...current, [key]: "" }));
     setBoardAddingSubtaskId(null);
   };
 
   const selectTask = (task: RepositoryTask, markRead = true) => {
     setSelectedTaskId(task.id);
+    if (inlineTaskMode && repository) setBoardTab(storedBoardTab(repository.rootPath, task.id, sandboxSupported === true, browserSupported));
     if (markRead && task.unreadAgentResult) updateTask(task.id, (current) => ({ ...current, unreadAgentResult: false }));
   };
   const openBoardTask = (task: RepositoryTask, tab: BoardTab = repository ? storedBoardTab(repository.rootPath, task.id, sandboxSupported === true, browserSupported) : "detail") => {
@@ -4963,7 +4965,7 @@ function App() {
 
   const agentChatExpanded = !zenMode && workspaceMode === "workspace" && !!repository && !terminalOpen && comparison?.mode === "workingCopy" && !comparison.files.length;
   const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? null;
-  const taskVisualSessionOpen = !!selectedTask && taskMode && !settingsOpen && !zenMode && (!boardMode || boardDrawerOpen);
+  const taskVisualSessionOpen = !!selectedTask && taskMode && !settingsOpen && !zenMode && (!boardMode || inlineTaskMode || boardDrawerOpen);
   const activeApprovalReviewer = approvalReviewerOverrides[taskMode ? selectedTask?.id ?? "" : "review"] ?? approvalReviewerDefault;
   const selectedTaskHasPendingChanges = !!selectedTask && taskPendingChanges?.taskId === selectedTask.id && taskPendingChanges.location === selectedTask.location && taskPendingChanges.pending;
   const activeTaskTerminalKey = terminalMounted && terminalOpen && taskMode && !settingsOpen && !zenMode && repository && selectedTask
@@ -5348,6 +5350,56 @@ function App() {
     const { taskId, position } = destination;
     if (taskId) setTasks((current) => moveTaskWithinStatus(current, sourceTask.id, taskId, position));
   };
+
+  const taskDetailContent = (
+    <Tabs.Root value={boardTab} onValueChange={(value) => { const tab = value as BoardTab; setBoardTab(tab); if (repository && selectedTask) saveBoardTab(repository.rootPath, selectedTask.id, tab); }} className="flex min-h-0 flex-1 flex-col">
+      <header className={`task-modal-toolbar ${inlineTaskMode ? "task-inline-toolbar" : ""}`}>
+        {inlineTaskMode ? <h2 className="task-modal-title" title={selectedTask?.title}>{selectedTask?.title ?? "Select a task"}</h2> : <DialogTitle className="task-modal-title" title={selectedTask?.title}>{selectedTask?.title ?? "Task"}</DialogTitle>}
+        <Tabs.List className="task-modal-tabs" aria-label="Task panels">
+          <Tabs.Tab value="detail" className="task-board-modal-tab">Detail</Tabs.Tab>
+          <Tabs.Tab value="draw" className="task-board-modal-tab">Draw</Tabs.Tab>
+          {sandboxSupported && <Tabs.Tab value="sandbox" className="task-board-modal-tab">Sandbox</Tabs.Tab>}
+          {browserSupported && <Tabs.Tab value="browser" className="task-board-modal-tab">Browser</Tabs.Tab>}
+          <Tabs.Tab value="changes" className="task-board-modal-tab">Changes{selectedTaskHasPendingChanges && <span className="ml-1 inline-block size-1.5 rounded-full bg-[#FFD28A]" aria-label="Uncommitted changes" />}</Tabs.Tab>
+        </Tabs.List>
+        <div className="task-modal-actions">
+          <PomodoroTimer onSettings={openPomodoroSettings} />
+          {boardMode && (inlineTaskMode || boardDrawerOpen) && taskGitToolbar && <><span className="task-modal-toolbar-divider" aria-hidden="true" />{taskGitToolbar}</>}
+          <span className="task-modal-toolbar-divider" aria-hidden="true" />
+          <DropdownMenu>
+            <DropdownMenuTrigger disabled={!selectedTask} aria-label={selectedTask?.worktree ? "Open task folder" : "Open repository folder"} title="Open folder" className="task-modal-icon"><FolderOpen size={17} /></DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-44">
+              <DropdownMenuItem onClick={() => openTaskFolder(false)}><FolderOpen size={14} /> Open in Finder</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => openTaskFolder(true)}><Terminal size={14} /> Open in Terminal</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <DropdownMenu>
+            <DropdownMenuTrigger disabled={!selectedTask} className="task-modal-icon" aria-label="Task actions" title="Task actions"><Ellipsis size={18} /></DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-52">
+              <DropdownMenuItem onClick={() => setZenMode(true)}><Maximize2 size={14} /> Enter Zen Mode</DropdownMenuItem>
+              <DropdownMenuItem disabled={!selectedTask?.chatMessages.length && !(activeQueueKey && chatQueues[activeQueueKey]?.length) || !!selectedTaskRun} onClick={() => { if (selectedTask) clearTaskChat(selectedTask); }}><RotateCcw size={14} /> Clear conversation</DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem variant="destructive" disabled={!selectedTask || protectedTaskIds.has(selectedTask.id)} onClick={() => { if (selectedTask) confirmDeleteTasks(taskSubtreeIds(tasks, [selectedTask.id])); }}><Trash2 size={14} /> Delete task</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          {!inlineTaskMode && <DialogClose aria-label="Close task modal" title="Close" className="task-modal-icon"><X size={17} /></DialogClose>}
+        </div>
+      </header>
+      {boardFolderError && <p role="alert" className="border-b border-[#482631] px-4 py-2 text-xs text-[#FB7185]">{boardFolderError}</p>}
+      <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1.618fr)_minmax(0,1fr)]" style={inlineTaskMode ? { gridTemplateColumns: `minmax(0, 1fr) ${taskColumns.changes}px` } : undefined}>
+        <div className="relative flex min-h-0 min-w-0 flex-col" aria-label="Task panels">
+          {/* Preserve iframe viewport sizes; inactive panels remain inert and visually hidden. */}
+          <Tabs.Panel value="detail" keepMounted hidden={false} className="task-board-modal-panel"><div ref={setBoardDetailHost} className="task-board-detail-host flex h-full min-h-0 flex-col" /></Tabs.Panel>
+          <Tabs.Panel value="draw" keepMounted hidden={false} className="task-board-modal-panel"><div ref={setBoardDrawHost} className="flex h-full min-h-0 flex-col" /></Tabs.Panel>
+          {sandboxSupported && <Tabs.Panel value="sandbox" keepMounted hidden={false} className="task-board-modal-panel"><div ref={setBoardSandboxHost} className="flex h-full min-h-0 flex-col" /></Tabs.Panel>}
+          {browserSupported && <Tabs.Panel value="browser" keepMounted hidden={false} className="task-board-modal-panel"><div ref={setBoardBrowserHost} className="flex h-full min-h-0 flex-col" /></Tabs.Panel>}
+          <Tabs.Panel value="changes" keepMounted hidden={false} className="task-board-modal-panel"><div ref={setBoardChangesHost} className="flex h-full min-h-0 flex-col" /></Tabs.Panel>
+          {inlineTaskMode && <button type="button" role="separator" aria-orientation="vertical" aria-label="Resize Details and Agent columns" aria-valuenow={Math.round(taskColumns.changes / taskGridWidth * 100)} aria-valuetext={`${Math.round(taskColumns.changes)} pixels`} onPointerDown={(event) => startTaskResizing("changes", event)} onKeyDown={(event) => { if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); adjustTaskDivider("changes", event.key === "ArrowRight" ? 16 : -16); } }} className="sidebar-resize-handle right-[-4px]" />}
+        </div>
+        <div ref={setBoardChatHost} className="flex min-h-0 min-w-0 flex-col" aria-label="Task chat" />
+      </div>
+    </Tabs.Root>
+  );
 
   return (
     <PomodoroProvider settings={pomodoroSettings} revision={pomodoroRevision} onComplete={notifyPomodoro}>
@@ -5744,6 +5796,8 @@ function App() {
             ? `${sidebarWidths.left}px minmax(0, 1fr)`
             : zenMode
             ? "minmax(0, 1fr)"
+            : inlineTaskMode && repository
+            ? `${taskColumns.tasks}px minmax(0, 1fr)`
             : tasksTabActive && boardMode && repository
             ? "minmax(0, 1fr)"
             : tasksTabActive && repository
@@ -5932,7 +5986,7 @@ function App() {
           {tasksTabActive ? (
             <>
               <div className="ios-file-sidebar-header task-list-header flex shrink-0 items-center justify-between gap-3">
-                <div className="flex items-center gap-3"><h2>Tasks</h2><div role="group" aria-label="Task view" className="task-view-switch"><button type="button" aria-pressed={taskView === "list"} onClick={() => { setTaskView("list"); setBoardAddingSubtaskId(null); }}><ListTodo size={14} /> List</button><button type="button" aria-pressed={taskView === "kanban"} onClick={() => { setTaskView("kanban"); }}><LayoutGrid size={14} /> Kanban</button><button type="button" aria-pressed={taskView === "gantt"} onClick={() => { setTaskView("gantt"); }}><ChartGantt size={14} /> Gantt</button></div></div>
+                <div className="flex items-center gap-3"><h2>Tasks</h2><div role="group" aria-label="Task view" className="task-view-switch"><button type="button" aria-pressed={taskView === "list"} onClick={() => { setTaskView("list"); setBoardDrawerOpen(false); setBoardAddingSubtaskId(null); }}><ListTodo size={14} /> List</button><button type="button" aria-pressed={taskView === "kanban"} onClick={() => { setTaskView("kanban"); setBoardDrawerOpen(false); }}><LayoutGrid size={14} /> Kanban</button><button type="button" aria-pressed={taskView === "gantt"} onClick={() => { setTaskView("gantt"); setBoardDrawerOpen(false); }}><ChartGantt size={14} /> Gantt</button></div></div>
                 <NewTaskButton key={repository?.rootPath} onCreate={({ status, ...draft }) => createTask(null, status, draft)} />
               </div>
               {taskView === "gantt" ? <TaskGantt tasks={tasks} groups={boardGroups} onOpenTask={(task) => openBoardTask(task, "detail")} renderTaskOptions={renderTaskOptions} renderStatusOptions={(group) => renderStatusOptions(group.status, group.label)} renderAgentStatus={(task) => {
@@ -6155,8 +6209,10 @@ function App() {
           )}
           </div>
           {terminalMounted && repository && <TerminalPanel key={repository.rootPath} rootPath={repository.rootPath} visible={terminalOpen && !taskMode && !memoryMode && !settingsOpen && !zenMode} onClose={() => { setTerminalOpen(false); setTerminalMounted(false); }} />}
-          {taskMode && !boardMode && repository && <button type="button" role="separator" aria-orientation="vertical" aria-label="Resize Tasks and Details columns" aria-valuenow={Math.round(taskColumns.tasks / taskGridWidth * 100)} aria-valuetext={`${Math.round(taskColumns.tasks)} pixels`} onPointerDown={(event) => startTaskResizing("tasks", event)} onKeyDown={(event) => { if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); adjustTaskDivider("tasks", event.key === "ArrowRight" ? 16 : -16); } }} className="sidebar-resize-handle right-[-4px]" />}
+          {taskMode && (inlineTaskMode || !boardMode) && repository && <button type="button" role="separator" aria-orientation="vertical" aria-label="Resize Tasks and Details columns" aria-valuenow={Math.round(taskColumns.tasks / taskGridWidth * 100)} aria-valuetext={`${Math.round(taskColumns.tasks)} pixels`} onPointerDown={(event) => startTaskResizing("tasks", event)} onKeyDown={(event) => { if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); adjustTaskDivider("tasks", event.key === "ArrowRight" ? 16 : -16); } }} className="sidebar-resize-handle right-[-4px]" />}
         </section>
+
+        {repository && inlineTaskMode && <section aria-label="Task workspace" className="flex min-h-0 min-w-0 flex-col" style={{ gridColumn: 2, gridRow: 1 }}>{taskDetailContent}</section>}
 
         {repository && (taskMode || taskTerminals.length > 0) && <div className={zenMode || !taskMode || boardMode ? "hidden" : "relative flex min-h-0 min-w-0 flex-col"} style={{ gridColumn: 2, gridRow: 1 }}>
           <div className="task-list-toolbar flex min-h-12 min-w-0 shrink-0 flex-wrap items-center gap-2 border-b border-[#294536] bg-[#0B110E] px-3 py-1">
@@ -6189,7 +6245,7 @@ function App() {
           {browserSupported && <div id="task-browser-panel" role="tabpanel" aria-labelledby="task-browser-tab" data-active={taskDetailsTab === "browser"} className="task-tab-panel min-h-0 flex-1" style={{ display: taskDetailsTab === "browser" ? undefined : "none" }}>
             <TaskSurface board={boardMode} target={boardBrowserHost}>{selectedTask && taskVisualSessionOpen && <TaskBrowser key={`${repository.rootPath}:${selectedTask.id}`} repositoryRoot={repository.rootPath} taskId={selectedTask.id} active={boardMode ? boardTab === "browser" : taskDetailsTab === "browser"} />}</TaskSurface>
           </div>}
-          <div id="task-changes-panel" role="tabpanel" aria-labelledby="task-changes-tab" data-active={taskDetailsTab === "changes"} className="task-tab-panel min-h-0 flex-1" style={{ display: taskDetailsTab === "changes" ? undefined : "none" }}><TaskSurface board={boardMode} target={boardChangesHost}><TaskChangesPanel key={selectedTask?.id ?? "none"} task={selectedTask} repository={repository} model={commitMessageModel} revision={taskChangesRevision} active={taskMode && !settingsOpen && !zenMode && (boardMode ? boardDrawerOpen && boardTab === "changes" : taskDetailsTab === "changes")} taskRunning={selectedTaskRootBusy} runningBranches={new Set(tasks.filter((task) => (!!taskRuns[task.id] || taskStartingIds.has(task.id)) && task.worktree).map((task) => task.worktree!.branch))} onPendingChange={(pending) => setTaskPendingChanges((current) => current && current.taskId === selectedTask?.id && current.location === selectedTask?.location && current.pending === pending ? current : { taskId: selectedTask?.id ?? "", location: selectedTask?.location ?? "workspace", pending })} onMerged={() => { void refreshRef.current(); }} onWorkspaceCommit={(repo) => { setRepository(repo); void refreshRef.current(); }} /></TaskSurface></div>
+          <div id="task-changes-panel" role="tabpanel" aria-labelledby="task-changes-tab" data-active={taskDetailsTab === "changes"} className="task-tab-panel min-h-0 flex-1" style={{ display: taskDetailsTab === "changes" ? undefined : "none" }}><TaskSurface board={boardMode} target={boardChangesHost}><TaskChangesPanel key={selectedTask?.id ?? "none"} task={selectedTask} repository={repository} model={commitMessageModel} revision={taskChangesRevision} active={taskMode && !settingsOpen && !zenMode && (boardMode ? (inlineTaskMode || boardDrawerOpen) && boardTab === "changes" : taskDetailsTab === "changes")} taskRunning={selectedTaskRootBusy} runningBranches={new Set(tasks.filter((task) => (!!taskRuns[task.id] || taskStartingIds.has(task.id)) && task.worktree).map((task) => task.worktree!.branch))} onPendingChange={(pending) => setTaskPendingChanges((current) => current && current.taskId === selectedTask?.id && current.location === selectedTask?.location && current.pending === pending ? current : { taskId: selectedTask?.id ?? "", location: selectedTask?.location ?? "workspace", pending })} onMerged={() => { void refreshRef.current(); }} onWorkspaceCommit={(repo) => { setRepository(repo); void refreshRef.current(); }} /></TaskSurface></div>
           <TaskSurface board={boardMode} target={boardDetailHost}>{taskTerminals.map((terminal) => <TerminalPanel
             key={terminal.key}
             rootPath={terminal.rootPath}
@@ -6232,7 +6288,7 @@ function App() {
             plan={taskMode ? selectedTaskRun?.plan ?? null : aiChatPlan}
             centered={zenMode || (!taskMode && agentChatExpanded)}
             zenMode={zenMode}
-            hideHeader={boardMode}
+            hideHeader={boardMode && !inlineTaskMode}
             approvalReviewer={activeApprovalReviewer}
             error={error}
             images={taskMode ? selectedTask?.attachments ?? [] : aiChatUploads}
@@ -6301,7 +6357,7 @@ function App() {
         </div>}
       </div>
       </div>
-      <Dialog open={boardMode && boardDrawerOpen && !!selectedTask} onOpenChange={(open) => {
+      <Dialog open={boardMode && !inlineTaskMode && boardDrawerOpen && !!selectedTask} onOpenChange={(open) => {
         const finish = () => {
           if (!open) {
             if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
@@ -6315,51 +6371,7 @@ function App() {
       }} disablePointerDismissal={!closeKanbanModalOnOutsideClick}>
         <DialogContent keepMounted showCloseButton={false} className="task-detail-dialog !animate-none flex h-[88vh] w-[94vw] !max-w-[1800px] min-h-0 flex-col gap-0 overflow-hidden rounded-xl border border-[#294536] bg-[var(--ios-grouped-background)] p-0 shadow-2xl shadow-black/50">
           <DialogDescription className="sr-only">Task detail, chat and changes</DialogDescription>
-          <Tabs.Root value={boardTab} onValueChange={(value) => { const tab = value as BoardTab; setBoardTab(tab); if (repository && selectedTask) saveBoardTab(repository.rootPath, selectedTask.id, tab); }} className="flex min-h-0 flex-1 flex-col">
-            <header className="task-modal-toolbar">
-              <DialogTitle className="task-modal-title" title={selectedTask?.title}>{selectedTask?.title ?? "Task"}</DialogTitle>
-              <Tabs.List className="task-modal-tabs" aria-label="Task panels">
-                <Tabs.Tab value="detail" className="task-board-modal-tab">Detail</Tabs.Tab>
-                <Tabs.Tab value="draw" className="task-board-modal-tab">Draw</Tabs.Tab>
-                {sandboxSupported && <Tabs.Tab value="sandbox" className="task-board-modal-tab">Sandbox</Tabs.Tab>}
-                {browserSupported && <Tabs.Tab value="browser" className="task-board-modal-tab">Browser</Tabs.Tab>}
-                <Tabs.Tab value="changes" className="task-board-modal-tab">Changes{selectedTaskHasPendingChanges && <span className="ml-1 inline-block size-1.5 rounded-full bg-[#FFD28A]" aria-label="Uncommitted changes" />}</Tabs.Tab>
-              </Tabs.List>
-              <div className="task-modal-actions">
-                <PomodoroTimer onSettings={openPomodoroSettings} />
-                {boardMode && boardDrawerOpen && taskGitToolbar && <><span className="task-modal-toolbar-divider" aria-hidden="true" />{taskGitToolbar}</>}
-                <span className="task-modal-toolbar-divider" aria-hidden="true" />
-                <DropdownMenu>
-                  <DropdownMenuTrigger aria-label={selectedTask?.worktree ? "Open task folder" : "Open repository folder"} title="Open folder" className="task-modal-icon"><FolderOpen size={17} /></DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-44">
-                    <DropdownMenuItem onClick={() => openTaskFolder(false)}><FolderOpen size={14} /> Open in Finder</DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => openTaskFolder(true)}><Terminal size={14} /> Open in Terminal</DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-                <DropdownMenu>
-                  <DropdownMenuTrigger className="task-modal-icon" aria-label="Task actions" title="Task actions"><Ellipsis size={18} /></DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-52">
-                    <DropdownMenuItem onClick={() => setZenMode(true)}><Maximize2 size={14} /> Enter Zen Mode</DropdownMenuItem>
-                    <DropdownMenuItem disabled={!selectedTask?.chatMessages.length && !(activeQueueKey && chatQueues[activeQueueKey]?.length) || !!selectedTaskRun} onClick={() => { if (selectedTask) clearTaskChat(selectedTask); }}><RotateCcw size={14} /> Clear conversation</DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem variant="destructive" disabled={!selectedTask || protectedTaskIds.has(selectedTask.id)} onClick={() => { if (selectedTask) confirmDeleteTasks(taskSubtreeIds(tasks, [selectedTask.id])); }}><Trash2 size={14} /> Delete task</DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-                <DialogClose aria-label="Close task modal" title="Close" className="task-modal-icon"><X size={17} /></DialogClose>
-              </div>
-            </header>
-            {boardFolderError && <p role="alert" className="border-b border-[#482631] px-4 py-2 text-xs text-[#FB7185]">{boardFolderError}</p>}
-            <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1.618fr)_minmax(0,1fr)]">
-              <div className="flex min-h-0 min-w-0 flex-col" aria-label="Task panels">
-                <Tabs.Panel value="detail" keepMounted className="task-board-modal-panel"><div ref={setBoardDetailHost} className="task-board-detail-host flex h-full min-h-0 flex-col" /></Tabs.Panel>
-                <Tabs.Panel value="draw" keepMounted className="task-board-modal-panel"><div ref={setBoardDrawHost} className="flex h-full min-h-0 flex-col" /></Tabs.Panel>
-                {sandboxSupported && <Tabs.Panel value="sandbox" keepMounted className="task-board-modal-panel"><div ref={setBoardSandboxHost} className="flex h-full min-h-0 flex-col" /></Tabs.Panel>}
-                {browserSupported && <Tabs.Panel value="browser" keepMounted className="task-board-modal-panel"><div ref={setBoardBrowserHost} className="flex h-full min-h-0 flex-col" /></Tabs.Panel>}
-                <Tabs.Panel value="changes" keepMounted className="task-board-modal-panel"><div ref={setBoardChangesHost} className="flex h-full min-h-0 flex-col" /></Tabs.Panel>
-              </div>
-              <div ref={setBoardChatHost} className="flex min-h-0 min-w-0 flex-col" aria-label="Task chat" />
-            </div>
-          </Tabs.Root>
+          {!inlineTaskMode && taskDetailContent}
         </DialogContent>
       </Dialog>
       {simulatorSpace.enabled && <aside className="relative flex min-h-0 shrink-0 flex-col border-l border-[#294536] bg-[#0B110E]" style={{ width: Math.min(simulatorSpace.width, Math.max(200, window.innerWidth - 320)) }} aria-label="Simulator space">
