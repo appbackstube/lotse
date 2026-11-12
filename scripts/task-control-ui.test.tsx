@@ -3,10 +3,12 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { mockConvertFileSrc, mockWindows } from "@tauri-apps/api/mocks";
 import { mockIPC } from "./mockTauri";
-import { emit } from "@tauri-apps/api/event";
+import { emit, emitTo, listen } from "@tauri-apps/api/event";
+import { Window } from "@tauri-apps/api/window";
 import { fileStore, initializeFileStore } from "../src/fileStore";
 import { taskStorageKey, normalizeTask } from "../src/tasks";
 import { laneStorageKey } from "../src/laneAutomation";
+import { patchSavedSandbox } from "../src/taskSandbox";
 import App from "../src/App";
 let fixtureRoot: ReturnType<typeof createRoot> | undefined;
 
@@ -49,6 +51,13 @@ mockIPC(async (command, args: any) => {
   if (command === "task_control_active") return pending.has(args.operationId) && args.repositoryRoot === repo.rootPath;
   if (command === "task_control_ack") { acknowledgements.push(args); pending.delete(args.operationId); return; }
   if (command === "task_sandbox_supported") return true;
+  if (command === "save_task_sandbox") {
+    check(args.repositoryRoot === repo.rootPath, "Sandbox saved to the wrong repository");
+    const updatedAt = Date.now();
+    const key = taskStorageKey(args.repositoryRoot);
+    storage[key] = patchSavedSandbox(storage[key], args.taskId, args.update.html, updatedAt);
+    return updatedAt;
+  }
   if (command === "task_browser_supported") return false;
   if (command === "plugin:dialog|open") return selectedRepository;
   if (command === "open_repository") { repo = { ...repo, rootPath: args.path, name: args.path.endsWith("other") ? "Other repository" : "Monthly Report" }; return { status: "opened", repository: repo, focusedExisting: false }; }
@@ -113,6 +122,45 @@ const root = (fixtureRoot = createRoot(document.getElementById("root")!));
 try {
   await initializeFileStore();
   await act(async () => root.render(<App />)); await settle();
+  // Model a second window alongside the real App's main-window listeners.
+  const otherWindow = new Window("other", { skip: true });
+  for (const kind of ["drawing", "sandbox"] as const) {
+    const replies: any[] = [];
+    const ownId = `${kind}-main`;
+    const foreignId = `${kind}-other`;
+    const stopOwn = await listen(`task-${kind}-result-${ownId}`, (event) => replies.push(event.payload));
+    const stopForeign = await listen(`task-${kind}-result-${foreignId}`, (event) => replies.push(event.payload));
+    let otherCalls = 0;
+    const stopOther = await otherWindow.listen<{ requestId: string }>(`mcp-task-${kind}-update`, async (event) => {
+      otherCalls++;
+      await emit(`task-${kind}-result-${event.payload.requestId}`, { saved: true, window: "other" });
+    });
+    try {
+      const payload = { repositoryRoot: repo.rootPath, taskId: first.id, requestId: ownId,
+        update: kind === "drawing" ? { elements: [{ id: "window-check", type: "rectangle", x: 0, y: 0, width: 100, height: 50 }] }
+          : { html: "<!doctype html><h1>Window isolation</h1>", expectedRevision: null } };
+      await act(async () => { await emitTo("main", `mcp-task-${kind}-update`, payload); });
+      await settle();
+      check(replies.length === 1 && !replies[0].error && otherCalls === 0, `${kind}: main must receive exactly one successful reply`);
+      const saved = storedTasks()[0];
+      check(kind === "drawing" ? JSON.parse(saved.drawing).elements.some((element: any) => element.id === "window-check")
+        : saved.sandboxHtml === payload.update.html, `${kind}: main's update was not persisted`);
+      const before = storage[taskStorageKey(repo.rootPath)];
+      replies.length = 0;
+      await act(async () => { await emitTo("other", `mcp-task-${kind}-update`, { ...payload, repositoryRoot: "/other-repository", requestId: foreignId }); });
+      await settle();
+      check(otherCalls === 1 && replies.length === 1 && replies[0].window === "other", `${kind}: foreign writes must not cause extra replies`);
+      check(storage[taskStorageKey(repo.rootPath)] === before, `${kind}: foreign writes changed main's tasks`);
+      check(!document.body.textContent?.includes("Repository changed. Read the task again."), `${kind}: foreign writes displayed a repository error`);
+      replies.length = 0;
+      await act(async () => { await emitTo("main", `mcp-task-${kind}-update`, { ...payload, repositoryRoot: "/stale-repository" }); });
+      await settle();
+      check(replies.length === 1 && replies[0].error === "Repository changed. Read the task again.", `${kind}: genuine repository mismatches must still fail`);
+      check(storage[taskStorageKey(repo.rootPath)] === before, `${kind}: a stale request changed stored tasks`);
+    } finally {
+      await stopOwn(); await stopForeign(); await stopOther();
+    }
+  }
   check(!document.querySelector('[aria-label="Task orchestrator"]'), "Orchestrator sidebar still exists");
   await click(button("Workspace"));
   await sendFromComposer("Coordinate the repository tasks");
@@ -312,7 +360,7 @@ try {
   check(document.querySelector<HTMLTextAreaElement>('[aria-label="Review Agent message"]')?.value === "Keep my workspace draft", "Sending in the task modal must preserve the workspace draft");
   await event(sends.length - 1, { kind: "completed" });
   check(!failures.length, `Unexpected IPC commands: ${failures.join(", ")}`);
-  document.getElementById("result")!.textContent = "PASS: workspace task-link modals with List/Kanban, unchanged active tab, separate drafts, task chat and changes, workspace/task agent coordination, sidebar removal, task metadata and hierarchy, cross-task comments, persisted writes, agent-template selection and role-switch protection, direct starts, model/worktree/draft preservation, exact queues, cycle prevention, cancellation, playbooks, lanes and stopped/foreign caller checks.";
+  document.getElementById("result")!.textContent = "PASS: drawing/sandbox window isolation, single replies, persisted writes, stale repository rejection, workspace task-link modals with List/Kanban, unchanged active tab, separate drafts, task chat and changes, workspace/task agent coordination, sidebar removal, task metadata and hierarchy, cross-task comments, persisted writes, agent-template selection and role-switch protection, direct starts, model/worktree/draft preservation, exact queues, cycle prevention, cancellation, playbooks, lanes and stopped/foreign caller checks.";
 } catch (error) {
   document.getElementById("result")!.textContent = `FAIL: ${error instanceof Error ? error.stack : error}`;
 } finally {

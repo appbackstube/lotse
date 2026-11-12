@@ -3063,7 +3063,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const drawingUpdated = listen<{ repositoryRoot: string; taskId: string; requestId: string; update: unknown }>("mcp-task-drawing-update", (event) => {
+    const drawingUpdated = getCurrentWindow().listen<{ repositoryRoot: string; taskId: string; requestId: string; update: unknown }>("mcp-task-drawing-update", (event) => {
       const { repositoryRoot, taskId, requestId, update } = event.payload;
       void (async () => {
         try {
@@ -3102,7 +3102,7 @@ function App() {
     const saved = listen<{ repositoryRoot: string; taskId: string; html: string; updatedAt: number }>("task-sandbox-saved", (event) => {
       try { acceptSaved(event.payload); } catch (reason) { setError(message(reason)); }
     });
-    const updated = listen<{ repositoryRoot: string; taskId: string; requestId: string; update: unknown }>("mcp-task-sandbox-update", (event) => {
+    const updated = getCurrentWindow().listen<{ repositoryRoot: string; taskId: string; requestId: string; update: unknown }>("mcp-task-sandbox-update", (event) => {
       const { repositoryRoot, taskId, requestId, update } = event.payload;
       queue = queue.then(async () => {
         try {
