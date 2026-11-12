@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync, existsSync } from "node:fs";
 import { test } from "node:test";
 import { getRepositoryUrl } from "../docs/site.js";
+import configuredRepository from "../docs/repository.js";
 
 const directory = new URL("../docs/", import.meta.url);
 const html = readFileSync(new URL("index.html", directory), "utf8");
@@ -53,6 +54,15 @@ test("tour tabs have corresponding panels and a visible default", () => {
     const panelId = tab.match(/aria-controls="([^"]+)"/)[1];
     assert.ok(panels.some((panel) => panel.includes(`id="${panelId}"`) && panel.includes(`aria-labelledby="${id}"`)));
   }
+});
+
+test("both Mac downloads match the release workflow's public asset names", () => {
+  assert.equal(getRepositoryUrl("localhost", "/", configuredRepository), "https://github.com/appbackstube/lotse");
+  const assets = [...html.matchAll(/data-release-asset="([^"]+)"/g)].map((match) => match[1]);
+  assert.deepEqual(assets.sort(), ["Lotse_Apple_Silicon.dmg", "Lotse_Intel.dmg"]);
+  const workflow = readFileSync(new URL("../.github/workflows/macos.yml", import.meta.url), "utf8");
+  for (const asset of assets) assert.ok(workflow.includes(`asset: ${asset}`));
+  assert.match(html, /Not notarized by Apple/);
 });
 
 test("product images are real PNG assets with interface attribution", () => {

@@ -42,7 +42,7 @@ You can instead choose **Deploy from a branch**, select the default branch and *
 The repository URL is already set in `docs/repository.js`, including for local previews and custom-domain branch publishing:
 
 ```js
-window.LOTSE_REPOSITORY = "https://github.com/appbackstube/lotse";
+export default "https://github.com/appbackstube/lotse";
 ```
 
 The Actions workflow sets this from its destination repository as well. The local preview now links to the same GitHub project.
@@ -62,4 +62,4 @@ With the app's existing dependencies installed, run `npm run dev` and open `http
 
 Before capturing a task tab, move focus to the task dialog container with `document.querySelector('[role="dialog"]').focus({ preventScroll: true })`. Verify that the intended tab has `aria-selected="true"` and no tab matches `:focus-visible`; this keeps keyboard focus rings out of product screenshots. Save captures outside the checkout first so Vite does not reload the app during the sequence.
 
-The page links to the project rather than promising an available binary. Publish tested macOS builds as GitHub release assets when ready, then optionally change the call to action to a verified download link. Review final release availability and any publication-specific legal information before launch.
+The page offers separate Apple Silicon and Intel DMGs from the latest published GitHub release, using the stable asset names `Lotse_Apple_Silicon.dmg` and `Lotse_Intel.dmg`. The release workflow publishes both together after successful builds; updating the release updates both download destinations without a website rebuild. The installation note states that these builds are ad-hoc signed and not notarized by Apple. Keep that note accurate if Developer ID signing and notarization are added later.

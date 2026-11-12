@@ -104,6 +104,8 @@ h2 { font-size: calc(clamp(36px, 3.6vw, 51px) + 2px); line-height: 1.12; letter-
 .get-started h2 { font-size: calc(clamp(45px, 5.8vw, 79px) + 2px); line-height: 1.08; }
 .get-started > p:not(.start-note) { margin-top: 25px; color: #a0a09a; font-size: 15px; }
 .get-started > .button { margin-top: 25px; }
+.download-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 14px; margin-top: 25px; }
+.get-started > p.installation-note { max-width: 590px; margin: 14px auto 0; color: #a0a09a; font-size: 13px; line-height: 1.8; }
 .start-note { margin-top: 15px; color: #96968e; font-size: 11px; }
 .setup { max-width: 650px; margin: 45px auto 0; text-align: left; border-block: 1px solid var(--line); }
 .setup summary { display: flex; justify-content: space-between; align-items: center; cursor: pointer; padding-block: 17px; list-style: none; font-size: 14px; color: #b6b6af; }

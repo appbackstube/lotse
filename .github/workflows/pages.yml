@@ -36,7 +36,7 @@ jobs:
           mkdir _site
           cp -R docs/. _site/
           rm _site/README.md
-          node --input-type=module -e 'import { writeFileSync } from "node:fs"; writeFileSync("_site/repository.js", "window.LOTSE_REPOSITORY = " + JSON.stringify("https://github.com/" + process.env.GITHUB_REPOSITORY) + ";\n");'
+          node --input-type=module -e 'import { writeFileSync } from "node:fs"; writeFileSync("_site/repository.js", "export default " + JSON.stringify("https://github.com/" + process.env.GITHUB_REPOSITORY) + ";\n");'
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
       - name: Upload website

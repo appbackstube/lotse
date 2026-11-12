@@ -1,3 +1,5 @@
+import configuredRepository from "./repository.js?v=macos-downloads-1";
+
 export function getRepositoryUrl(hostname, pathname, configured = "") {
   if (configured) {
     try {
@@ -61,12 +63,16 @@ if (typeof document !== "undefined") {
   document.querySelectorAll('a[href="#setup"]').forEach((link) => {
     link.addEventListener("click", () => { document.getElementById("setup").open = true; });
   });
-  const repository = getRepositoryUrl(location.hostname, location.pathname, window.LOTSE_REPOSITORY);
+  const repository = getRepositoryUrl(location.hostname, location.pathname, configuredRepository);
   if (repository) {
     document.querySelectorAll("[data-repository]").forEach((link) => {
       link.href = repository;
       link.hidden = false;
     });
+    document.querySelectorAll("[data-release-asset]").forEach((link) => {
+      link.href = `${repository}/releases/latest/download/${encodeURIComponent(link.dataset.releaseAsset)}`;
+    });
+    document.querySelector("[data-downloads]").hidden = false;
     document.querySelector("[data-local-start]").hidden = true;
   }
 }
