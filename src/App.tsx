@@ -53,6 +53,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
 import { NewTaskButton } from "@/components/NewTaskButton";
+import { ChatGoalSettings } from "./components/ChatGoalSettings";
+import { defaultChatGoal, normalizeChatGoal } from "./chatGoal";
 import { MemoryWorkspace } from "@/components/MemoryWorkspace";
 import { TaskGantt, TaskScheduleFields } from "@/components/TaskGantt";
 import { TaskAssetThumbnail } from "@/components/TaskAssetThumbnail";
@@ -166,6 +168,7 @@ import type {
   ChatContext,
   ChatAttachment,
   ChatRequestContext,
+  ChatGoalSettings as GoalSettings,
   ReviewSession,
   ReviewComment,
 } from "./types";
@@ -1040,6 +1043,8 @@ function AiChatPanel({
   serverModel,
   effort,
   mode,
+  goalSettings,
+  onGoalSettingsChange,
   plan,
   centered,
   zenMode,
@@ -1111,6 +1116,8 @@ function AiChatPanel({
   serverModel: string | null;
   effort: ChatEffort;
   mode: AiChatMode;
+  goalSettings: GoalSettings;
+  onGoalSettingsChange: (value: GoalSettings) => void;
   plan: AiChatPlan | null;
   centered: boolean;
   zenMode: boolean;
@@ -1386,6 +1393,7 @@ function AiChatPanel({
                   <button type="button" onClick={() => setAddMenuPage("playbooks")} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[#183522]"><Blocks size={15} className="text-[#7C9B88]" /><span className="flex-1">Playbook</span><ChevronRight size={14} className="text-[#7C9B88]" /></button>
                   {taskMode && <button type="button" disabled={!taskSelected || !taskAssets.length} onClick={() => setAddMenuPage("assets")} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[#183522] disabled:opacity-40"><Folder size={15} className="text-[#7C9B88]" /><span className="flex-1">Assets</span>{selectedAssetIds.length > 0 && <span className="text-xs text-[#7C9B88]">{selectedAssetIds.length}</span>}<ChevronRight size={14} className="text-[#7C9B88]" /></button>}
                   <button type="button" role="switch" aria-checked={mode === "plan"} disabled={running || (taskMode && !taskSelected)} onClick={() => { onModeChange(mode === "plan" ? "default" : "plan"); setAddMenuOpen(false); }} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[#183522] disabled:opacity-40"><ListTodo size={15} className="text-[#7C9B88]" /><span className="flex-1">Plan</span><span className="text-xs text-[#7C9B88]">{mode === "plan" ? "On" : "Off"}</span></button>
+                  <button type="button" role="switch" aria-checked={goalSettings.enabled} disabled={running || (taskMode && !taskSelected)} onClick={() => { onGoalSettingsChange({ ...goalSettings, enabled: !goalSettings.enabled }); setAddMenuOpen(false); }} className="flex w-full items-center justify-between gap-2.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[#183522] disabled:opacity-40"><span>Goal</span><span className="text-xs text-[#7C9B88]">{goalSettings.enabled ? "On" : "Off"}</span></button>
                 </> : <>
                   <button type="button" onClick={() => setAddMenuPage("main")} className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs text-[#7C9B88] hover:bg-[#183522]"><ChevronLeft size={14} /> {addMenuPage === "playbooks" ? "Playbooks" : "Assets"}</button>
                   {addMenuPage === "playbooks" ? <>
@@ -1446,6 +1454,7 @@ function AiChatPanel({
                 <SelectContent side="top" className="ios-select-content"><SelectItem value="user">Ask for approval</SelectItem><SelectItem value="auto_review">Approve for me</SelectItem><SelectItem value="yolo" title="Full access without approval prompts">YOLO mode</SelectItem></SelectContent>
               </Select>
               {mode === "plan" && <button type="button" className="ios-chat-plan-toggle" aria-label="Disable Plan mode" aria-pressed="true" title="Disable Plan mode" disabled={running || (taskMode && !taskSelected)} onClick={() => onModeChange("default")}>Plan <span>On</span></button>}
+              {goalSettings.enabled && <ChatGoalSettings value={goalSettings} disabled={running || (taskMode && !taskSelected)} onChange={onGoalSettingsChange} />}
             </div>
             {running ? (
               <><button type="button" disabled={!canSend} onClick={send} className="accent-button ml-auto !size-[30px] shrink-0 !p-0 disabled:opacity-40" aria-label="Queue Review Agent message" title="Queue message"><ArrowUp size={14} /></button><button
@@ -4003,6 +4012,7 @@ function App() {
     model: string;
     effort: ChatEffort;
     mode: AiChatMode;
+    goalSettings?: GoalSettings;
     prompt: string;
     context: ChatRequestContext;
     allowLongPrompt?: boolean;
@@ -4012,7 +4022,7 @@ function App() {
     taskDescription?: string;
     }, onEvent: (event: AgentTurnEvent) => void) => {
     await syncMcpContextRef.current();
-    return invoke<AiChatAccepted>("ai_chat_send", { input: { baseOid: comparison!.baseOid, mode: comparison!.mode, baseRef: comparison!.baseRef, compareRef: comparison!.compareRef, snapshotId: comparison!.snapshotId, agentThreadId: request.threadId, model: request.model, effort: request.effort, collaborationMode: request.mode, prompt: request.prompt, userRules, agentPrompt: request.chatAgent?.prompt ?? "", chatContext: request.context, comments: review!.comments, allowLongPrompt: request.allowLongPrompt, taskId: request.taskId, taskLocation: request.taskLocation, taskTitle: request.taskTitle, taskDescription: request.taskDescription, approvalMode: approvalReviewerOverrides[request.taskId ?? "review"] ?? approvalReviewerDefault }, events: new Channel<AgentTurnEvent>(onEvent) });
+    return invoke<AiChatAccepted>("ai_chat_send", { input: { baseOid: comparison!.baseOid, mode: comparison!.mode, baseRef: comparison!.baseRef, compareRef: comparison!.compareRef, snapshotId: comparison!.snapshotId, agentThreadId: request.threadId, model: request.model, effort: request.effort, collaborationMode: request.mode, goal: request.mode === "default" ? request.goalSettings ?? defaultChatGoal : defaultChatGoal, prompt: request.prompt, userRules, agentPrompt: request.chatAgent?.prompt ?? "", chatContext: request.context, comments: review!.comments, allowLongPrompt: request.allowLongPrompt, taskId: request.taskId, taskLocation: request.taskLocation, taskTitle: request.taskTitle, taskDescription: request.taskDescription, approvalMode: approvalReviewerOverrides[request.taskId ?? "review"] ?? approvalReviewerDefault }, events: new Channel<AgentTurnEvent>(onEvent) });
   };
 
   const sendAiChat = async (promptOverride?: string, requestContext = chatRequestContext, modeOverride?: AiChatMode, configurationOverride?: ChatDefaults[AiChatMode], queuedItem?: QueuedChatMessage): Promise<boolean> => {
@@ -4059,6 +4069,7 @@ function App() {
       let runReady = false;
       const result = await startChatTurn({
         threadId: currentReview.agentThreadId,
+        goalSettings: normalizeChatGoal(currentReview.chatGoal),
         chatAgent: currentReview.chatAgent,
         model: requestedModel,
         effort: configurationOverride?.effort ?? aiChatEffort,
@@ -4170,7 +4181,15 @@ function App() {
     chatEffort: chatDefaults[mode].effort,
   };
 
-  const selectTaskChatMode = (taskId: string, mode: AiChatMode) => updateTask(taskId, (task) => taskWithChatMode(task, mode));
+  const selectTaskChatMode = (taskId: string, mode: AiChatMode) => updateTask(taskId, (task) => ({ ...taskWithChatMode(task, mode), ...(mode === "plan" ? { chatGoal: { ...normalizeChatGoal(task.chatGoal), enabled: false } } : {}) }));
+
+  const changeChatGoal = (value: GoalSettings) => {
+    if (taskMode && selectedTask) updateTask(selectedTask.id, (task) => ({ ...taskWithChatMode(task, value.enabled ? "default" : task.chatMode), chatGoal: value }));
+    else if (reviewRef.current) {
+      if (value.enabled && aiChatMode === "plan") selectAiChatMode("default");
+      void persistReview({ ...reviewRef.current, chatGoal: value });
+    }
+  };
 
   const setTaskStatus = (id: string, status: TaskBoardStatus) => updateTask(id, (task) => status === "done"
     ? { ...task, completed: true, manualStatus: null }
@@ -4292,6 +4311,7 @@ function App() {
       }
       const accepted = await startChatTurn({
         threadId: task.agentThreadId,
+        goalSettings: !schedule && !automation ? normalizeChatGoal(task.chatGoal) : defaultChatGoal,
         chatAgent: task.chatAgent,
         model: queuedItem?.model ?? configuredTask.chatModel,
         effort: queuedItem?.effort ?? configuredTask.chatEffort,
@@ -6229,6 +6249,8 @@ function App() {
             model={taskMode ? selectedTask?.chatModel ?? chatDefaults.default.model : aiChatModel}
             effort={taskMode ? selectedTask?.chatEffort ?? chatDefaults.default.effort : aiChatEffort}
             mode={taskMode ? selectedTask?.chatMode ?? "default" : aiChatMode}
+            goalSettings={normalizeChatGoal(taskMode ? selectedTask?.chatGoal : review?.chatGoal)}
+            onGoalSettingsChange={changeChatGoal}
             plan={taskMode ? selectedTaskRun?.plan ?? null : aiChatPlan}
             centered={zenMode || (!taskMode && agentChatExpanded)}
             zenMode={zenMode}
@@ -6242,7 +6264,7 @@ function App() {
             onDraftChange={(value) => taskMode && selectedTask ? setTaskDrafts((current) => ({ ...current, [selectedTask.id]: value })) : setAiChatDraft(value)}
             onModelChange={(value) => taskMode && selectedTask ? updateTask(selectedTask.id, (task) => ({ ...task, chatModel: value })) : setAiChatModel(value)}
             onEffortChange={(value) => taskMode && selectedTask ? updateTask(selectedTask.id, (task) => ({ ...task, chatEffort: value })) : setAiChatEffort(value)}
-            onModeChange={(mode) => taskMode && selectedTask ? selectTaskChatMode(selectedTask.id, mode) : selectAiChatMode(mode)}
+            onModeChange={(mode) => { if (taskMode && selectedTask) selectTaskChatMode(selectedTask.id, mode); else { selectAiChatMode(mode); if (mode === "plan" && reviewRef.current) void persistReview({ ...reviewRef.current, chatGoal: { ...normalizeChatGoal(reviewRef.current.chatGoal), enabled: false } }); } }}
             onResetConfig={() => taskMode && selectedTask ? updateTask(selectedTask.id, (task) => ({ ...task, chatModel: chatDefaults[task.chatMode].model, chatEffort: chatDefaults[task.chatMode].effort })) : (setAiChatModel(chatDefaults[aiChatMode].model), setAiChatEffort(chatDefaults[aiChatMode].effort))}
             onDismissError={() => setError("")}
             onZenModeChange={setZenMode}

@@ -1228,6 +1228,13 @@ button.task-asset-thumbnail:hover, button.task-asset-thumbnail:focus-visible { b
 .ios-chat-plan-toggle span { width: 18px; color: var(--ios-secondary-label); font-weight: 400; }
 .ios-chat-plan-toggle:hover { background: var(--ios-fill-strong); }
 .ios-chat-plan-toggle:disabled { opacity: .45; }
+.ios-chat-goal-popover { gap: 0; }
+.ios-chat-goal-heading { padding: 6px 10px 8px; color: var(--ios-secondary-label); font-size: 11px; font-weight: 400; }
+.ios-chat-goal-option { display: flex; width: 100%; min-height: 36px; align-items: center; justify-content: space-between; gap: 10px; border-radius: 8px; padding: 8px 10px; color: var(--ios-label); text-align: left; font-size: 13px; }
+.ios-chat-goal-option:hover { background: var(--ios-fill); }
+.ios-chat-goal-option > span:last-child { color: var(--ios-secondary-label); font-size: 12px; }
+.ios-chat-goal-budget { display: flex; align-items: center; gap: 10px; padding: 6px 10px 12px; color: var(--ios-secondary-label); font-size: 12px; }
+.ios-chat-goal-budget input { min-width: 0; width: 100%; height: 32px; border: 1px solid var(--ios-separator); border-radius: 7px; background: var(--ios-fill); padding: 0 8px; color: var(--ios-label); font-size: 13px; }
 .ios-chat-plan-toggle[aria-pressed="true"] { background: color-mix(in srgb, var(--ios-tint) 18%, var(--ios-fill)); }
 .ios-chat-config-popover {
   width: 252px;

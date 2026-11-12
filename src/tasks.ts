@@ -3,6 +3,7 @@ import type { ChatAttachment, RepositoryTask, TaskAsset, TaskColor, TaskComment,
 import { chatEfforts, validChatModel, defaultChatDefaults, type ChatDefaults } from "./chatDefaults.ts";
 import { fileStore } from "./fileStore.ts";
 import { normalizeTaskDate } from "./taskSchedule.ts";
+import { normalizeChatGoal } from "./chatGoal.ts";
 import { normalizeGitHubLink } from "./github.ts";
 import { validSandboxHtml } from "./taskSandbox.ts";
 
@@ -398,6 +399,7 @@ export function normalizeTask(value: unknown, defaults: ChatDefaults = defaultCh
     planReady: task.planReady === true,
     unreadAgentResult: task.unreadAgentResult === true,
     chatMode,
+    ...(task.chatGoal ? { chatGoal: normalizeChatGoal(task.chatGoal) } : {}),
     chatModel,
     chatEffort,
     location: task.location === "worktree" ? "worktree" : "workspace",
