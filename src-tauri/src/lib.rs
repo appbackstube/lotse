@@ -2464,20 +2464,36 @@ async fn cleanup_unstarted_task_worktree(
     }).await
 }
 
-fn task_changes_base(root: &Path, base_oid: &str, base_branch: Option<&str>) -> Result<String, String> {
-    let base = match base_branch {
+// Follow a fetched tracking branch only when the local base can fast-forward to it.
+// Never fetch or move refs while reading Changes, and keep divergent/local-only bases.
+fn task_changes_base(root: &Path, base_oid: &str, base_branch: Option<&str>) -> Result<(String, Option<String>), String> {
+    let mut reference = base_branch.map(str::to_owned);
+    let mut base = match base_branch {
         Some(branch) => resolve_ref(root, branch)
             .map_err(|error| format!("Cannot compare with base branch '{branch}': {error}"))?,
         None => base_oid.to_owned(),
     };
-    git_text(root, &["merge-base", &base, "HEAD"])
+    if let Some(branch) = base_branch {
+        let full_ref = git_text(root, &["rev-parse", "--symbolic-full-name", branch])?;
+        if let Some(local_branch) = full_ref.strip_prefix("refs/heads/") {
+            if let Ok(upstream_ref) = git_text(root, &["rev-parse", "--symbolic-full-name", &format!("{local_branch}@{{upstream}}")]) {
+                if let Ok(upstream) = resolve_ref(root, &upstream_ref) {
+                    if base != upstream && git_text(root, &["merge-base", &base, &upstream]).is_ok_and(|common| common == base) {
+                        base = upstream;
+                        reference = Some(upstream_ref.strip_prefix("refs/remotes/").unwrap_or(&upstream_ref).to_owned());
+                    }
+                }
+            }
+        }
+    }
+    Ok((git_text(root, &["merge-base", &base, "HEAD"])?, reference))
 }
 
 fn task_changes_at(root: &Path, base_oid: &str, base_branch: Option<&str>) -> Result<TaskChanges, String> {
-    let comparison_base = task_changes_base(root, base_oid, base_branch)?;
+    let (comparison_base, comparison_ref) = task_changes_base(root, base_oid, base_branch)?;
     let head_oid = git_text(root, &["rev-parse", "HEAD^{commit}"])?;
     let (mut comparison, pending) = compare_working_repository_snapshots(root, &comparison_base, Some(&head_oid))?;
-    comparison.base_ref = base_branch.map(str::to_owned);
+    comparison.base_ref = comparison_ref;
     Ok(TaskChanges {
         comparison,
         pending_snapshot_id: pending.unwrap(),
@@ -2525,7 +2541,7 @@ async fn load_task_file_diff(
         let (root, info) = task_worktree_info(&app, &repository, &task_id)?;
         if info.base_oid != base_oid { return Err("Task base commit changed. Reload this task.".to_owned()); }
         let branch = base_ref.as_deref().or_else(|| info.base_branch.as_deref().filter(|branch| *branch != info.branch));
-        let comparison_base = task_changes_base(&root, &base_oid, branch)?;
+        let (comparison_base, _) = task_changes_base(&root, &base_oid, branch)?;
         let comparison = compare_working_repository_from(&root, &comparison_base)?;
         if comparison.snapshot_id != snapshot_id || !comparison.files.iter().any(|file| file.path == path && file.old_path == old_path) {
             return Err("Task changes changed. Refresh before opening this file.".to_owned());
@@ -8520,6 +8536,90 @@ mod tests {
     }
 
     #[test]
+    fn task_changes_follow_fetched_base_after_external_merge() {
+        let parent = std::env::temp_dir().join(format!("lotse-task-fetched-base-{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        let upstream = parent.join("upstream");
+        let repository = parent.join("repository");
+        let task = parent.join("task");
+        fs::create_dir_all(&upstream).unwrap();
+        run_git(&upstream, &["init", "-q", "-b", "develop"]).unwrap();
+        run_git(&upstream, &["config", "user.email", "test@example.com"]).unwrap();
+        run_git(&upstream, &["config", "user.name", "Test"]).unwrap();
+        fs::write(upstream.join("shared.txt"), "base\n").unwrap();
+        run_git(&upstream, &["add", "."]).unwrap();
+        run_git(&upstream, &["commit", "-qm", "base"]).unwrap();
+        let base = resolve_ref(&upstream, "HEAD").unwrap();
+        run_git(&parent, &["clone", "-q", upstream.to_str().unwrap(), repository.to_str().unwrap()]).unwrap();
+        run_git(&repository, &["config", "user.email", "test@example.com"]).unwrap();
+        run_git(&repository, &["config", "user.name", "Test"]).unwrap();
+        run_git(&repository, &["worktree", "add", "-b", "feature/report", task.to_str().unwrap(), "HEAD"]).unwrap();
+        fs::write(task.join("feature.txt"), "feature work\n").unwrap();
+        fs::write(task.join("shared.txt"), "feature version\n").unwrap();
+        run_git(&task, &["add", "."]).unwrap();
+        run_git(&task, &["commit", "-qm", "feature"]).unwrap();
+        let initial = task_changes_at(&task, &base, Some("develop")).unwrap();
+
+        fs::write(upstream.join("upstream.txt"), "develop only\n").unwrap();
+        fs::write(upstream.join("shared.txt"), "develop version\n").unwrap();
+        run_git(&upstream, &["add", "."]).unwrap();
+        run_git(&upstream, &["commit", "-qm", "develop update"]).unwrap();
+        let fetched = resolve_ref(&upstream, "HEAD").unwrap();
+        run_git(&repository, &["fetch", "origin"]).unwrap();
+        // Fetch updates origin/develop but leaves the local develop behind.
+        assert_eq!(resolve_ref(&task, "develop").unwrap(), base);
+        let before_merge = task_changes_at(&task, &base, Some("develop")).unwrap();
+        assert_eq!(before_merge.comparison.base_oid, base);
+        assert_eq!(before_merge.comparison.snapshot_id, initial.comparison.snapshot_id);
+        assert!(run_git(&task, &["merge", "--no-ff", "-m", "external merge", "origin/develop"]).is_err());
+        fs::write(task.join("shared.txt"), "resolved feature and develop\n").unwrap();
+        run_git(&task, &["add", "shared.txt"]).unwrap();
+        run_git(&task, &["commit", "--no-edit"]).unwrap();
+        let clean = task_changes_at(&task, &base, Some("develop")).unwrap();
+        assert_eq!(clean.comparison.base_oid, fetched);
+        assert_eq!(clean.comparison.base_ref.as_deref(), Some("origin/develop"));
+        assert_eq!(clean.comparison.files.iter().map(|file| file.path.as_str()).collect::<Vec<_>>(), ["feature.txt", "shared.txt"]);
+        assert_ne!(clean.comparison.snapshot_id, before_merge.comparison.snapshot_id);
+        assert!(clean.committed_changes);
+        assert!(!clean.pending_files);
+        let resolution = working_file_diff(&task, &clean.comparison.base_oid, None, "shared.txt".to_owned(), false).unwrap();
+        assert!(resolution.hunks.iter().any(|hunk| hunk.rows.iter().any(|row| row.old.as_ref().is_some_and(|cell| cell.text == "develop version"))));
+        assert!(resolution.hunks.iter().any(|hunk| hunk.rows.iter().any(|row| row.new.as_ref().is_some_and(|cell| cell.text == "resolved feature and develop"))));
+
+        fs::write(task.join("feature.txt"), "feature work\nunstaged work\n").unwrap();
+        fs::write(task.join("staged.txt"), "staged work\n").unwrap();
+        run_git(&task, &["add", "staged.txt"]).unwrap();
+        fs::write(task.join("pending.txt"), "untracked work\n").unwrap();
+        let pending = working_snapshot(&task).unwrap();
+        let changes = task_changes_at(&task, &base, Some("develop")).unwrap();
+        assert_eq!(changes.comparison.files.iter().map(|file| file.path.as_str()).collect::<Vec<_>>(), ["feature.txt", "pending.txt", "shared.txt", "staged.txt"]);
+        assert!(changes.pending_files);
+        assert_eq!(changes.pending_snapshot_id, pending);
+        assert_eq!(task_changes_base(&task, &base, Some("origin/develop")).unwrap().0, fetched);
+        assert_eq!(task_changes_base(&task, &base, None).unwrap().0, base);
+        assert_eq!(resolve_ref(&repository, "develop").unwrap(), base, "Comparison must not move local refs");
+
+        run_git(&repository, &["remote", "rename", "origin", "central"]).unwrap();
+        assert_eq!(task_changes_at(&task, &base, Some("develop")).unwrap().comparison.base_ref.as_deref(), Some("central/develop"));
+        // No name-based remote fallback: only the configured tracking branch counts.
+        run_git(&repository, &["branch", "--unset-upstream", "develop"]).unwrap();
+        assert_eq!(task_changes_base(&task, &base, Some("develop")).unwrap().0, base);
+        run_git(&repository, &["branch", "--set-upstream-to=central/develop", "develop"]).unwrap();
+        fs::write(repository.join("local.txt"), "local develop work\n").unwrap();
+        run_git(&repository, &["add", "."]).unwrap();
+        run_git(&repository, &["commit", "-qm", "divergent local base"]).unwrap();
+        assert_eq!(task_changes_base(&task, &base, Some("develop")).unwrap().0, base, "Divergent local bases must stay explicit");
+        assert_eq!(task_changes_base(&task, &base, Some("central/develop")).unwrap().0, fetched);
+        run_git(&repository, &["merge", "--no-ff", "-m", "advance local develop", "central/develop"]).unwrap();
+        let ahead = task_changes_at(&task, &base, Some("develop")).unwrap();
+        assert_eq!(ahead.comparison.base_ref.as_deref(), Some("develop"), "A local base ahead of tracking must stay selected");
+        assert_eq!(ahead.comparison.base_oid, fetched);
+        run_git(&repository, &["update-ref", "-d", "refs/remotes/central/develop"]).unwrap();
+        assert_eq!(task_changes_at(&task, &base, Some("develop")).unwrap().comparison.base_oid, fetched, "A missing tracking ref must not break local comparisons");
+        run_git(&repository, &["worktree", "remove", "--force", task.to_str().unwrap()]).unwrap();
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
     fn task_changes_follow_live_base_after_pull_and_rebase() {
         let parent = std::env::temp_dir().join(format!("lotse-task-live-base-{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
         let upstream = parent.join("upstream");
@@ -8554,9 +8654,9 @@ mod tests {
         let rebased = task_changes_at(&task, &base, Some("develop")).unwrap();
         assert_eq!(rebased.comparison.base_oid, pulled);
         assert_eq!(rebased.comparison.files.iter().map(|file| file.path.as_str()).collect::<Vec<_>>(), ["feature.txt"]);
-        assert_eq!(task_changes_base(&task, &base, Some("origin/develop")).unwrap(), pulled);
+        assert_eq!(task_changes_base(&task, &base, Some("origin/develop")).unwrap().0, pulled);
         assert!(task_changes_at(&task, &base, Some("missing-branch")).is_err());
-        assert_eq!(task_changes_base(&task, &base, None).unwrap(), base);
+        assert_eq!(task_changes_base(&task, &base, None).unwrap().0, base);
 
         // Pulling a base that now contains the task must remove its committed changes.
         run_git(&upstream, &["fetch", repository.to_str().unwrap(), "feature/report"]).unwrap();

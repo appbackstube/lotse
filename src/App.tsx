@@ -1992,7 +1992,7 @@ function TaskChangesPanel({ task, repository, model, revision, active, taskRunni
     try {
       const options = (await invoke<[string, string][]>("list_merge_targets")).filter(([branch]) => branch !== task.worktree?.branch);
       setTargets(options);
-      const preferredTarget = changes.comparison.baseRef?.replace(/^origin\//, "") ?? task.worktree.baseBranch;
+      const preferredTarget = (comparisonBranch ?? task.worktree.baseBranch ?? changes.comparison.baseRef)?.replace(/^origin\//, "");
       setTarget(options.some(([branch]) => branch === preferredTarget) ? preferredTarget! : options[0]?.[0] ?? "");
       setMergeMessage(changes.squashMessage);
       setMergedOid(null);
@@ -2027,20 +2027,24 @@ function TaskChangesPanel({ task, repository, model, revision, active, taskRunni
   const files = changes?.comparison.files ?? [];
   const hasPending = changes?.pendingFiles ?? false;
   const sourceBranch = task?.worktree?.branch ?? repository.currentBranch ?? "Detached HEAD";
+  const selectedComparisonBase = comparisonBranch ?? task?.worktree?.baseBranch;
   const comparisonBase = changes ? changes.comparison.baseRef ?? changes.comparison.baseOid.slice(0, 7) : comparisonBranch ?? task?.worktree?.baseBranch ?? task?.worktree?.baseOid.slice(0, 7);
+  const comparisonBaseHint = changes?.comparison.baseRef && selectedComparisonBase && changes.comparison.baseRef !== selectedComparisonBase
+    ? `${selectedComparisonBase} is behind; comparing with ${changes.comparison.baseRef}.`
+    : `Compare with ${comparisonBase}`;
   return <aside className="task-changes-panel flex h-full min-h-0 min-w-0 flex-col overflow-hidden border-l border-[#294536] bg-[#0B110E]" aria-label="Task changes">
     {task && <header className="task-changes-header">
       <div className="task-changes-toolbar">
       <div className="task-changes-branches" aria-label="Change comparison">
         <GitCompareArrows size={14} className="shrink-0" aria-hidden="true" />
-        {task.worktree && comparisonBase ? <><Select value={comparisonBranch ?? (changes ? changes.comparison.baseRef : task.worktree.baseBranch)} onOpenChange={(open) => {
+        {task.worktree && comparisonBase ? <><Select value={changes?.comparison.baseRef ?? selectedComparisonBase} onOpenChange={(open) => {
           if (open) void invoke<BranchRefs>("list_branch_refs").then(setComparisonBranches).catch((reason) => setError(message(reason)));
         }} onValueChange={(value) => {
           if (!value) return;
           fileStore.setItem(comparisonBranchKey, value);
           snapshotIdRef.current = null; setChanges(null); setDiffs({}); setExpandedFiles(new Set()); setDiffErrors({}); setError("");
           setComparisonBranch(value);
-        }}><SelectTrigger className="task-changes-branch" aria-label="Comparison base branch" title={`Compare with ${comparisonBase}`}><SelectValue>{() => comparisonBase}</SelectValue></SelectTrigger><SelectContent>
+        }}><SelectTrigger className="task-changes-branch" aria-label="Comparison base branch" title={comparisonBaseHint}><SelectValue>{() => comparisonBase}</SelectValue></SelectTrigger><SelectContent>
           {!comparisonBranches && <SelectItem value={comparisonBase} disabled>{comparisonBase}</SelectItem>}
           <SelectGroup><SelectLabel>Local branches</SelectLabel>{comparisonBranches?.refs.filter((branch) => branch !== sourceBranch).map((branch) => <SelectItem key={branch} value={branch}>{branch}</SelectItem>)}</SelectGroup>
           <SelectGroup><SelectLabel>Remote branches</SelectLabel>{comparisonBranches?.remoteRefs.filter((branch) => branch !== `origin/${sourceBranch}`).map((branch) => <SelectItem key={branch} value={branch}>{branch}</SelectItem>)}</SelectGroup>
