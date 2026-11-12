@@ -1185,6 +1185,7 @@ button.task-asset-thumbnail:hover, button.task-asset-thumbnail:focus-visible { b
 .chat-images { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
 .chat-image { position: relative; width: 76px; overflow: hidden; border: 1px solid var(--ios-separator); border-radius: 9px; background: var(--ios-fill); }
 .chat-image img { display: block; width: 74px; height: 58px; object-fit: cover; }
+.chat-file-icon { display: grid; width: 74px; height: 58px; place-items: center; color: var(--ios-secondary-label); }
 .chat-image span { display: block; overflow: hidden; padding: 3px 5px; color: var(--ios-secondary-label); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .chat-image button { position: absolute; top: 3px; right: 3px; display: grid; width: 18px; height: 18px; place-items: center; border: 0; border-radius: 50%; background: rgba(0,0,0,.72); color: white; }
 .ios-chat-controls { display: flex; flex: 1; min-width: 0; align-items: center; gap: 8px; overflow-x: auto; scrollbar-width: none; }
