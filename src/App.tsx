@@ -212,12 +212,16 @@ const autoClearChatAfterCommitStorageKey = "chaoticreview.auto-clear-chat-after-
 const autoFetchPullOnBranchSwitchStorageKey = "chaoticreview.auto-fetch-pull-on-branch-switch";
 const approvalReviewerDefaultStorageKey = "chaoticreview.approval-reviewer-default";
 const boardTabStorageKey = "chaoticreview.task-board-tabs";
-type ApprovalReviewer = "user" | "auto_review";
+type ApprovalReviewer = "user" | "auto_review" | "yolo";
+const approvalReviewerLabels = { user: "Ask for approval", auto_review: "Approve for me", yolo: "YOLO mode" };
 type BoardTab = "detail" | "changes" | "draw" | "sandbox" | "browser";
 type TaskDetailsTab = "details" | "changes" | "draw" | "sandbox" | "browser";
 type NotificationTarget = { windowLabel: string; repositoryRoot: string; taskId: string | null };
 function storedApprovalReviewerDefault(): ApprovalReviewer {
-  try { return fileStore.getItem(approvalReviewerDefaultStorageKey) === "auto_review" ? "auto_review" : "user"; }
+  try {
+    const value = fileStore.getItem(approvalReviewerDefaultStorageKey);
+    return value === "auto_review" || value === "yolo" ? value : "user";
+  }
   catch { return "user"; }
 }
 
@@ -1437,9 +1441,9 @@ function AiChatPanel({
                   <p className="px-2.5 pb-1 text-[10px] text-[#7C9B88]">Switching starts a new chat.</p>
                 </PopoverContent>
               </Popover>
-              <Select value={approvalReviewer} disabled={running || (taskMode && !taskSelected)} onValueChange={(value) => { if (value === "user" || value === "auto_review") onApprovalReviewerChange(value); }}>
-                <SelectTrigger className="ios-chat-config-trigger" aria-label="Approval mode"><SelectValue>{(value) => value === "auto_review" ? "Approve for me" : "Ask for approval"}</SelectValue></SelectTrigger>
-                <SelectContent side="top" className="ios-select-content"><SelectItem value="user">Ask for approval</SelectItem><SelectItem value="auto_review">Approve for me</SelectItem></SelectContent>
+              <Select value={approvalReviewer} disabled={running || (taskMode && !taskSelected)} onValueChange={(value) => { if (value === "user" || value === "auto_review" || value === "yolo") onApprovalReviewerChange(value); }}>
+                <SelectTrigger className="ios-chat-config-trigger" aria-label="Approval mode"><SelectValue>{(value) => approvalReviewerLabels[value as ApprovalReviewer]}</SelectValue></SelectTrigger>
+                <SelectContent side="top" className="ios-select-content"><SelectItem value="user">Ask for approval</SelectItem><SelectItem value="auto_review">Approve for me</SelectItem><SelectItem value="yolo" title="Full access without approval prompts">YOLO mode</SelectItem></SelectContent>
               </Select>
               {mode === "plan" && <button type="button" className="ios-chat-plan-toggle" aria-label="Disable Plan mode" aria-pressed="true" title="Disable Plan mode" disabled={running || (taskMode && !taskSelected)} onClick={() => onModeChange("default")}>Plan <span>On</span></button>}
             </div>
@@ -4008,7 +4012,7 @@ function App() {
     taskDescription?: string;
     }, onEvent: (event: AgentTurnEvent) => void) => {
     await syncMcpContextRef.current();
-    return invoke<AiChatAccepted>("ai_chat_send", { input: { baseOid: comparison!.baseOid, mode: comparison!.mode, baseRef: comparison!.baseRef, compareRef: comparison!.compareRef, snapshotId: comparison!.snapshotId, agentThreadId: request.threadId, model: request.model, effort: request.effort, collaborationMode: request.mode, prompt: request.prompt, userRules, agentPrompt: request.chatAgent?.prompt ?? "", chatContext: request.context, comments: review!.comments, allowLongPrompt: request.allowLongPrompt, taskId: request.taskId, taskLocation: request.taskLocation, taskTitle: request.taskTitle, taskDescription: request.taskDescription, autoReview: (approvalReviewerOverrides[request.taskId ?? "review"] ?? approvalReviewerDefault) === "auto_review" }, events: new Channel<AgentTurnEvent>(onEvent) });
+    return invoke<AiChatAccepted>("ai_chat_send", { input: { baseOid: comparison!.baseOid, mode: comparison!.mode, baseRef: comparison!.baseRef, compareRef: comparison!.compareRef, snapshotId: comparison!.snapshotId, agentThreadId: request.threadId, model: request.model, effort: request.effort, collaborationMode: request.mode, prompt: request.prompt, userRules, agentPrompt: request.chatAgent?.prompt ?? "", chatContext: request.context, comments: review!.comments, allowLongPrompt: request.allowLongPrompt, taskId: request.taskId, taskLocation: request.taskLocation, taskTitle: request.taskTitle, taskDescription: request.taskDescription, approvalMode: approvalReviewerOverrides[request.taskId ?? "review"] ?? approvalReviewerDefault }, events: new Channel<AgentTurnEvent>(onEvent) });
   };
 
   const sendAiChat = async (promptOverride?: string, requestContext = chatRequestContext, modeOverride?: AiChatMode, configurationOverride?: ChatDefaults[AiChatMode], queuedItem?: QueuedChatMessage): Promise<boolean> => {
@@ -5615,7 +5619,7 @@ function App() {
                   <div className="mt-4 divide-y divide-[var(--ios-separator)] border-y border-[#294536]">
                     <div className="grid gap-2 py-4 sm:grid-cols-[140px_minmax(0,1fr)] sm:items-center"><p className="text-sm font-semibold text-[#E8FFF0]">New task location</p><Select value={taskLocationDefault} onValueChange={(value) => value && setTaskLocationDefault(value as TaskLocation)}><SelectTrigger className="h-9 w-full border-[#294536] bg-[#050807] text-[#E8FFF0]" aria-label="Default task location"><SelectValue>{(value) => value === "workspace" ? "Workspace" : value === "existing" ? "Work on existing" : "New Branch"}</SelectValue></SelectTrigger><SelectContent><SelectItem value="workspace">Workspace</SelectItem><SelectItem value="worktree">New Branch</SelectItem><SelectItem value="existing">Work on existing</SelectItem></SelectContent></Select></div>
                     <div className="grid gap-2 py-4 sm:grid-cols-[140px_minmax(0,1fr)] sm:items-center"><label htmlFor="new-branch-prefix" className="text-sm font-semibold text-[#E8FFF0]">New branch prefix</label><div><Input id="new-branch-prefix" aria-label="New branch prefix" value={branchPrefix} disabled={!repository} onChange={(event) => { if (repository) { const prefix = event.currentTarget.value; saveBranchPrefix(repository.rootPath, prefix); setBranchPrefix(prefix); } }} className="h-9 w-full border-[#294536] bg-[#050807] font-mono text-[#E8FFF0]" /><p className="mt-1 text-xs text-[#7C9B88]">{repository ? `Default for new branches in ${repository.name}.` : "Open a repository to set its branch prefix."}</p></div></div>
-                    <div className="grid gap-2 py-4 sm:grid-cols-[140px_minmax(0,1fr)] sm:items-center"><div><p className="text-sm font-semibold text-[#E8FFF0]">Default approval mode</p><p className="mt-1 text-xs text-[#7C9B88]">Used until changed in the composer.</p></div><Select value={approvalReviewerDefault} onValueChange={(value) => { if (value === "user" || value === "auto_review") setApprovalReviewerDefault(value); }}><SelectTrigger className="h-9 w-full border-[#294536] bg-[#050807] text-[#E8FFF0]" aria-label="Default approval mode"><SelectValue>{(value) => value === "auto_review" ? "Approve for me" : "Ask for approval"}</SelectValue></SelectTrigger><SelectContent className="ios-select-content"><SelectItem value="user">Ask for approval</SelectItem><SelectItem value="auto_review">Approve for me</SelectItem></SelectContent></Select></div>
+                    <div className="grid gap-2 py-4 sm:grid-cols-[140px_minmax(0,1fr)] sm:items-center"><div><p className="text-sm font-semibold text-[#E8FFF0]">Default approval mode</p><p className="mt-1 text-xs text-[#7C9B88]">Used until changed in the composer.</p></div><Select value={approvalReviewerDefault} onValueChange={(value) => { if (value === "user" || value === "auto_review" || value === "yolo") setApprovalReviewerDefault(value); }}><SelectTrigger className="h-9 w-full border-[#294536] bg-[#050807] text-[#E8FFF0]" aria-label="Default approval mode"><SelectValue>{(value) => approvalReviewerLabels[value as ApprovalReviewer]}</SelectValue></SelectTrigger><SelectContent className="ios-select-content"><SelectItem value="user">Ask for approval</SelectItem><SelectItem value="auto_review">Approve for me</SelectItem><SelectItem value="yolo" title="Full access without approval prompts">YOLO mode</SelectItem></SelectContent></Select></div>
                     {(["default", "plan"] as const).map((mode) => <div key={mode} className="grid gap-2 py-4 sm:grid-cols-[140px_minmax(0,1fr)_160px] sm:items-center">
                       <p className="text-sm font-semibold text-[#E8FFF0]">{mode === "default" ? "Default mode" : "Plan mode"}</p>
                         <ModelPicker value={chatDefaults[mode].model} models={chatModels} onChange={(value) => updateChatDefault(mode, { model: value })} className="h-9 w-full truncate rounded-md border border-[#294536] bg-[#050807] px-3 text-[#E8FFF0] outline-none focus:border-[var(--ios-label)]" ariaLabel={`${mode} mode model`} />

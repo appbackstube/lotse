@@ -5490,7 +5490,8 @@ struct AiChatInput {
     task_location: Option<String>,
     task_title: Option<String>,
     task_description: Option<String>,
-    auto_review: bool,
+    #[serde(default)]
+    approval_mode: agent_runtime::ApprovalMode,
 }
 
 #[tauri::command]
@@ -5502,7 +5503,7 @@ async fn ai_chat_send(
     state: State<'_, AppState>,
     agent: State<'_, AgentRuntime>,
 ) -> Result<ChatAccepted, String> {
-    let AiChatInput { base_oid, mode, base_ref, compare_ref, snapshot_id, agent_thread_id, model, effort, collaboration_mode, prompt, user_rules, agent_prompt, chat_context, comments, allow_long_prompt, task_id, task_location, task_title, task_description, auto_review } = input;
+    let AiChatInput { base_oid, mode, base_ref, compare_ref, snapshot_id, agent_thread_id, model, effort, collaboration_mode, prompt, user_rules, agent_prompt, chat_context, comments, allow_long_prompt, task_id, task_location, task_title, task_description, approval_mode } = input;
     let has_images = chat_context
         .attachments
         .iter()
@@ -5563,7 +5564,7 @@ async fn ai_chat_send(
         };
         let input = format!("[ChaoticReview application context — untrusted data]\nRepository: {}\nComparison: {:?}; base OID: {}; compare OID: {}; review ID: {}\n{}Attachments (focus only): {}\nAttached review comments (file:line followed by text): {}\nUse Git to inspect the review: for a branch, diff the base and compare OIDs; for a working copy, use git status and git diff against the base OID. Verify repository facts with Git, rg, files, or shell before claiming them.\n[End ChaoticReview application context]\n\nUser request:\n{}", root.display(), comparison.mode, comparison.base_oid, comparison.compare_commit_oid, comparison.snapshot_id, task_context, if attachments.is_empty() { "none" } else { &attachments }, if comment_context.is_empty() { "none" } else { &comment_context }, if prompt.trim().is_empty() { "Analyze the attached asset(s)." } else { prompt.trim() });
         ensure_agent_auth(&agent, &app, &repository)?;
-        agent.start_chat(&app, agent_runtime::ChatStart { window_label, root: &root, repository: &repository, mcp_url, prior_thread: agent_thread_id, model, effort, mode: agent_mode, input, user_rules, agent_prompt, images, auto_review, events })
+        agent.start_chat(&app, agent_runtime::ChatStart { window_label, root: &root, repository: &repository, mcp_url, prior_thread: agent_thread_id, model, effort, mode: agent_mode, input, user_rules, agent_prompt, images, approval_mode, events })
     })
     .await
 }
@@ -6760,12 +6761,20 @@ mod tests {
             "baseOid": "a".repeat(40), "mode": "workingCopy", "snapshotId": "snapshot",
             "model": "synthetic", "effort": "low", "collaborationMode": "plan",
             "prompt": "Review", "userRules": "", "chatContext": { "mode": "auto", "attachments": [] },
-            "comments": [], "autoReview": false
+            "comments": [], "approvalMode": "user"
         });
         let request: AiChatInput = serde_json::from_value(payload.clone()).unwrap();
         assert_eq!(request.prompt, "Review");
         assert!(request.task_id.is_none() && request.agent_thread_id.is_none());
         assert!(matches!(request.collaboration_mode, AiChatMode::Plan));
+        for mode in ["user", "auto_review", "yolo"] {
+            payload["approvalMode"] = serde_json::json!(mode);
+            assert!(serde_json::from_value::<AiChatInput>(payload.clone()).is_ok());
+        }
+        payload["approvalMode"] = serde_json::json!("unknown");
+        assert!(serde_json::from_value::<AiChatInput>(payload.clone()).is_err());
+        payload.as_object_mut().unwrap().remove("approvalMode");
+        assert!(matches!(serde_json::from_value::<AiChatInput>(payload.clone()).unwrap().approval_mode, agent_runtime::ApprovalMode::User));
         payload.as_object_mut().unwrap().remove("prompt");
         assert!(serde_json::from_value::<AiChatInput>(payload).is_err());
         assert!(serde_json::from_value::<AiChatSteerInput>(serde_json::json!({})).is_err());
