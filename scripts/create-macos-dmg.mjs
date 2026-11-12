@@ -19,8 +19,8 @@ export function createMacosDmg(app, output, volumeName) {
     symlinkSync("/Applications", join(stage, "Applications"));
     const diskutilImages = spawnSync("diskutil", ["image", "create", "from", "--help"], { stdio: "ignore" }).status === 0;
     // macOS 15 names the volume after the source folder; --volumeName requires newer macOS.
-    if (diskutilImages) run("diskutil", ["image", "create", "from", "--format", "ULMO", stage, temporary]);
-    else run("hdiutil", ["create", "-srcfolder", stage, "-volname", volumeName, "-format", "ULMO", "-fs", "HFS+", "-o", temporary]);
+    if (diskutilImages) run("diskutil", ["image", "create", "from", "--format", "UDZO", stage, temporary]);
+    else run("hdiutil", ["create", "-srcfolder", stage, "-volname", volumeName, "-format", "UDZO", "-fs", "HFS+", "-o", temporary]);
     run("hdiutil", ["verify", temporary]);
     renameSync(temporary, output);
   } finally {

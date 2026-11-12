@@ -34,7 +34,7 @@ for (const name of selected) {
     throw new Error(`Missing ${runtime}. Run scripts/prepare-app-server.sh first.`);
   }
 
-  // Tauri's DMG config has no LZMA option; package the verified app below.
+  // Package only after architecture, runtime contents and signatures have been verified.
   run(join(root, "node_modules/.bin/tauri"), [
     "build", "--target", target, "--bundles", "app", "--ci",
     "--config", JSON.stringify({ bundle: { resources: [runtime] } }),
