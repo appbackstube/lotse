@@ -50,6 +50,7 @@ let browserHideGate: Promise<void> | undefined;
 let browserUrl = "";
 const browserState = () => ({ repositoryRoot: repo.rootPath, taskId: task.id, url: browserUrl, title: "", loading: false, error: null, canGoBack: !!browserUrl, canGoForward: false });
 const merges: any[] = [];
+let mergeTargets = [["main", comparison.baseOid]];
 let taskWrites = 0;
 let contextWrites = 0;
 let agentSend: any;
@@ -75,9 +76,9 @@ mockIPC(async (command, args: any) => {
   if (command === "scheduler_list" || command === "list_memory") return [];
   if (command === "agent_models") return [];
   if (command === "ai_chat_send") { agentSend = args; return { requestId: "plan-check", threadId: "plan-thread", turnId: "plan-turn" }; }
-  if (command === "load_task_changes") { changeReads.push(args); return { comparison: { ...taskComparison, baseRef: (args.baseRef === "develop" ? effectiveBaseRef : null) ?? args.baseRef ?? "main" }, pendingSnapshotId: "snapshot", pendingFiles: true, committedChanges: true, headOid: comparison.baseOid, squashMessage: "Squash task" }; }
+  if (command === "load_task_changes") { changeReads.push(args); return { comparison: { ...taskComparison, baseRef: effectiveBaseRef ?? args.baseRef ?? "main" }, pendingSnapshotId: "snapshot", pendingFiles: true, committedChanges: true, headOid: comparison.baseOid, squashMessage: "Squash task" }; }
   if (command === "load_task_file_diff") { diffReads.push(args); return { path: args.path, oldPath: null, hunks: [{ header: "@@ -1 +1 @@", rows: [{ kind: "changed", old: { lineNumber: 1, text: "before" }, new: { lineNumber: 1, text: "after" } }] }] }; }
-  if (command === "list_merge_targets") return [["main", comparison.baseOid]];
+  if (command === "list_merge_targets") return mergeTargets;
   if (command === "merge_task_worktree") { merges.push(args); return "b".repeat(40); }
   if (command === "task_git_status") return { repository: { ...repo, currentBranch: fixtureBranch }, upstream: `origin/${fixtureBranch}`, pullCount: 0, pushCount: 0, dirty: false };
   if (command === "plugin:window|scale_factor") return 1;
@@ -146,11 +147,21 @@ const chooseBase = async (branch: string) => {
   await click([...document.querySelectorAll<HTMLElement>('[role="option"]')].find((element) => element.textContent?.trim() === branch)!);
 };
 async function checkChanges() {
+  const checkMergeTarget = async (expected: string) => {
+    await click(button("Merge…"));
+    check(document.querySelector('[aria-label="Target branch"] [data-slot="select-value"]')?.textContent === expected, `Merge must default to ${expected}, independently of the effective tracking ref`);
+    await click(button("Cancel"));
+  };
   check(changesPanel().querySelector('.task-changes-branches')?.textContent?.includes("main"), "The current comparison base must be visible");
   check(changesPanel().querySelector('.task-changes-summary')?.textContent?.includes("2 changed files"), "Changed file count is missing");
   check(changesPanel().querySelector('.task-changes-summary .ios-tree-additions')?.textContent === "+10", "Summary must total only numeric additions");
   await click(fileToggle());
   check(fileToggle().getAttribute("aria-expanded") === "true" && changesPanel().querySelector('.codemirror-task-diff'), "Changed files must expand into their diff");
+  mergeTargets = [["develop", comparison.baseOid], ["main", comparison.baseOid]];
+  effectiveBaseRef = "central/main";
+  await waitFor(() => changesPanel().querySelector('[aria-label="Comparison base branch"] [data-slot="select-value"]')?.textContent === "central/main", "Polling must show the effective tracking ref for the task's default base");
+  await checkMergeTarget("main");
+  effectiveBaseRef = null;
   await chooseBase("develop");
   check(changeReads.at(-1)?.baseRef === "develop" && changesPanel().querySelector('.task-changes-branches')?.textContent?.includes("develop"), "Base selection must reach IPC and update the header");
   await click(fileToggle());
@@ -166,6 +177,20 @@ async function checkChanges() {
   const previousDiffReads = diffReads.length;
   await click(fileToggle());
   check(diffReads.length === previousDiffReads + 1 && diffReads.at(-1)?.snapshotId === "updated-base" && diffReads.at(-1)?.baseRef === "develop", "Reopening a file must load a fresh diff with the new snapshot and selected base");
+
+  effectiveBaseRef = "central/main";
+  await chooseBase("main");
+  check(changesPanel().querySelector('[aria-label="Comparison base branch"] [data-slot="select-value"]')?.textContent === "central/main", "Comparison must still show the effective custom remote");
+  await checkMergeTarget("main");
+  effectiveBaseRef = "central/release";
+  await chooseBase("develop");
+  await checkMergeTarget("develop");
+  effectiveBaseRef = null;
+  await chooseBase("origin/main");
+  await checkMergeTarget("main");
+  effectiveBaseRef = "origin/develop";
+  await chooseBase("develop");
+  mergeTargets = [["main", comparison.baseOid]];
 }
 try {
   await initializeFileStore();
@@ -325,7 +350,7 @@ try {
     check(source.title.includes(fixtureBranch), "The full source branch must remain available");
     if (fixtureBranch.startsWith("lotse/task/")) check(source.textContent === "Task branch", "Generated branch identifiers must use a readable label");
     check(storage[`chaoticreview.task-comparison-base:${repo.rootPath}:${task.id}`] === "develop", "The selected base must be persisted per repository and task");
-    document.getElementById("result")!.textContent = "PASS: Changes layout, branch selection and persistence, matching diff base, file expansion, binary totals, live polling and stale diff invalidation.";
+    document.getElementById("result")!.textContent = "PASS: Changes layout, branch selection and persistence, matching diff base, file expansion, binary totals, live polling, stale diff invalidation and merge targets independent of tracking refs.";
   } else {
   for (const manualStatus of [null, "inbox", "inProgress", "inReview"]) {
     const id = crypto.randomUUID();

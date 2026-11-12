@@ -1991,7 +1991,7 @@ function TaskChangesPanel({ task, repository, model, revision, active, taskRunni
     try {
       const options = (await invoke<[string, string][]>("list_merge_targets")).filter(([branch]) => branch !== task.worktree?.branch);
       setTargets(options);
-      const preferredTarget = changes.comparison.baseRef?.replace(/^origin\//, "") ?? task.worktree.baseBranch;
+      const preferredTarget = (comparisonBranch ?? task.worktree.baseBranch ?? changes.comparison.baseRef)?.replace(/^origin\//, "");
       setTarget(options.some(([branch]) => branch === preferredTarget) ? preferredTarget! : options[0]?.[0] ?? "");
       setMergeMessage(changes.squashMessage);
       setMergedOid(null);
