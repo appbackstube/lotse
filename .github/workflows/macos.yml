@@ -31,7 +31,7 @@ jobs:
   build:
     name: Build ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 150
+    timeout-minutes: 210
     strategy:
       fail-fast: false
       matrix:
@@ -79,13 +79,19 @@ jobs:
           rustup target add "${{ matrix.target }}"
       - name: Cache patched runtime
         id: runtime
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: src-tauri/binaries/codex-runtime-${{ matrix.target }}
           key: codex-${{ matrix.runner }}-${{ matrix.target }}-${{ hashFiles('src-tauri/binaries/manifest.json', 'scripts/prepare-app-server.sh', 'scripts/build-oauth-app-server.sh', 'scripts/patches/**', 'rust-toolchain.toml') }}
       - name: Prepare verified runtime
         if: steps.runtime.outputs.cache-hit != 'true'
         run: sh scripts/prepare-app-server.sh "${{ matrix.target }}"
+      - name: Save verified runtime
+        if: steps.runtime.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: src-tauri/binaries/codex-runtime-${{ matrix.target }}
+          key: ${{ steps.runtime.outputs.cache-primary-key }}
       - name: Build and verify DMG
         env:
           VARIANT: ${{ matrix.variant }}

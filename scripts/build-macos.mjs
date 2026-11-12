@@ -1,8 +1,8 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { tmpdir } from "node:os";
+import { createMacosDmg } from "./create-macos-dmg.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const config = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "utf8"));
@@ -26,7 +26,6 @@ function run(command, args) {
 
 const shareDir = join(root, "src-tauri/target/share");
 mkdirSync(shareDir, { recursive: true });
-const diskutilImages = spawnSync("diskutil", ["image", "create", "from", "--help"], { stdio: "ignore" }).status === 0;
 
 for (const name of selected) {
   const { target, arch, suffix } = variants[name];
@@ -59,19 +58,6 @@ for (const name of selected) {
   run("codesign", ["--verify", "--deep", "--strict", app]);
 
   const output = join(shareDir, `${config.productName}_${config.version}_${suffix}.dmg`);
-  const temporary = join(shareDir, `.${config.productName}_${config.version}_${suffix}-${process.pid}.dmg`);
-  const stage = mkdtempSync(join(tmpdir(), "lotse-dmg-"));
-  try {
-    run("ditto", [app, join(stage, `${config.productName}.app`)]);
-    symlinkSync("/Applications", join(stage, "Applications"));
-    // Recent macOS deprecates hdiutil's image creation API.
-    if (diskutilImages) run("diskutil", ["image", "create", "from", "--volumeName", config.productName, "--format", "ULMO", stage, temporary]);
-    else run("hdiutil", ["create", "-srcfolder", stage, "-volname", config.productName, "-format", "ULMO", "-fs", "HFS+", "-o", temporary]);
-    run("hdiutil", ["verify", temporary]);
-    renameSync(temporary, output);
-  } finally {
-    rmSync(stage, { recursive: true, force: true });
-    rmSync(temporary, { force: true });
-  }
+  createMacosDmg(app, output, config.productName);
   console.log(`Ready to share: ${output} (${(statSync(output).size / 1024 / 1024).toFixed(1)} MiB)`);
 }
