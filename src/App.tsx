@@ -4178,7 +4178,7 @@ function App() {
   const changeChatGoal = (value: GoalSettings) => {
     if (taskMode && selectedTask) updateTask(selectedTask.id, (task) => ({ ...taskWithChatMode(task, value.enabled ? "default" : task.chatMode), chatGoal: value }));
     else if (reviewRef.current) {
-      if (value.enabled) selectAiChatMode("default");
+      if (value.enabled && aiChatMode === "plan") selectAiChatMode("default");
       void persistReview({ ...reviewRef.current, chatGoal: value });
     }
   };

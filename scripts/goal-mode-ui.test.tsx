@@ -20,6 +20,7 @@ const storage: Record<string, string> = {
   "chaoticreview.auth-onboarding-v1": "complete",
   "chaoticreview.agents": JSON.stringify([savedAgent]),
   "chaoticreview.default-agent": savedAgent.id,
+  "chaoticreview.chat-model-favorites": JSON.stringify(["custom-model"]),
   [taskStorageKey(repo.rootPath)]: JSON.stringify([first]),
   "chaoticreview.task-view": JSON.stringify({ [repo.rootPath]: "kanban" }),
   "chaoticreview.task-board-tabs": JSON.stringify({ [repo.rootPath]: {} }),
@@ -38,7 +39,7 @@ mockIPC(async (command, args: any) => {
   if (command === "list_branch_refs") return { refs: ["main", "feature/monthly-report"], remoteRefs: ["origin/main"], defaultBase: "main", pullCount: 0, pushCount: 0 };
   if (command === "compare_working_copy") return comparison;
   if (command === "load_review" || command === "github_connection") return null;
-  if (command === "agent_models") return [];
+  if (command === "agent_models") return [{ model: "custom-model", displayName: "Custom model" }];
   if (command === "load_task_changes") return { comparison, pendingSnapshotId: "snapshot", pendingFiles: false, committedChanges: false, headOid: comparison.baseOid, squashMessage: "" };
   if (command === "task_git_status") return { repository: { ...repo, currentBranch: "feature/monthly-report" }, upstream: "origin/feature/monthly-report", pullCount: 0, pushCount: 0, dirty: false };
   if (command === "plugin:window|scale_factor") return 1;
@@ -83,7 +84,15 @@ try {
     await click(goal);
     check(button("Goal settings"), "Enabling Goal must show the Goal On chip");
   };
+  await click(button("Model and effort"));
+  await click(button("Custom model"));
+  await click(button("Model and effort"));
+  await click(button("Effort"));
+  await click([...document.querySelectorAll<HTMLElement>('[role="option"]')].find((item) => visible(item) && item.textContent === "High")!);
+  await act(async () => document.querySelector('.ios-chat-config-popover')!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+  await settle();
   await enableGoal();
+  check(button("Model and effort").textContent?.includes("Custom model") && button("Model and effort").textContent?.includes("High"), "Enabling Goal must preserve the selected model and effort");
   await click(button("Goal settings"));
   const limit = () => [...document.querySelectorAll<HTMLElement>('button[role="switch"]')].find((b) => visible(b) && b.textContent?.includes("Limit token usage"))!;
   check(limit().getAttribute("aria-checked") === "false", "Token budget must start optional");
@@ -99,6 +108,7 @@ try {
   await settle();
   await typeValue(document.querySelector('.ios-chat-textarea')!, "Finish the workspace goal");
   await click(button("Send Review Agent message"));
+  check(sends[0].model === "custom-model" && sends[0].effort === "high", "Editing Goal settings must preserve the selected model and effort in the request");
   check(sends[0].goal.enabled && sends[0].goal.tokenBudget === 25000, "Workspace sends must forward enabled Goal and the edited budget");
   check(button("Goal settings").hasAttribute("disabled"), "Goal settings must not mutate during a run");
   await event(0, { kind: "completed" });

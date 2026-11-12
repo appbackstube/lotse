@@ -1241,8 +1241,7 @@ impl AgentRuntime {
             // Normal chats also work when the server's optional Goals feature is disabled.
             let existing = if goal.enabled { existing? } else { existing.unwrap_or(Value::Null) };
             if goal.enabled {
-                let params = goal_setup_params(&thread_id, &goal, &goal_objective, &existing["goal"])?;
-                self.request("thread/goal/set", params, Duration::from_secs(20))?;
+                self.setup_goal(&thread_id, &goal, &goal_objective, &existing["goal"])?;
             } else if !existing["goal"].is_null() {
                 self.request("thread/goal/clear", json!({"threadId":thread_id,"origin":"user"}), Duration::from_secs(20))?;
             }
@@ -2358,6 +2357,16 @@ impl AgentRuntime {
         let _ = events.send(AgentTurnEvent::Chat(event));
     }
 
+    fn setup_goal(&self, thread_id: &str, settings: &ChatGoalSettings, objective: &str, existing: &Value) -> Result<(), String> {
+        let params = goal_setup_params(thread_id, settings, objective, existing)?;
+        if existing["status"].as_str() == Some("complete") {
+            // Updating an existing goal preserves its token usage. A new objective needs fresh accounting.
+            self.request("thread/goal/clear", json!({"threadId":thread_id,"origin":"user"}), Duration::from_secs(20))?;
+        }
+        self.request("thread/goal/set", params, Duration::from_secs(20))?;
+        Ok(())
+    }
+
     fn finish_goal_turn(&self, request_id: String, thread_id: String, turn_id: String, events: Channel<AgentTurnEvent>) {
         let runtime = self.clone();
         thread::spawn(move || {
@@ -2375,15 +2384,14 @@ impl AgentRuntime {
                 Ok(value) => value,
                 Err(error) => { runtime.fail_request(&request_id, &error); return; }
             };
-            let finished = runtime.0.lock().ok().and_then(|mut state| {
+            let finished = runtime.0.lock().ok().and_then(|state| {
                 let turn = state.active.get(&request_id)?;
                 if turn.turn_id.as_deref() != Some(&turn_id) { return None; }
                 if goal.pointer("/goal/status").and_then(Value::as_str) == Some("active") && !turn.cancel_requested { return None; }
-                let cancelled = turn.cancel_requested;
-                state.active.remove(&request_id);
-                Some(cancelled)
+                Some(turn.cancel_requested)
             });
             if let Some(cancelled) = finished {
+                let _ = runtime.clear_request(&request_id);
                 let _ = events.send(AgentTurnEvent::Chat(ChatEvent {
                     request_id, thread_id, turn_id, kind: if cancelled { "cancelled" } else { "completed" },
                     message: None, delta: None, final_text: None, label: None, changes: None, explanation: None, plan: None,
@@ -2445,6 +2453,56 @@ mod auth_tests {
     }
 
     #[test]
+    fn replacing_a_completed_goal_resets_usage_but_resuming_preserves_it() {
+        let runtime = AgentRuntime::new("test".into());
+        let mut server = Command::new("python3").args(["-u", "-c", r#"
+import json,sys
+goal={'objective':'Old goal','status':'complete','tokensUsed':49000}
+for line in sys.stdin:
+ r=json.loads(line)
+ if r['method']=='thread/goal/clear':
+  goal=None
+ elif r['method']=='thread/goal/set':
+  goal={**r['params'],'tokensUsed':goal['tokensUsed'] if goal else 0}
+ elif r['method']=='test/consume':
+  goal['tokensUsed']=49000
+ print(json.dumps({'id':r['id'],'result':{'goal':goal}}),flush=True)
+"#]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+        runtime.0.lock().unwrap().stdin = server.stdin.take();
+        let stdout = server.stdout.take().unwrap();
+        let reader_runtime = runtime.clone();
+        let reader = thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                let response: Value = serde_json::from_str(&line).unwrap();
+                if let Some(sender) = reader_runtime.0.lock().unwrap().pending.remove(&response["id"].as_u64().unwrap()) {
+                    sender.send(Ok(response["result"].clone())).unwrap();
+                }
+            }
+        });
+        let settings = ChatGoalSettings { enabled: true, token_budget: Some(50_000) };
+        let get_goal = || runtime.request("thread/goal/get", json!({"threadId":"thread"}), Duration::from_secs(2)).unwrap()["goal"].clone();
+        let completed = get_goal();
+        assert!(runtime.setup_goal("thread", &settings, "", &completed).is_err());
+        assert_eq!(get_goal()["tokensUsed"], 49_000, "Invalid input must not clear the previous goal");
+        runtime.setup_goal("thread", &settings, "New goal", &completed).unwrap();
+        let replacement = get_goal();
+        assert_eq!(replacement["objective"], "New goal");
+        assert_eq!(replacement["tokensUsed"], 0);
+        assert_eq!(replacement["tokenBudget"], 50_000);
+        runtime.request("test/consume", json!({}), Duration::from_secs(2)).unwrap();
+        for status in ["paused", "budgetLimited"] {
+            runtime.request("thread/goal/set", json!({"objective":"In progress","status":status}), Duration::from_secs(2)).unwrap();
+            let existing = get_goal();
+            runtime.setup_goal("thread", &settings, "Follow-up", &existing).unwrap();
+            assert_eq!(get_goal()["objective"], "In progress");
+            assert_eq!(get_goal()["tokensUsed"], 49_000, "Resuming must preserve accounting");
+        }
+        runtime.0.lock().unwrap().stdin.take();
+        assert!(server.wait().unwrap().success());
+        reader.join().unwrap();
+    }
+
+    #[test]
     fn goal_continuations_keep_the_request_until_the_current_turn_finishes() {
         let runtime = AgentRuntime::new("test".into());
         let (sender, receiver) = mpsc::channel::<Value>();
@@ -2460,7 +2518,7 @@ mod auth_tests {
             auto_review: false, attempt: 0, meaningful_activity: true, retry_pending: false,
             cancel_requested: false, goal_enabled: true, goal_initializing: false,
         };
-        let mut server = Command::new("python3").args(["-u", "-c", "import json,sys\ncount=0\nfor line in sys.stdin:\n r=json.loads(line); count+=1\n print(json.dumps({'id':r['id'],'result':{'goal':{'status':'active' if count==1 else 'complete'}}}),flush=True)"])
+        let mut server = Command::new("python3").args(["-u", "-c", "import json,sys\ncount=0\nfor line in sys.stdin:\n r=json.loads(line); count+=1\n print(json.dumps({'id':r['id'],'method':r['method'],'params':r['params'],'result':{'goal':{'status':'active' if count==1 else 'complete'}}}),flush=True)"])
             .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
         {
             let mut state = runtime.0.lock().unwrap();
@@ -2469,9 +2527,11 @@ mod auth_tests {
         }
         let stdout = server.stdout.take().unwrap();
         let reader_runtime = runtime.clone();
+        let (requests_tx, requests_rx) = mpsc::channel();
         let reader = thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 let response: Value = serde_json::from_str(&line).unwrap();
+                requests_tx.send((response["method"].clone(), response["params"].clone())).unwrap();
                 if let Some(sender) = reader_runtime.0.lock().unwrap().pending.remove(&response["id"].as_u64().unwrap()) {
                     sender.send(Ok(response["result"].clone())).unwrap();
                 }
@@ -2497,6 +2557,9 @@ mod auth_tests {
         runtime.0.lock().unwrap().stdin.take();
         assert!(server.wait().unwrap().success());
         reader.join().unwrap();
+        let unsubscribed: Vec<_> = requests_rx.try_iter().filter(|(method, _)| method == "thread/unsubscribe").collect();
+        assert_eq!(unsubscribed.len(), 2, "Completed and cancelled goals must both release their subscription");
+        assert!(unsubscribed.iter().all(|(_, params)| params["threadId"] == "thread"));
     }
 
     #[test]
