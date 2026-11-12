@@ -28,7 +28,7 @@ const fixtureBranch = new URLSearchParams(location.search).has("long-branch") ? 
 const task = normalizeTask({ id: "12345678-1234-1234-1234-123456789abc", title: "Monthly Report", manualStatus: "inbox", description: "## Monthly report\n\nReview the changes alongside the agent conversation.\n\n" + "A longer task description with details to review.\n\n".repeat(30), location: "worktree", worktree: { branch: fixtureBranch, baseOid: comparison.baseOid, baseBranch: "main" }, startDate: "2026-10-28", deadline: "2026-10-30", unreadAgentResult: true,
   comments: [{ id: "review-comment", author: "user", body: "- [ ] Review the report\n" + "- Keep the comment visible while reading.\n".repeat(100), createdAt: 1_793_174_400_000 }],
   chatMessages: [
-    { id: "response", role: "assistant", body: "The monthly report is ready for review. Open Changes to inspect it while we continue here." + (chatScrollCheck ? "\n\n```text\n" + "Saved chat code block\n".repeat(30) + "```" : ""), createdAt: "2026-10-28T12:00:00Z", selection: null, snapshotId: null, suggestions: [], contexts: [] },
+    { id: "response", role: "assistant", body: "The monthly report is ready for review. Open Changes to inspect it while we continue here." + (chatScrollCheck ? "\n\nInline `savedCode` stays inline.\n\n```swift\n" + "    let savedCode = true\n".repeat(30) + "    // " + "Long code line ".repeat(30) + "\n```" : ""), createdAt: "2026-10-28T12:00:00Z", selection: null, snapshotId: null, suggestions: [], contexts: [] },
     { id: "follow-up", role: "user", body: "Thanks, check the totals too.", createdAt: "2026-10-28T12:01:00Z", selection: null, snapshotId: null, suggestions: [], contexts: [] },
     { id: "latest-response", role: "assistant", body: "The totals are correct.", final: true, createdAt: "2026-10-28T12:02:00Z", selection: null, snapshotId: null, suggestions: [], contexts: [] },
   ] })!;
@@ -283,6 +283,14 @@ try {
     const chatScroll = chat().querySelector<HTMLElement>(".ios-chat-scroll")!;
     const codeBlock = chatScroll.querySelector<HTMLElement>(".chat-code-block .cm-editor")!;
     check(codeBlock, "Saved chat code block must be mounted");
+    const content = codeBlock.querySelector<HTMLElement>(".cm-content")!;
+    const scroller = codeBlock.querySelector<HTMLElement>(".cm-scroller")!;
+    check(getComputedStyle(content).fontFamily.includes("monospace"), "Chat code must use a monospace font");
+    check(getComputedStyle(content).whiteSpace === "pre" && content.textContent?.startsWith("    let"), "Chat code must preserve indentation and line breaks");
+    check(codeBlock.querySelector(".cm-lineNumbers"), "Chat code must show line numbers");
+    check(scroller.scrollWidth > scroller.clientWidth && getComputedStyle(scroller).overflowX === "auto", "Long code must scroll horizontally inside its block");
+    check(content.contentEditable === "false", "Agent code examples must be read-only");
+    check(chatScroll.querySelector("p code")?.textContent === "savedCode", "Inline code must stay inline");
     chatScroll.scrollTop = 80;
     await settle();
     const chatTop = chatScroll.scrollTop;

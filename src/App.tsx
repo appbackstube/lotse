@@ -707,11 +707,11 @@ function ChatCodeBlock({ code, language }: { code: string; language?: string }) 
     const view = new EditorView({
       doc: code,
       parent: host.current,
-      extensions: [EditorState.readOnly.of(true), EditorView.editable.of(false), appliedDiffTheme, ...languageExtensions],
+      extensions: [EditorState.readOnly.of(true), EditorView.editable.of(false), lineNumbers(), appliedDiffTheme, ...languageExtensions],
     });
     return () => view.destroy();
   }, [code, languageExtensions]);
-  return <div ref={host} className="chat-code-block" aria-label={language ? `${language} code` : "Code"} />;
+  return <div ref={host} className="chat-code-block codemirror-diff" aria-label={language ? `${language} code` : "Code"} />;
 }
 
 function ExternalLink({ href, children }: { href?: string; children?: ReactNode }) {
