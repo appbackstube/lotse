@@ -1264,7 +1264,9 @@ fn restored_repositories(app: &AppHandle) -> Vec<PathBuf> {
 fn restore_repository(app: &AppHandle, window: WebviewWindow, root: PathBuf) -> Result<(), String> {
     let root = PathBuf::from(git_text(&root, &["rev-parse", "--show-toplevel"])?);
     let root = fs::canonicalize(root).map_err(|error| error.to_string())?;
+    let info = repository_info(&root)?;
     let watcher = repository_watcher(&root, window.clone())?;
+    window.set_title(&info.name).map_err(|error| error.to_string())?;
     let app_state = app.state::<AppState>();
     let mut windows = app_state.0.lock().map_err(|error| error.to_string())?;
     let state = windows.entry(window.label().to_owned()).or_default();
@@ -1414,6 +1416,7 @@ fn open_repository(
         }
     }
     let watcher = repository_watcher(&root, window.clone())?;
+    window.set_title(&info.name).map_err(|error| error.to_string())?;
     if repository_path_for_label(&state, window.label()).ok().as_ref() != Some(&root) {
         browser::close(window.app_handle(), window.label(), None);
         task_control::interrupt_window(window.app_handle(), window.label());
