@@ -1,3 +1,4 @@
+import { isChatUpload } from "./chatAttachments";
 import {
   Children,
   Fragment,
@@ -769,9 +770,9 @@ function TaskCommentMarkdown({ body, onChange }: { body: string; onChange: (body
   }}>{body}</ReactMarkdown>, [body]);
 }
 
-function ChatImages({ images, removable, onRemove }: { images: ChatAttachment[]; removable?: boolean; onRemove?: (path: string) => void }) {
-  const attached = images.filter((attachment): attachment is Extract<ChatAttachment, { kind: "image" }> => attachment.kind === "image");
-  return attached.length ? <div className="chat-images">{attached.map((image) => <div key={image.path} className="chat-image"><img src={convertFileSrc(image.path)} alt={image.name} /><span>{image.name}</span>{removable && <button type="button" onClick={() => onRemove?.(image.path)} aria-label={`Remove ${image.name}`}><X size={12} /></button>}</div>)}</div> : null;
+function ChatUploads({ images, removable, onRemove }: { images: ChatAttachment[]; removable?: boolean; onRemove?: (path: string) => void }) {
+  const attached = images.filter(isChatUpload);
+  return attached.length ? <div className="chat-images">{attached.map((image) => <div key={image.path} className="chat-image">{image.kind === "image" ? <img src={convertFileSrc(image.path)} alt={image.name} /> : <div className="chat-file-icon"><FileText size={28} aria-hidden="true" /></div>}<span title={image.name}>{image.name}</span>{removable && <button type="button" onClick={() => onRemove?.(image.path)} aria-label={`Remove ${image.name}`}><X size={12} /></button>}</div>)}</div> : null;
 }
 
 function ChatAssetNames({ attachments }: { attachments: ChatAttachment[] }) {
@@ -779,7 +780,7 @@ function ChatAssetNames({ attachments }: { attachments: ChatAttachment[] }) {
   return assets.length ? <div className="flex flex-wrap gap-1.5">{assets.map((asset) => <span key={asset.id} className="rounded-md border border-[#294536] bg-[#111A15] px-2 py-1 text-xs text-[#7C9B88]">{asset.name}</span>)}</div> : null;
 }
 
-const taskImagePaths = (task: RepositoryTask) => [...task.attachments, ...task.chatMessages.flatMap((message) => message.attachments ?? [])].flatMap((attachment) => attachment.kind === "image" ? [attachment.path] : []);
+const taskImagePaths = (task: RepositoryTask) => [...task.attachments, ...task.chatMessages.flatMap((message) => message.attachments ?? [])].flatMap((attachment) => isChatUpload(attachment) ? [attachment.path] : []);
 const taskQueueKey = (root: string, taskId: string) => JSON.stringify([root, "task", taskId]);
 const reviewQueueKey = (review: ReviewSession) => JSON.stringify([review.repoPath, review.mode, review.baseRef, review.compareRef, ...(review.mode === "workingCopy" ? [review.baseOid] : [])]);
 
@@ -1065,7 +1066,7 @@ function AiChatPanel({
   onImplementPlan,
   onCancel,
   onClear,
-  onAddImages,
+  onAddFiles,
   onPasteImage,
   onRemoveImage,
   onOpenTask,
@@ -1136,7 +1137,7 @@ function AiChatPanel({
   onImplementPlan: () => void;
   onCancel: () => void;
   onClear: () => void;
-  onAddImages: (paths: string[]) => void;
+  onAddFiles: (paths: string[]) => void;
   onPasteImage: (image: File) => void;
   onRemoveImage: (path: string) => void;
   onOpenTask: (id: string) => void;
@@ -1179,7 +1180,7 @@ function AiChatPanel({
   const [sendPending, setSendPending] = useState(false);
   const [editingQueued, setEditingQueued] = useState<QueuedChatMessage | null>(null);
   const [queuedEditDraft, setQueuedEditDraft] = useState("");
-  const addImagesRef = useRef(onAddImages);
+  const addFilesRef = useRef(onAddFiles);
   const dropEnabledRef = useRef({ comparison: !!comparison && active, running: sendPending });
   useLayoutEffect(() => {
     const scroll = scrollRef.current;
@@ -1199,7 +1200,7 @@ function AiChatPanel({
     observer.observe(content);
     return () => observer.disconnect();
   }, []);
-  const canSend = !!comparison && !sendPending && (!!composerDraft.trim() || images.some((attachment) => attachment.kind === "image") || selectedAssetIds.length > 0) && !variablePrompt
+  const canSend = !!comparison && !sendPending && (!!composerDraft.trim() || images.some(isChatUpload) || selectedAssetIds.length > 0) && !variablePrompt
     && (!taskMode || taskSelected);
   const send = async () => {
     if (sendPendingRef.current) return;
@@ -1214,7 +1215,7 @@ function AiChatPanel({
     } finally { sendPendingRef.current = false; setSendPending(false); }
   };
   useEffect(() => { setComposerDraft(draft); }, [draft]);
-  useEffect(() => { addImagesRef.current = onAddImages; }, [onAddImages]);
+  useEffect(() => { addFilesRef.current = onAddFiles; }, [onAddFiles]);
   useEffect(() => { dropEnabledRef.current = { comparison: !!comparison && active, running: sendPending }; }, [comparison, sendPending, active]);
   useEffect(() => { if (active && followChatRef.current) requestAnimationFrame(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }); }, [active]);
 
@@ -1228,7 +1229,7 @@ function AiChatPanel({
       setDragging(enabled);
       // Native drop coordinates are window-relative and vary with title-bar mode;
       // accept drops while Agent Chat is visible instead of rejecting valid drops.
-      if (event.payload.type === "drop" && enabled) addImagesRef.current(event.payload.paths);
+      if (event.payload.type === "drop" && enabled) addFilesRef.current(event.payload.paths);
     }).then((stop) => { if (disposed) stop(); else unlisten = stop; });
     return () => { disposed = true; unlisten?.(); };
   }, []);
@@ -1287,7 +1288,7 @@ function AiChatPanel({
           {messages.map((entry) => entry.role === "user" ? (
               <div key={entry.id} className="ios-chat-user-turn">
                 <article className="ios-chat-user">
-                  <ChatImages images={entry.attachments ?? []} />
+                  <ChatUploads images={entry.attachments ?? []} />
                   <ChatAssetNames attachments={entry.attachments ?? []} />
                   {entry.body && <div className="chat-markdown text-[#E8FFF0]"><ChatMarkdown text={entry.body} onFileReference={setFileReference} onOpenTask={onOpenTask} /></div>}
                 </article>
@@ -1348,7 +1349,7 @@ function AiChatPanel({
           </div>)}
         </div>}
         <div className={`ios-chat-composer mx-auto w-full max-w-[960px] ${dragging ? "ios-chat-composer-dropping" : ""}`}>
-          <ChatImages images={images} removable onRemove={onRemoveImage} />
+          <ChatUploads images={images} removable onRemove={onRemoveImage} />
           <ChatAssetNames attachments={taskAssets.filter((asset) => selectedAssetIds.includes(asset.id)).map((asset) => ({ kind: "taskAsset", id: asset.id, name: asset.name, image: asset.image }))} />
           <Textarea
             value={composerDraft}
@@ -1377,7 +1378,7 @@ function AiChatPanel({
               <PopoverContent side="top" align="start" className="w-72 overflow-hidden border border-[#294536] bg-[#111A15] p-1.5 shadow-2xl shadow-black/60">
                 <PopoverTitle className="sr-only">Add to chat</PopoverTitle>
                 {addMenuPage === "main" ? <>
-                  <button type="button" disabled={!comparison || sendPending || (taskMode && !taskSelected)} onClick={() => { setAddMenuOpen(false); void open({ multiple: true, filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp", "gif", "svg"] }] }).then((paths) => { if (Array.isArray(paths)) onAddImages(paths); else if (paths) onAddImages([paths]); }); }} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[#183522] disabled:opacity-40"><FileText size={15} className="text-[#7C9B88]" /><span className="flex-1">File</span><span className="text-xs text-[#7C9B88]">Images</span></button>
+                  <button type="button" disabled={!comparison || sendPending || (taskMode && !taskSelected)} onClick={() => { setAddMenuOpen(false); void open({ multiple: true }).then((paths) => { if (Array.isArray(paths)) onAddFiles(paths); else if (paths) onAddFiles([paths]); }); }} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[#183522] disabled:opacity-40"><FileText size={15} className="text-[#7C9B88]" /><span className="flex-1">File</span></button>
                   <button type="button" onClick={() => setAddMenuPage("playbooks")} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[#183522]"><Blocks size={15} className="text-[#7C9B88]" /><span className="flex-1">Playbook</span><ChevronRight size={14} className="text-[#7C9B88]" /></button>
                   {taskMode && <button type="button" disabled={!taskSelected || !taskAssets.length} onClick={() => setAddMenuPage("assets")} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[#183522] disabled:opacity-40"><Folder size={15} className="text-[#7C9B88]" /><span className="flex-1">Assets</span>{selectedAssetIds.length > 0 && <span className="text-xs text-[#7C9B88]">{selectedAssetIds.length}</span>}<ChevronRight size={14} className="text-[#7C9B88]" /></button>}
                   <button type="button" role="switch" aria-checked={mode === "plan"} disabled={running || (taskMode && !taskSelected)} onClick={() => { onModeChange(mode === "plan" ? "default" : "plan"); setAddMenuOpen(false); }} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[#183522] disabled:opacity-40"><ListTodo size={15} className="text-[#7C9B88]" /><span className="flex-1">Plan</span><span className="text-xs text-[#7C9B88]">{mode === "plan" ? "On" : "Off"}</span></button>
@@ -1467,7 +1468,7 @@ function AiChatPanel({
           </div>
         </div>
       </div>
-      <Dialog open={!!editingQueued} onOpenChange={(open) => { if (!open) setEditingQueued(null); }}><DialogContent className="ios-sheet w-[min(480px,94vw)] border border-[#294536] bg-[#111A15] p-5"><DialogTitle>Edit queued message</DialogTitle><DialogDescription>Changes apply before this message is sent.</DialogDescription><Textarea value={queuedEditDraft} onChange={(event) => setQueuedEditDraft(event.currentTarget.value)} maxLength={taskMode ? undefined : 20_000} rows={5} className="mt-4" /><div className="mt-4 flex justify-end gap-2"><Button type="button" variant="ghost" onClick={() => setEditingQueued(null)}>Cancel</Button><Button type="button" disabled={!queuedEditDraft.trim() && !editingQueued?.context.attachments.some((attachment) => attachment.kind === "image" || attachment.kind === "taskAsset")} onClick={() => { if (editingQueued) onEditQueued(editingQueued.id, queuedEditDraft); setEditingQueued(null); }}>Save</Button></div></DialogContent></Dialog>
+      <Dialog open={!!editingQueued} onOpenChange={(open) => { if (!open) setEditingQueued(null); }}><DialogContent className="ios-sheet w-[min(480px,94vw)] border border-[#294536] bg-[#111A15] p-5"><DialogTitle>Edit queued message</DialogTitle><DialogDescription>Changes apply before this message is sent.</DialogDescription><Textarea value={queuedEditDraft} onChange={(event) => setQueuedEditDraft(event.currentTarget.value)} maxLength={taskMode ? undefined : 20_000} rows={5} className="mt-4" /><div className="mt-4 flex justify-end gap-2"><Button type="button" variant="ghost" onClick={() => setEditingQueued(null)}>Cancel</Button><Button type="button" disabled={!queuedEditDraft.trim() && !editingQueued?.context.attachments.some((attachment) => isChatUpload(attachment) || attachment.kind === "taskAsset")} onClick={() => { if (editingQueued) onEditQueued(editingQueued.id, queuedEditDraft); setEditingQueued(null); }}>Save</Button></div></DialogContent></Dialog>
       <FileReferenceDialog reference={fileReference} compareRef={comparison?.mode === "branch" ? comparison.compareRef : null} onClose={() => setFileReference(null)} />
     </aside>
   );
@@ -2230,7 +2231,7 @@ function App() {
   const reviewRunQueueKeyRef = useRef<string | null>(null);
   const reviewRunSessionRef = useRef<ReviewSession | null>(null);
   const reviewSteerSaveRef = useRef<Promise<unknown> | null>(null);
-  const [aiChatImages, setAiChatImages] = useState<ChatAttachment[]>([]);
+  const [aiChatUploads, setAiChatUploads] = useState<ChatAttachment[]>([]);
   const [aiChatModel, setAiChatModel] = useState(chatDefaults.default.model);
   const [aiChatServerModel, setAiChatServerModel] = useState<string | null>(null);
   const [aiChatEffort, setAiChatEffort] = useState<ChatEffort>(chatDefaults.default.effort);
@@ -2397,8 +2398,8 @@ function App() {
     let attachments: ChatAttachment[] = [];
     if (selection) attachments = [{ kind: "selectedLines", selection }];
     else if (selectedFile && !selectedFile.binary) attachments = [{ kind: "file", path: selectedFile.path }];
-    return { mode: "auto", attachments: [...attachments, ...aiChatImages] };
-  }, [selectedFile, selection, aiChatImages]);
+    return { mode: "auto", attachments: [...attachments, ...aiChatUploads] };
+  }, [selectedFile, selection, aiChatUploads]);
   const activeQueueKey = taskMode ? selectedTaskId && repository ? taskQueueKey(repository.rootPath, selectedTaskId) : null : review ? reviewQueueKey(review) : null;
   const changeQueue = (key: string, change: (items: QueuedChatMessage[]) => QueuedChatMessage[]) => {
     const next = { ...chatQueuesRef.current, [key]: change(chatQueuesRef.current[key] ?? []) };
@@ -2417,7 +2418,7 @@ function App() {
     const item = chatQueuesRef.current[key]?.find((entry) => entry.id === id);
     if (!item) return;
     changeQueue(key, (items) => items.filter((entry) => entry.id !== id));
-    if (deleteImages) for (const attachment of item.context.attachments) if (attachment.kind === "image") void invoke("remove_chat_image", { path: attachment.path }).catch((reason) => setError(message(reason)));
+    if (deleteImages) for (const attachment of item.context.attachments) if (isChatUpload(attachment)) void invoke("remove_chat_image", { path: attachment.path }).catch((reason) => setError(message(reason)));
   };
 
   const runCommand = repository ? runCommands[repository.rootPath] ?? "" : "";
@@ -3921,26 +3922,28 @@ function App() {
     });
   };
 
-  const addChatImages = async (paths: string[], taskId?: string) => {
+  const addChatFiles = async (paths: string[], taskId?: string) => {
     if (!comparison || aiChatImageImportingRef.current) return;
     aiChatImageImportingRef.current = true;
-    const currentImages = taskId ? tasks.find((task) => task.id === taskId)?.attachments ?? [] : aiChatImages;
-    const remaining = 10 - currentImages.filter((attachment) => attachment.kind === "image").length;
-    if (remaining <= 0) { setError("Attach up to 10 images at a time."); aiChatImageImportingRef.current = false; return; }
+    const task = taskId ? tasks.find((task) => task.id === taskId) : undefined;
+    const currentAttachments = task ? [...task.attachments, ...taskAssetAttachments(task, taskAssetSelections[task.id] ?? [])] : chatRequestContext.attachments;
+    const remaining = 12 - currentAttachments.length;
+    if (paths.length > remaining) { setError("Attach up to 12 items per message."); aiChatImageImportingRef.current = false; return; }
     try {
-      const imported = await invoke<ChatAttachment[]>("import_chat_images", { paths: paths.slice(0, remaining) });
+      const imported = await invoke<ChatAttachment[]>("import_chat_files", { paths });
       if (taskId) {
-        await invoke("retain_task_images", { paths: imported.flatMap((attachment) => attachment.kind === "image" ? [attachment.path] : []) });
+        await invoke("retain_task_images", { paths: imported.flatMap((attachment) => isChatUpload(attachment) ? [attachment.path] : []) });
         updateTask(taskId, (task) => ({ ...task, attachments: [...task.attachments, ...imported] }));
-      } else setAiChatImages((current) => [...current, ...imported]);
+      } else setAiChatUploads((current) => [...current, ...imported]);
     } catch (reason) { setError(message(reason)); }
     finally { aiChatImageImportingRef.current = false; }
   };
 
   const pasteChatImage = async (image: File, taskId?: string) => {
     if (!comparison || aiChatImageImportingRef.current) return;
-    const currentImages = taskId ? tasks.find((task) => task.id === taskId)?.attachments ?? [] : aiChatImages;
-    if (currentImages.filter((attachment) => attachment.kind === "image").length >= 10) { setError("Attach up to 10 images at a time."); return; }
+    const task = taskId ? tasks.find((task) => task.id === taskId) : undefined;
+    const currentAttachments = task ? [...task.attachments, ...taskAssetAttachments(task, taskAssetSelections[task.id] ?? [])] : chatRequestContext.attachments;
+    if (currentAttachments.length >= 12) { setError("Attach up to 12 items per message."); return; }
     aiChatImageImportingRef.current = true;
     try {
       const imported = await invoke<ChatAttachment>("import_pasted_chat_image", {
@@ -3950,14 +3953,14 @@ function App() {
       if (taskId && imported.kind === "image") {
         await invoke("retain_task_images", { paths: [imported.path] });
         updateTask(taskId, (task) => ({ ...task, attachments: [...task.attachments, imported] }));
-      } else setAiChatImages((current) => [...current, imported]);
+      } else setAiChatUploads((current) => [...current, imported]);
     } catch (reason) { setError(message(reason)); }
     finally { aiChatImageImportingRef.current = false; }
   };
 
   const removeChatImage = (path: string, taskId?: string) => {
-    if (taskId) updateTask(taskId, (task) => ({ ...task, attachments: task.attachments.filter((attachment) => attachment.kind !== "image" || attachment.path !== path) }));
-    else setAiChatImages((current) => current.filter((attachment) => attachment.kind !== "image" || attachment.path !== path));
+    if (taskId) updateTask(taskId, (task) => ({ ...task, attachments: task.attachments.filter((attachment) => !isChatUpload(attachment) || attachment.path !== path) }));
+    else setAiChatUploads((current) => current.filter((attachment) => !isChatUpload(attachment) || attachment.path !== path));
     void invoke("remove_chat_image", { path }).catch((reason) => setError(message(reason)));
   };
 
@@ -4008,7 +4011,7 @@ function App() {
     const turnMode = modeOverride ?? aiChatMode;
     const prompt = (promptOverride ?? aiChatDraft).trim();
     const currentReview = reviewRef.current;
-    if (!comparison || !currentReview || aiChatRunningRef.current || (!prompt && !requestContext.attachments.some((attachment) => attachment.kind === "image"))) return false;
+    if (!comparison || !currentReview || aiChatRunningRef.current || (!prompt && !requestContext.attachments.some(isChatUpload))) return false;
     const currentSelection = queuedItem ? queuedItem.selection : selection;
     const previous = currentReview.chatMessages ?? [];
     const userMessage: ChatMessage = {
@@ -4027,7 +4030,7 @@ function App() {
     aiChatTurnModeRef.current = turnMode;
     resetAiChatTimeline();
     setAiChatPlan(null);
-    if (!queuedItem) { setAiChatDraft(""); setAiChatImages([]); }
+    if (!queuedItem) { setAiChatDraft(""); setAiChatUploads([]); }
     aiChatRunningRef.current = true;
     reviewRunQueueKeyRef.current = reviewQueueKey(currentReview);
     reviewRunSessionRef.current = pendingReview;
@@ -4039,7 +4042,7 @@ function App() {
       if (aiChatCancelRequested.current) {
         aiChatRunningRef.current = false; setAiChatRunning(false); setAiChatStatus(""); reviewRunSessionRef.current = null;
         if (reviewRef.current && reviewQueueKey(reviewRef.current) === reviewQueueKey(currentReview)) void persistReview(currentReview);
-        if (!queuedItem) { setAiChatDraft(promptOverride ?? aiChatDraft); setAiChatImages(requestContext.attachments.filter((attachment) => attachment.kind === "image")); }
+        if (!queuedItem) { setAiChatDraft(promptOverride ?? aiChatDraft); setAiChatUploads(requestContext.attachments.filter(isChatUpload)); }
         return false;
       }
       const requestedModel = configurationOverride?.model ?? aiChatModel;
@@ -4073,7 +4076,7 @@ function App() {
       setAiChatStatus("");
       aiChatTurnRef.current = null;
       reviewRunSessionRef.current = null;
-      if (!queuedItem) { setAiChatDraft(promptOverride ?? aiChatDraft); setAiChatImages(requestContext.attachments.filter((attachment) => attachment.kind === "image")); }
+      if (!queuedItem) { setAiChatDraft(promptOverride ?? aiChatDraft); setAiChatUploads(requestContext.attachments.filter(isChatUpload)); }
       const visibleReview = reviewRef.current && reviewQueueKey(reviewRef.current) === reviewQueueKey(currentReview) ? reviewRef.current : null;
       if (visibleReview) void persistReview({ ...visibleReview, chatMessages: visibleReview.chatMessages.filter((entry) => entry.id !== userMessage.id) });
       else void invoke("save_review", { session: currentReview }).catch((reason) => setError(message(reason)));
@@ -4340,14 +4343,14 @@ function App() {
     if (!comparison || !review || !key || (taskMode && !task)) return false;
     const attachments = task ? [...task.attachments, ...taskAssetAttachments(task, taskAssetSelections[task.id] ?? [])] : chatRequestContext.attachments;
     const prompt = draft.trim();
-    if (!prompt && !attachments.some((attachment) => attachment.kind === "image" || attachment.kind === "taskAsset")) return false;
+    if (!prompt && !attachments.some((attachment) => isChatUpload(attachment) || attachment.kind === "taskAsset")) return false;
     if (!task && prompt.length > 20_000) { setError("Messages can be up to 20,000 characters."); return false; }
     if (task && attachments.length > 12) { setError("Attach up to 12 items per message."); return false; }
     if (task?.location === "worktree" && !task.worktree && !taskStartSelected(task.worktreeStart)) { setError("Choose the Worktree start point before starting this task."); return false; }
     const running = task ? !!taskRunsRef.current[task.id] || taskStartingRef.current.has(task.id) : aiChatRunningRef.current;
     if (!running && !chatQueuesRef.current[key]?.length) return task ? sendTaskMessage(task, task.chatMode, draft) : sendAiChat(draft);
     const item: QueuedChatMessage = { id: crypto.randomUUID(), body: prompt, context: { mode: "auto", attachments }, selection, mode: task?.chatMode ?? aiChatMode, model: task?.chatModel ?? aiChatModel, effort: task?.chatEffort ?? aiChatEffort };
-    const imagePaths = attachments.flatMap((attachment) => attachment.kind === "image" ? [attachment.path] : []);
+    const imagePaths = attachments.flatMap((attachment) => isChatUpload(attachment) ? [attachment.path] : []);
     if (!task && imagePaths.length) {
       try { await invoke("retain_task_images", { paths: imagePaths }); }
       catch (reason) { setError(message(reason)); return false; }
@@ -4357,7 +4360,7 @@ function App() {
     if (task) {
       updateTask(task.id, (current) => ({ ...current, attachments: [] }));
       setTaskAssetSelections((current) => ({ ...current, [task.id]: [] }));
-    } else setAiChatImages([]);
+    } else setAiChatUploads([]);
     return true;
   };
 
@@ -4373,7 +4376,7 @@ function App() {
         : await sendAiChat(item.body, item.context, item.mode, { model: item.model, effort: item.effort }, item);
       if (accepted) {
         removeQueued(key, item.id);
-        if (!task) for (const attachment of item.context.attachments) if (attachment.kind === "image") void invoke("release_chat_image_reference", { path: attachment.path }).catch((reason) => setError(message(reason)));
+        if (!task) for (const attachment of item.context.attachments) if (isChatUpload(attachment)) void invoke("release_chat_image_reference", { path: attachment.path }).catch((reason) => setError(message(reason)));
       } else {
         setQueuePaused(key, true);
       }
@@ -4433,7 +4436,7 @@ function App() {
         finally { if (reviewSteerSaveRef.current === saving) reviewSteerSaveRef.current = null; }
       }
       removeQueued(key, id);
-      if (!task && saved) for (const attachment of item.context.attachments) if (attachment.kind === "image") void invoke("release_chat_image_reference", { path: attachment.path }).catch((reason) => setError(message(reason)));
+      if (!task && saved) for (const attachment of item.context.attachments) if (isChatUpload(attachment)) void invoke("release_chat_image_reference", { path: attachment.path }).catch((reason) => setError(message(reason)));
     } catch (reason) { setError(message(reason)); }
     finally {
       queueBusyRef.current.delete(key);
@@ -4573,8 +4576,8 @@ function App() {
       setAiChatPlan(null);
       setAiChatServerModel(null);
       resetAiChatTimeline();
-      for (const image of aiChatImages) if (image.kind === "image") void invoke("remove_chat_image", { path: image.path }).catch(() => {});
-      setAiChatImages([]);
+      for (const image of aiChatUploads) if (isChatUpload(image)) void invoke("remove_chat_image", { path: image.path }).catch(() => {});
+      setAiChatUploads([]);
     }
   };
 
@@ -6224,7 +6227,7 @@ function App() {
             hideHeader={boardMode}
             approvalReviewer={activeApprovalReviewer}
             error={error}
-            images={taskMode ? selectedTask?.attachments ?? [] : aiChatImages}
+            images={taskMode ? selectedTask?.attachments ?? [] : aiChatUploads}
             taskAssets={taskMode ? selectedTask?.assets ?? [] : []}
             selectedAssetIds={taskMode && selectedTask ? taskAssetSelections[selectedTask.id] ?? [] : []}
             onToggleTaskAsset={(id) => { if (selectedTask) setTaskAssetSelections((current) => ({ ...current, [selectedTask.id]: (current[selectedTask.id] ?? []).includes(id) ? (current[selectedTask.id] ?? []).filter((value) => value !== id) : [...(current[selectedTask.id] ?? []), id] })); }}
@@ -6248,7 +6251,7 @@ function App() {
             onImplementPlan={() => { if (taskMode && selectedTask) void implementTask(selectedTask); else { selectAiChatMode("default"); void sendAiChat(implementPlanPrompt, chatRequestContext, "default", chatDefaults.default); } }}
             onCancel={() => { if (taskMode && selectedTask) void cancelTaskPlan(selectedTask.id); else void cancelAiChat(); }}
             onClear={taskMode && selectedTask ? () => clearTaskChat(selectedTask) : clearAiChat}
-            onAddImages={(paths) => void addChatImages(paths, taskMode ? selectedTask?.id : undefined)}
+            onAddFiles={(paths) => void addChatFiles(paths, taskMode ? selectedTask?.id : undefined)}
             onPasteImage={(image) => void pasteChatImage(image, taskMode ? selectedTask?.id : undefined)}
             onRemoveImage={(path) => removeChatImage(path, taskMode ? selectedTask?.id : undefined)}
             taskMode={taskMode}

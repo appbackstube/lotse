@@ -652,6 +652,7 @@ enum ChatAttachment {
     ReviewComments,
     ReviewComment { comment_id: String },
     Image { path: String, name: String },
+    LocalFile { path: String, name: String },
     TaskAsset { id: String, name: String, image: bool },
 }
 
@@ -5261,6 +5262,12 @@ fn validate_chat_attachments(
                 }
                 managed_chat_image(app, path)?;
             }
+            ChatAttachment::LocalFile { path, name } => {
+                if name.trim().is_empty() || name.len() > 160 {
+                    return Err("Invalid file attachment.".to_owned());
+                }
+                managed_chat_attachment(app, path)?;
+            }
             ChatAttachment::TaskAsset { id, name, image } => {
                 let task_id = task_id.ok_or("Task assets require a task.".to_owned())?;
                 if name.trim().is_empty() || name.len() > 160 { return Err("Invalid task asset.".to_owned()); }
@@ -5295,6 +5302,7 @@ fn attachment_label(attachment: &ChatAttachment) -> String {
         ChatAttachment::ReviewComments => "All review comments".to_owned(),
         ChatAttachment::ReviewComment { comment_id } => format!("Review comment: {comment_id}"),
         ChatAttachment::Image { name, .. } => format!("Image: {name}"),
+        ChatAttachment::LocalFile { path, name } => format!("File attachment: {name} ({path})"),
         ChatAttachment::TaskAsset { name, .. } => format!("Task asset: {name}"),
     }
 }
@@ -5479,7 +5487,7 @@ async fn ai_chat_send(
     let has_images = chat_context
         .attachments
         .iter()
-        .any(|attachment| matches!(attachment, ChatAttachment::Image { .. } | ChatAttachment::TaskAsset { .. }));
+        .any(|attachment| matches!(attachment, ChatAttachment::Image { .. } | ChatAttachment::LocalFile { .. } | ChatAttachment::TaskAsset { .. }));
     if !valid_oid(&base_oid)
         || !valid_codex_config(&model, &effort)
         || (prompt.trim().is_empty() && !has_images)
@@ -5562,7 +5570,7 @@ async fn ai_chat_steer(
 ) -> Result<(), String> {
     let AiChatSteerInput { request_id, prompt, chat_context, task_id, allow_long_prompt, comments } = input;
     if request_id.trim().is_empty()
-        || (prompt.trim().is_empty() && !chat_context.attachments.iter().any(|attachment| matches!(attachment, ChatAttachment::Image { .. } | ChatAttachment::TaskAsset { .. })))
+        || (prompt.trim().is_empty() && !chat_context.attachments.iter().any(|attachment| matches!(attachment, ChatAttachment::Image { .. } | ChatAttachment::LocalFile { .. } | ChatAttachment::TaskAsset { .. })))
         || (!allow_long_prompt && prompt.len() > 20_000)
         || task_id.as_deref().is_some_and(|id| !valid_task_id(id))
     { return Err("Invalid queued message".to_owned()); }
@@ -5667,7 +5675,6 @@ fn review_file(app: &AppHandle) -> Result<PathBuf, String> {
         .join("reviews.json"))
 }
 
-const MAX_CHAT_IMAGES: usize = 10;
 const MAX_CHAT_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_CHAT_IMAGE_DIMENSION: f32 = 2048.0;
 static SVG_FONT_DATABASE: OnceLock<Arc<resvg::usvg::fontdb::Database>> = OnceLock::new();
@@ -5817,13 +5824,24 @@ fn non_animated_gif(bytes: &[u8]) -> bool {
     false
 }
 
+fn managed_chat_attachment(app: &AppHandle, path: &str) -> Result<PathBuf, String> {
+    managed_chat_attachment_in(&chat_images_dir(app)?, path)
+}
+
+fn managed_chat_attachment_in(directory: &Path, path: &str) -> Result<PathBuf, String> {
+    let directory = fs::canonicalize(directory)
+        .map_err(|_| "Attachment is no longer available.".to_owned())?;
+    let attachment = fs::canonicalize(path)
+        .map_err(|_| "Attachment is no longer available.".to_owned())?;
+    if !attachment.starts_with(&directory) || !attachment.is_file() {
+        return Err("Invalid file attachment.".to_owned());
+    }
+    Ok(attachment)
+}
+
 fn managed_chat_image(app: &AppHandle, path: &str) -> Result<PathBuf, String> {
-    let directory = chat_images_dir(app)?;
-    let directory = fs::canonicalize(&directory)
-        .map_err(|_| "Image attachment is no longer available.".to_owned())?;
-    let image = fs::canonicalize(path)
-        .map_err(|_| "Image attachment is no longer available.".to_owned())?;
-    if !image.starts_with(&directory) || !image.is_file() || image_extension(&image).is_none() {
+    let image = managed_chat_attachment(app, path)?;
+    if image_extension(&image).is_none() {
         return Err("Invalid image attachment.".to_owned());
     }
     Ok(image)
@@ -5840,7 +5858,7 @@ fn task_image_references(app: &AppHandle) -> Result<HashSet<PathBuf>, String> {
     .map_err(|error| format!("Task image references are invalid: {error}"))?;
     Ok(paths
         .into_iter()
-        .filter_map(|path| managed_chat_image(app, &path).ok())
+        .filter_map(|path| managed_chat_attachment(app, &path).ok())
         .collect())
 }
 
@@ -5875,7 +5893,7 @@ fn cleanup_chat_images(app: &AppHandle, store: &ReviewStore) -> Result<(), Strin
         .flat_map(|session| &session.chat_messages)
         .flat_map(|message| &message.attachments)
         .filter_map(|attachment| match attachment {
-            ChatAttachment::Image { path, .. } => fs::canonicalize(path).ok(),
+            ChatAttachment::Image { path, .. } | ChatAttachment::LocalFile { path, .. } => fs::canonicalize(path).ok(),
             _ => None,
         })
         .collect::<HashSet<_>>();
@@ -5895,93 +5913,27 @@ fn cleanup_chat_images(app: &AppHandle, store: &ReviewStore) -> Result<(), Strin
 }
 
 #[tauri::command]
-async fn import_chat_images(
+async fn import_chat_files(
     paths: Vec<String>,
     app: AppHandle,
 ) -> Result<Vec<ChatAttachment>, String> {
-    if paths.is_empty() || paths.len() > MAX_CHAT_IMAGES {
-        return Err("Attach between 1 and 10 images.".to_owned());
-    }
     let directory = chat_images_dir(&app)?;
-    run_blocking(move || {
-        let mut sources = Vec::with_capacity(paths.len());
-        for path in paths {
-            let source = fs::canonicalize(&path)
-                .map_err(|_| "Cannot read the selected image.".to_owned())?;
-            let metadata =
-                fs::metadata(&source).map_err(|_| "Cannot read the selected image.".to_owned())?;
-            if !metadata.is_file() || metadata.len() > MAX_CHAT_IMAGE_BYTES {
-                return Err("Each image must be a supported file no larger than 20 MB.".to_owned());
-            }
-            let extension = import_image_extension(&source)
-                .ok_or("Supported image formats are PNG, JPEG, WEBP, GIF, and SVG.")?;
-            let converted = if extension == "svg" {
-                Some(rasterize_svg(
-                    &fs::read(&source).map_err(|_| "Cannot read the selected image.")?,
-                )?)
-            } else {
-                let mut header = [0_u8; 16];
-                let mut file = fs::File::open(&source)
-                    .map_err(|_| "Cannot read the selected image.".to_owned())?;
-                let read = file
-                    .read(&mut header)
-                    .map_err(|_| "Cannot read the selected image.".to_owned())?;
-                if !supported_image_bytes(&header[..read]) {
-                    return Err("The selected file is not a supported image.".to_owned());
-                }
-                if extension == "gif"
-                    && !non_animated_gif(
-                        &fs::read(&source).map_err(|_| "Cannot read the selected image.")?,
-                    )
-                {
-                    return Err("Animated GIFs are not supported.".to_owned());
-                }
-                None
-            };
-            let name = source
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("image")
-                .chars()
-                .take(160)
-                .collect::<String>();
-            sources.push((
-                source,
-                if converted.is_some() {
-                    "png"
-                } else {
-                    extension
-                },
-                name,
-                converted,
-            ));
+    run_blocking(move || import_chat_files_into(&directory, paths)).await
+}
+
+fn import_chat_files_into(directory: &Path, paths: Vec<String>) -> Result<Vec<ChatAttachment>, String> {
+    if paths.is_empty() || paths.len() > 12 {
+        return Err("Attach between 1 and 12 files.".to_owned());
+    }
+    // Keep the same file validation, image conversion, and atomic batch import as task assets.
+    import_task_asset_files(directory, paths).map(|assets| assets.into_iter().map(|asset| {
+        let path = directory.join(asset.id).to_string_lossy().into_owned();
+        if asset.image {
+            ChatAttachment::Image { path, name: asset.name }
+        } else {
+            ChatAttachment::LocalFile { path, name: asset.name }
         }
-        fs::create_dir_all(&directory)
-            .map_err(|error| format!("Cannot prepare image storage: {error}"))?;
-        let mut imported = Vec::with_capacity(sources.len());
-        for (source, extension, name, converted) in sources {
-            let target = directory.join(format!("{}.{}", agent_id()?, extension));
-            let saved = if let Some(bytes) = converted {
-                fs::write(&target, bytes).map(|_| 0)
-            } else {
-                fs::copy(&source, &target)
-            };
-            if let Err(error) = saved {
-                for attachment in &imported {
-                    if let ChatAttachment::Image { path, .. } = attachment {
-                        let _ = fs::remove_file(path);
-                    }
-                }
-                return Err(format!("Cannot save image attachment: {error}"));
-            }
-            imported.push(ChatAttachment::Image {
-                path: target.to_string_lossy().into_owned(),
-                name,
-            });
-        }
-        Ok(imported)
-    })
-    .await
+    }).collect())
 }
 
 #[tauri::command]
@@ -6026,19 +5978,19 @@ async fn import_pasted_chat_image(
 
 #[tauri::command]
 fn retain_task_images(paths: Vec<String>, app: AppHandle) -> Result<(), String> {
-    if paths.is_empty() || paths.len() > MAX_CHAT_IMAGES {
-        return Err("Retain between 1 and 10 task images.".to_owned());
+    if paths.is_empty() || paths.len() > 12 {
+        return Err("Retain between 1 and 12 attachments.".to_owned());
     }
     let mut references = task_image_references(&app)?;
     for path in paths {
-        references.insert(managed_chat_image(&app, &path)?);
+        references.insert(managed_chat_attachment(&app, &path)?);
     }
     write_task_image_references(&app, &references)
 }
 
 #[tauri::command]
 fn remove_chat_image(path: String, app: AppHandle) -> Result<(), String> {
-    let image = managed_chat_image(&app, &path)?;
+    let image = managed_chat_attachment(&app, &path)?;
     let mut references = task_image_references(&app)?;
     references.remove(&image);
     write_task_image_references(&app, &references)?;
@@ -6047,7 +5999,7 @@ fn remove_chat_image(path: String, app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn release_chat_image_reference(path: String, app: AppHandle) -> Result<(), String> {
-    let image = managed_chat_image(&app, &path)?;
+    let image = managed_chat_attachment(&app, &path)?;
     let mut references = task_image_references(&app)?;
     references.remove(&image);
     write_task_image_references(&app, &references)
@@ -6371,7 +6323,7 @@ fn validate_review(session: &ReviewSession, root: &Path) -> Result<(), String> {
                     && !message
                         .attachments
                         .iter()
-                        .any(|attachment| matches!(attachment, ChatAttachment::Image { .. })))
+                        .any(|attachment| matches!(attachment, ChatAttachment::Image { .. } | ChatAttachment::LocalFile { .. })))
                 || message.body.len() > 50_000
                 || message.applied_diffs.len() > 50
                 || message.applied_diffs.iter().any(|change| {
@@ -6737,7 +6689,7 @@ pub fn run() {
             stop_terminal,
             load_review,
             save_review,
-            import_chat_images,
+            import_chat_files,
             import_task_assets,
             task_asset_image_path,
             task_asset_preview,
@@ -6967,6 +6919,51 @@ mod tests {
             assert!(import_task_asset_files(&rejected_directory, rejected).is_err());
             assert!(!rejected_directory.exists(), "Invalid batches must not leave imported files");
         }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn composer_imports_task_asset_files_and_preserves_agent_context() {
+        use base64::Engine;
+        let root = std::env::temp_dir().join(format!("lotse-composer-{}", agent_id().unwrap()));
+        fs::create_dir_all(&root).unwrap();
+        let text = root.join("notes.txt");
+        let pdf = root.join("report.pdf");
+        let image = root.join("screenshot.png");
+        fs::write(&text, "Test attachment content").unwrap();
+        fs::write(&pdf, b"%PDF-1.4 test document").unwrap();
+        fs::write(&image, base64::engine::general_purpose::STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=").unwrap()).unwrap();
+        let paths = [&text, &pdf, &image].map(|path| path.to_string_lossy().into_owned()).to_vec();
+        let directory = root.join("composer");
+        let assets = import_task_asset_files(&root.join("assets"), paths.clone()).unwrap();
+        let attachments = import_chat_files_into(&directory, paths.clone()).unwrap();
+        assert_eq!(attachments.len(), assets.len());
+        for ((attachment, source), asset) in attachments.iter().zip(&paths).zip(&assets) {
+            let (path, name, is_image) = match attachment {
+                ChatAttachment::LocalFile { path, name } => (path, name, false),
+                ChatAttachment::Image { path, name } => (path, name, true),
+                _ => panic!("Unexpected attachment"),
+            };
+            assert_eq!(is_image, asset.image);
+            assert_eq!(name, &asset.name);
+            let managed = managed_chat_attachment_in(&directory, path).unwrap();
+            assert_eq!(fs::read(managed).unwrap(), fs::read(source).unwrap());
+            let label = attachment_label(attachment);
+            assert!(label.contains(name));
+            if !is_image { assert!(label.contains(path), "Agent needs the readable local file path"); }
+        }
+        let stored = serde_json::to_value(&attachments).unwrap();
+        assert_eq!(stored[0]["kind"], "localFile");
+        assert_eq!(stored[2]["kind"], "image");
+        let restored: Vec<ChatAttachment> = serde_json::from_value(stored).unwrap();
+        assert_eq!(attachment_label(&restored[0]), attachment_label(&attachments[0]));
+        assert!(managed_chat_attachment_in(&directory, paths[0].as_str()).is_err());
+        let invalid = root.join("invalid.png");
+        fs::write(&invalid, "not an image").unwrap();
+        let rejected = root.join("rejected");
+        assert!(import_chat_files_into(&rejected, vec![paths[0].clone(), invalid.to_string_lossy().into_owned()]).is_err());
+        assert!(!rejected.exists());
+        assert!(import_chat_files_into(&directory, vec![paths[0].clone(); 13]).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 

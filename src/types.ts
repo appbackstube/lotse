@@ -77,6 +77,7 @@ export type ChatAttachment =
   | { kind: "reviewComments" }
   | { kind: "reviewComment"; commentId: string }
   | { kind: "image"; path: string; name: string }
+  | { kind: "localFile"; path: string; name: string }
   | { kind: "taskAsset"; id: string; name: string; image: boolean };
 export type TaskAsset = { id: string; name: string; image: boolean };
 export type TaskComment = { id: string; author: "user" | "agent"; body: string; createdAt: number };

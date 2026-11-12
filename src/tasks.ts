@@ -204,7 +204,7 @@ export function taskAssetAttachments(task: RepositoryTask, selectedIds: string[]
 }
 
 function taskAttachments(value: unknown): ChatAttachment[] {
-  return Array.isArray(value) ? value.filter((item): item is Extract<ChatAttachment, { kind: "image" }> => !!item && typeof item === "object" && (item as { kind?: unknown }).kind === "image" && typeof (item as { path?: unknown }).path === "string" && typeof (item as { name?: unknown }).name === "string") : [];
+  return Array.isArray(value) ? value.filter((item): item is Extract<ChatAttachment, { kind: "image" | "localFile" }> => !!item && typeof item === "object" && ((item as { kind?: unknown }).kind === "image" || (item as { kind?: unknown }).kind === "localFile") && typeof (item as { path?: unknown }).path === "string" && typeof (item as { name?: unknown }).name === "string") : [];
 }
 
 function taskAssets(value: unknown): TaskAsset[] {
