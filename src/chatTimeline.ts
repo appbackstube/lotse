@@ -2,7 +2,7 @@ import type { AiChatEvent, ChatMessage, ReviewSession } from "./types";
 
 export function carryReviewChat(previous: ReviewSession | null, next: ReviewSession): ReviewSession {
   if (!previous || previous.repoPath !== next.repoPath || previous.mode !== "workingCopy" || next.mode !== "workingCopy" || previous.baseOid === next.baseOid) return next;
-  return { ...next, chatMessages: previous.chatMessages, agentThreadId: previous.agentThreadId, chatAgent: previous.chatAgent };
+  return { ...next, chatMessages: previous.chatMessages, agentThreadId: previous.agentThreadId, chatAgent: previous.chatAgent, chatGoal: previous.chatGoal };
 }
 
 const assistantEntry = (body = ""): ChatMessage => ({

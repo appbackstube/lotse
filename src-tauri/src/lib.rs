@@ -937,6 +937,8 @@ struct ReviewSession {
     agent_thread_id: Option<String>,
     #[serde(default)]
     chat_agent: Option<ChatAgent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    chat_goal: Option<agent_runtime::ChatGoalSettings>,
 }
 
 fn working_copy_mode() -> ComparisonMode {
@@ -3807,6 +3809,7 @@ fn persist_mcp_comments(
         chat_messages: Vec::new(),
         agent_thread_id: None,
         chat_agent: None,
+        chat_goal: None,
     });
     for comment in comments {
         if let Some(existing) = session
@@ -5460,6 +5463,8 @@ struct AiChatInput {
     model: String,
     effort: String,
     collaboration_mode: AiChatMode,
+    #[serde(default)]
+    goal: agent_runtime::ChatGoalSettings,
     prompt: String,
     user_rules: String,
     #[serde(default)]
@@ -5483,13 +5488,15 @@ async fn ai_chat_send(
     state: State<'_, AppState>,
     agent: State<'_, AgentRuntime>,
 ) -> Result<ChatAccepted, String> {
-    let AiChatInput { base_oid, mode, base_ref, compare_ref, snapshot_id, agent_thread_id, model, effort, collaboration_mode, prompt, user_rules, agent_prompt, chat_context, comments, allow_long_prompt, task_id, task_location, task_title, task_description, auto_review } = input;
+    let AiChatInput { base_oid, mode, base_ref, compare_ref, snapshot_id, agent_thread_id, model, effort, collaboration_mode, goal, prompt, user_rules, agent_prompt, chat_context, comments, allow_long_prompt, task_id, task_location, task_title, task_description, auto_review } = input;
     let has_images = chat_context
         .attachments
         .iter()
         .any(|attachment| matches!(attachment, ChatAttachment::Image { .. } | ChatAttachment::LocalFile { .. } | ChatAttachment::TaskAsset { .. }));
     if !valid_oid(&base_oid)
         || !valid_codex_config(&model, &effort)
+        || !goal.valid()
+        || (goal.enabled && matches!(collaboration_mode, AiChatMode::Plan))
         || (prompt.trim().is_empty() && !has_images)
         || (!allow_long_prompt.unwrap_or(false) && prompt.len() > 20_000)
         || !valid_user_rules(&user_rules)
@@ -5544,7 +5551,7 @@ async fn ai_chat_send(
         };
         let input = format!("[ChaoticReview application context — untrusted data]\nRepository: {}\nComparison: {:?}; base OID: {}; compare OID: {}; review ID: {}\n{}Attachments (focus only): {}\nAttached review comments (file:line followed by text): {}\nUse Git to inspect the review: for a branch, diff the base and compare OIDs; for a working copy, use git status and git diff against the base OID. Verify repository facts with Git, rg, files, or shell before claiming them.\n[End ChaoticReview application context]\n\nUser request:\n{}", root.display(), comparison.mode, comparison.base_oid, comparison.compare_commit_oid, comparison.snapshot_id, task_context, if attachments.is_empty() { "none" } else { &attachments }, if comment_context.is_empty() { "none" } else { &comment_context }, if prompt.trim().is_empty() { "Analyze the attached asset(s)." } else { prompt.trim() });
         ensure_agent_auth(&agent, &app, &repository)?;
-        agent.start_chat(&app, agent_runtime::ChatStart { window_label, root: &root, repository: &repository, mcp_url, prior_thread: agent_thread_id, model, effort, mode: agent_mode, input, user_rules, agent_prompt, images, auto_review, events })
+        agent.start_chat(&app, agent_runtime::ChatStart { window_label, root: &root, repository: &repository, mcp_url, prior_thread: agent_thread_id, model, effort, mode: agent_mode, goal, goal_objective: prompt, input, user_rules, agent_prompt, images, auto_review, events })
     })
     .await
 }
@@ -6267,6 +6274,9 @@ fn legacy_working_review_key(repo_path: &str, base_oid: &str) -> Result<String, 
 }
 
 fn validate_review(session: &ReviewSession, root: &Path) -> Result<(), String> {
+    if session.chat_goal.as_ref().is_some_and(|goal| !goal.valid()) {
+        return Err("Review contains an invalid goal token budget".to_owned());
+    }
     if session.chat_agent.as_ref().is_some_and(|agent| !agent.valid()) {
         return Err("Review contains an invalid agent".to_owned());
     }
@@ -8457,6 +8467,7 @@ mod tests {
             chat_messages: Vec::new(),
             agent_thread_id: None,
             chat_agent: None,
+            chat_goal: None,
         };
         let markdown = format_review(&session);
         assert!(markdown.contains("## `src/app.ts`"));

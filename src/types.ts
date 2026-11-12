@@ -104,6 +104,7 @@ export type ReviewSession = {
   chatMessages: ChatMessage[];
   agentThreadId: string | null;
   chatAgent?: import("./agents").ChatAgent | null;
+  chatGoal?: ChatGoalSettings;
   comments: ReviewComment[];
 };
 export type ReviewContextUse = {
@@ -178,6 +179,7 @@ export type RepositoryTask = {
   planReady: boolean;
   unreadAgentResult: boolean;
   chatMode: AiChatMode;
+  chatGoal?: ChatGoalSettings;
   chatModel: string;
   chatEffort: "low" | "medium" | "high" | "xhigh";
   location: "workspace" | "worktree";
@@ -189,6 +191,7 @@ export type RepositoryTask = {
 export type TaskChanges = { comparison: Comparison; pendingSnapshotId: string; pendingFiles: boolean; committedChanges: boolean; headOid: string; squashMessage: string };
 export type AiChatAccepted = { requestId: string; threadId: string; turnId: string };
 export type AiChatMode = "default" | "plan";
+export type ChatGoalSettings = { enabled: boolean; tokenBudget: number | null };
 export type AiChatPlan = { explanation?: string; plan: { step: string; status: "pending" | "inProgress" | "completed" }[] };
 export type AgentUserInput = { requestId: number; threadId: string; turnId: string; itemId: string; isBlocking: boolean; questions: { id: string; header: string; question: string; isOther: boolean; isSecret: boolean; options: { label: string; description: string }[] | null }[] };
 export type AiChatEvent = { requestId: string; threadId: string; turnId: string; kind: "assistantMessageStarted" | "assistantDelta" | "assistantMessageCompleted" | "toolStarted" | "toolFinished" | "fileChanged" | "planUpdated" | "modelRerouted" | "status" | "completed" | "cancelled" | "failed"; message?: string; delta?: string; finalText?: string; label?: string; changes?: AppliedDiff[]; explanation?: string; plan?: AiChatPlan["plan"] };
