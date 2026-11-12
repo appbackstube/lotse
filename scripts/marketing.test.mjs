@@ -32,6 +32,8 @@ test("static assets and internal links resolve from a GitHub Pages subdirectory"
     if (target === "#") continue;
     if (target.startsWith("#")) {
       assert.ok(ids.includes(target.slice(1)), `Missing anchor: ${target}`);
+    } else if (target.startsWith("https://")) {
+      assert.ok(["github.com", "appbackstube.github.io"].includes(new URL(target).hostname));
     } else {
       assert.ok(target.startsWith("./"), `Assets must use portable relative paths: ${target}`);
       assert.ok(existsSync(new URL(target, directory)), `Missing asset: ${target}`);
@@ -76,4 +78,23 @@ test("product images are real PNG assets with interface attribution", () => {
   }
   assert.match(html, /Actual Lotse interface/);
   assert.match(readFileSync(new URL("styles.css", directory), "utf8"), /prefers-reduced-motion: reduce/);
+});
+
+
+test("search and sharing metadata agree on the public project URL", () => {
+  const canonical = html.match(/rel="canonical" href="([^"]+)"/)[1];
+  assert.equal(canonical, "https://appbackstube.github.io/lotse/");
+  assert.match(html, /property="og:url" content="https:\/\/appbackstube.github.io\/lotse\/"/);
+  const data = JSON.parse(html.match(/<script type="application\/ld\+json">(.*?)<\/script>/s)[1]);
+  assert.equal(data.url, canonical);
+  assert.equal(data.operatingSystem, "macOS");
+  assert.ok(!data.offers && !data.aggregateRating, "No invented prices or ratings");
+  assert.ok(readFileSync(new URL("sitemap.xml", directory), "utf8").includes(`<loc>${canonical}</loc>`));
+});
+
+test("downloads are usable before JavaScript runs", () => {
+  assert.doesNotMatch(html, /data-downloads hidden/);
+  for (const asset of ["Lotse_Apple_Silicon.dmg", "Lotse_Intel.dmg"]) {
+    assert.ok(html.includes(`href="https://github.com/appbackstube/lotse/releases/latest/download/${asset}"`));
+  }
 });
