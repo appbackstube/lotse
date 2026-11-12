@@ -144,7 +144,7 @@ For one architecture only, pass `aarch64-apple-darwin` or `x86_64-apple-darwin` 
 - `npm run build:mac` builds Apple Silicon and Intel DMGs.
 - `npm run build:mac:arm64` or `npm run build:mac:intel` builds just one.
 
-Each build includes only its matching Codex runtime. The script packages the `.app` into an LZMA DMG and verifies it. Shareable files are written to `src-tauri/target/share/`. Plain `tauri build` still uses the shared configuration and includes both runtimes.
+Each build includes only its matching Codex runtime. The script packages the `.app` into a compressed UDZO DMG and verifies it. Shareable files are written to `src-tauri/target/share/`. Plain `tauri build` still uses the shared configuration and includes both runtimes.
 
 Code signing with a Developer ID and Apple notarization are separate release steps; these local builds are not notarized automatically.
 
