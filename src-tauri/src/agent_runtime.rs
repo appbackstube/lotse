@@ -1230,15 +1230,19 @@ impl AgentRuntime {
         ) {
             Ok(v) => v,
             Err(e) => {
-                self.clear_request(&request_id);
+                let _ = self.clear_request(&request_id);
                 return Err(e);
             }
         };
-        let turn_id = response
+        let Some(turn_id) = response
             .pointer("/turn/id")
             .and_then(Value::as_str)
-            .ok_or("App Server did not return a turn ID")?
-            .to_owned();
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned)
+        else {
+            let _ = self.clear_request(&request_id);
+            return Err("App Server did not return a turn ID".into());
+        };
         if let Ok(mut r) = self.0.lock() {
             if let Some(active) = r.active.values_mut().find(|a| a.request_id == request_id) {
                 active.turn_id = Some(turn_id.clone());
@@ -1339,11 +1343,7 @@ impl AgentRuntime {
         });
     }
     fn fail_request(&self, request_id: &str, message: &str) {
-        let active = self
-            .0
-            .lock()
-            .ok()
-            .and_then(|mut runtime| runtime.active.remove(request_id));
+        let active = self.clear_request(request_id);
         if let Some(turn) = active {
             let turn_id = turn.turn_id.unwrap_or_default();
             let _ = turn.events.send(AgentTurnEvent::Chat(ChatEvent {
@@ -1517,7 +1517,7 @@ impl AgentRuntime {
                 json!({"threadId":thread_id,"turnId":turn_id}),
                 Duration::from_secs(10),
             );
-            self.clear_request(&request_id);
+            let _ = self.clear_request(&request_id);
         }
     }
     fn start_thread(&self, options: &ThreadOptions<'_>) -> Result<String, String> {
@@ -1528,11 +1528,22 @@ impl AgentRuntime {
             .map(str::to_owned)
             .ok_or("App Server did not return a thread ID".into())
     }
-    fn clear_request(&self, request_id: &str) {
-        if let Ok(mut r) = self.0.lock() {
-            r.active.retain(|_, a| a.request_id != request_id);
-            r.approvals.retain(|_, approval| approval.turn_request_id != request_id);
+    fn clear_request(&self, request_id: &str) -> Option<ActiveTurn> {
+        let mut r = self.0.lock().ok()?;
+        let active = r.active.remove(request_id)?;
+        r.approvals.retain(|_, approval| approval.turn_request_id != request_id);
+        if !r.active.values().any(|turn| turn.thread_id == active.thread_id) {
+            let id = r.next_id;
+            r.next_id += 1;
+            if let Some(stdin) = r.stdin.as_mut() {
+                // The event reader also calls this; waiting for a response here would deadlock it.
+                let request = json!({"jsonrpc":"2.0","id":id,"method":"thread/unsubscribe","params":{"threadId":active.thread_id}});
+                if let Err(error) = writeln!(stdin, "{request}").and_then(|_| stdin.flush()) {
+                    eprintln!("Cannot release App Server thread: {error}");
+                }
+            }
         }
+        Some(active)
     }
 
     fn ensure_started(&self, app: &AppHandle) -> Result<(), String> {
@@ -2018,7 +2029,6 @@ impl AgentRuntime {
             .or_else(|| p.pointer("/turn/error/message"))
             .and_then(Value::as_str)
             .map(str::to_owned);
-        let clear_turn = turn_id.clone();
         if method == "error"
             && !p.get("willRetry").and_then(Value::as_bool).unwrap_or(false)
             && !meaningful
@@ -2256,13 +2266,13 @@ impl AgentRuntime {
             },
         };
         log(app, &format!("event={method} kind={}", event.kind));
-        let _ = events.send(AgentTurnEvent::Chat(event));
         if method == "turn/completed"
             || (method == "error" && !p.get("willRetry").and_then(Value::as_bool).unwrap_or(false))
         {
-            self.resolve_turn_user_inputs(app, &clear_turn);
-            self.clear_turn(&clear_turn);
+            self.resolve_turn_user_inputs(app, &event.turn_id);
+            let _ = self.clear_request(&event.request_id);
         }
+        let _ = events.send(AgentTurnEvent::Chat(event));
     }
     fn resolve_turn_user_inputs(&self, _app: &AppHandle, turn_id: &str) {
         let pending = self
@@ -2287,12 +2297,6 @@ impl AgentRuntime {
                     .send(AgentTurnEvent::UserInputResolved(AgentUserInputResolved {
                         request_id,
                     }));
-        }
-    }
-    fn clear_turn(&self, turn_id: &str) {
-        if let Ok(mut r) = self.0.lock() {
-            r.active
-                .retain(|_, a| a.turn_id.as_deref() != Some(turn_id));
         }
     }
 }
@@ -3152,7 +3156,7 @@ mod tests {
     }
 
     #[test]
-    fn routes_concurrent_turns_in_the_same_workspace_by_thread() {
+    fn routes_and_releases_concurrent_turns_in_the_same_workspace_by_thread() {
         let events = Channel::new(|_| Ok(()));
         let mut active = HashMap::new();
         active.insert(
@@ -3209,12 +3213,38 @@ mod tests {
         assert!(ensure_thread_idle(&active, "thread-new").is_ok());
         assert_eq!(cancellable_turn(&active, "missing"), None);
         let runtime = AgentRuntime::new("token".into());
-        runtime.0.lock().unwrap().active = active;
+        let mut server = Command::new("/bin/cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        {
+            let mut state = runtime.0.lock().unwrap();
+            state.stdin = server.stdin.take();
+            state.active = active;
+            let mut same_thread = state.active["chat"].clone();
+            same_thread.request_id = "same-thread".into();
+            state.active.insert("same-thread".into(), same_thread);
+        }
         assert!(runtime.has_active_root(Path::new("/tmp/main")));
-        runtime.clear_request("chat");
+        assert!(runtime.clear_request("chat").is_some());
+        assert_eq!(runtime.0.lock().unwrap().next_id, 1);
+        assert!(runtime.clear_request("same-thread").is_some());
         assert!(runtime.has_active_root(Path::new("/tmp/main")));
-        runtime.clear_request("other");
+        runtime.fail_request("other", "test failure");
+        assert!(runtime.clear_request("other").is_none());
         assert!(!runtime.has_active_root(Path::new("/tmp/main")));
+        // A server that never responds must not block cleanup or leave pending requests behind.
+        assert!(runtime.0.lock().unwrap().pending.is_empty());
+        runtime.0.lock().unwrap().stdin.take();
+        let output = server.wait_with_output().unwrap();
+        assert!(output.status.success());
+        let requests: Vec<Value> = String::from_utf8(output.stdout).unwrap().lines()
+            .map(|line| serde_json::from_str(line).unwrap()).collect();
+        assert_eq!(requests, vec![
+            json!({"jsonrpc":"2.0","id":1,"method":"thread/unsubscribe","params":{"threadId":"thread-chat"}}),
+            json!({"jsonrpc":"2.0","id":2,"method":"thread/unsubscribe","params":{"threadId":"thread-other"}}),
+        ]);
     }
     #[test]
     fn sends_local_images_with_text() {
