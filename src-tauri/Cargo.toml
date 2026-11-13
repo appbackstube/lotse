@@ -1,6 +1,6 @@
 [package]
 name = "chaoticreview"
-version = "0.1.2"
+version = "0.1.3"
 description = "Local-first branch review workspace"
 authors = ["Andreas Ehrlich-Gruber"]
 edition = "2021"
