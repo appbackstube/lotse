@@ -45,6 +45,8 @@ let branchReads = 0;
 const openedUrls: string[] = [];
 let assetDownloads = 0;
 const openedFolders: { taskId: string | null; terminal: boolean }[] = [];
+let assetImports = 0;
+let chatFileImports = 0;
 const preparedPreviews: { token: string; taskId: string }[] = [];
 const releasedPreviews: string[] = [];
 let prepareGate: Promise<void> | undefined;
@@ -76,7 +78,9 @@ mockIPC(async (command, args: any) => {
   if (command === "release_task_sandbox") { releasedPreviews.push(args.token); return; }
   if (command === "plugin:opener|open_url") { openedUrls.push(args.url); return; }
   if (command === "plugin:dialog|open") return ["/synthetic/qa.txt"];
-  if (command === "import_task_assets") return [{ id: "audit-asset", name: "qa.txt", image: false }];
+  if (command === "import_task_assets") { assetImports++; return [{ id: "audit-asset", name: "qa.txt", image: false }]; }
+  if (command === "import_chat_files") { chatFileImports++; return []; }
+  if (command === "retain_task_images") return;
   if (command === "task_asset_preview") return { kind: "text", content: "Synthetic attachment", truncated: false };
   if (command === "download_task_asset") {
     if (args.taskId !== auditTask.id || args.assetId !== "audit-asset" || args.name !== "qa.txt") throw new Error("Wrong asset download arguments");
@@ -170,7 +174,19 @@ try {
       check(visible(workspace()) && ![...document.querySelectorAll('[role="dialog"]')].some(visible), "Returning to List must restore the inline workspace");
     }
     const changesTab = () => [...workspace().querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(el => el.textContent?.startsWith("Changes"))!;
+    const dropzone = workspace().querySelector<HTMLElement>('#task-assets-dropzone')!;
+    dropzone.scrollIntoView({ block: "center" });
+    const dropBounds = dropzone.getBoundingClientRect();
+    const position = { x: (dropBounds.left + 20) * devicePixelRatio, y: (dropBounds.top + 20) * devicePixelRatio };
+    const drop = async () => { await act(async () => emit("tauri://drag-drop", { paths: ["/synthetic/qa.txt"], position })); await settle(); };
+    const previousAssetImports = assetImports;
+    const previousChatImports = chatFileImports;
+    await drop();
+    check(assetImports === previousAssetImports + 1 && chatFileImports === previousChatImports, "A visible attachment dropzone must import task assets without also attaching them to chat");
     await click(changesTab());
+    check(getComputedStyle(dropzone).visibility === "hidden" && dropzone.getBoundingClientRect().width > 0, "The regression must retain the hidden dropzone's bounds");
+    await drop();
+    check(assetImports === previousAssetImports + 1 && chatFileImports === previousChatImports + 1, "An inactive Detail panel must not intercept a native file drop intended for chat");
     await click(button(auditTask.title));
     check(workspace().querySelector('[role="tab"][aria-selected="true"]')?.textContent === "Detail", "Each task must restore its own selected tab");
     await click(button(task.title));

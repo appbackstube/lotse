@@ -176,8 +176,9 @@ const message = (reason: unknown) =>
 
 function nativeDropHits(elementId: string, position: { x: number; y: number }) {
   const element = document.getElementById(elementId);
-  if (!element) return false;
+  if (!element || element.closest("[inert]") || getComputedStyle(element).visibility !== "visible") return false;
   const rect = element.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return false;
   const scale = window.devicePixelRatio || 1;
   return [[position.x / scale, position.y / scale], [position.x, position.y]].some(([x, y]) =>
     x >= rect.left && x <= rect.right && [y, y - 52, y + 52].some((candidate) => candidate >= rect.top && candidate <= rect.bottom));
