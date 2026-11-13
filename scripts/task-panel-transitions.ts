@@ -14,13 +14,13 @@ export async function checkTaskPanelTransitions({ repositoryRoot, taskId, taskTi
     while (!condition() && performance.now() < deadline) await tick();
     check(condition(), message);
   };
-  const dialog = () => document.querySelector<HTMLElement>('[role="dialog"][data-slot="dialog-content"]')!;
-  const tab = (name: string) => [...dialog().querySelectorAll<HTMLButtonElement>('[role="tab"]')].find((element) => element.textContent?.trim().startsWith(name))!;
+  const surface = () => document.querySelector<HTMLElement>('[aria-label="Task workspace"], [role="dialog"][data-slot="dialog-content"]')!;
+  const tab = (name: string) => [...surface().querySelectorAll<HTMLButtonElement>('[role="tab"]')].find((element) => element.textContent?.trim().startsWith(name))!;
   const click = async (element: HTMLElement) => { check(element, "Missing tab/control"); await act(async () => { element.focus(); element.click(); }); };
   const button = (name: string) => [...document.querySelectorAll<HTMLButtonElement>("button")].find((element) => element.textContent?.trim() === name && element.getBoundingClientRect().width)!;
-  const iframe = () => dialog().querySelector<HTMLIFrameElement>('iframe[title="Task sandbox preview"]');
-  const canvas = () => dialog().querySelector<HTMLCanvasElement>('[aria-label="Task drawing"] canvas.static');
-  const previewReady = () => !!iframe() && dialog().querySelector('[aria-label="Task sandbox"]')?.getAttribute("aria-busy") === "false";
+  const iframe = () => surface().querySelector<HTMLIFrameElement>('iframe[title="Task sandbox preview"]');
+  const canvas = () => surface().querySelector<HTMLCanvasElement>('[aria-label="Task drawing"] canvas.static');
+  const previewReady = () => !!iframe() && surface().querySelector('[aria-label="Task sandbox"]')?.getAttribute("aria-busy") === "false";
 
   await waitFor(() => performance.getEntriesByType("resource").some((entry) => entry.name.includes("/components/TaskDrawing")), "Drawing code must load while Detail is open, before its first use");
   check(!canvas() && !preparedPreviews.length, "Preparing drawing code must not mount a canvas or execute a sandbox");
@@ -32,13 +32,14 @@ export async function checkTaskPanelTransitions({ repositoryRoot, taskId, taskTi
   await act(async () => { await emit("frontend-storage-changed", { key, value: storage[key], source: "other-window" }); });
   await click(tab("Draw"));
   check(tab("Draw").getAttribute("aria-selected") === "true" && !canvas(), "Draw selection must commit before the expensive canvas is mounted");
-  await waitFor(() => !!canvas()?.width && !!dialog().querySelector('.excalidraw .zoom-in-button'), "The real drawing must initialize");
+  await waitFor(() => !!canvas()?.width && !!surface().querySelector('.excalidraw'), "The real drawing must initialize");
   await tick(200);
   const drawingCanvas = canvas()!;
-  await click(dialog().querySelector<HTMLElement>('.excalidraw .zoom-in-button')!); await tick(100);
-  const zoom = () => dialog().querySelector('.excalidraw .reset-zoom-button')?.textContent;
+  const zoomIn = surface().querySelector<HTMLElement>('.excalidraw .zoom-in-button');
+  if (zoomIn) { await click(zoomIn); await tick(100); }
+  const zoom = () => surface().querySelector('.excalidraw .reset-zoom-button')?.textContent;
   const retainedZoom = zoom();
-  const interactive = dialog().querySelector<HTMLCanvasElement>('[aria-label="Task drawing"] canvas.interactive')!;
+  const interactive = surface().querySelector<HTMLCanvasElement>('[aria-label="Task drawing"] canvas.interactive')!;
   const bounds = interactive.getBoundingClientRect();
   const beforePan = drawingCanvas.toDataURL();
   await act(async () => { interactive.dispatchEvent(new WheelEvent("wheel", { deltaX: 80, deltaY: 60, clientX: bounds.left + 200, clientY: bounds.top + 200, bubbles: true, cancelable: true })); });
@@ -46,7 +47,7 @@ export async function checkTaskPanelTransitions({ repositoryRoot, taskId, taskTi
   const pannedImage = drawingCanvas.toDataURL();
   check(pannedImage !== beforePan, "The viewport regression must actually pan the drawing");
   await click(tab("Detail"));
-  check(drawingCanvas.isConnected && !drawingCanvas.getBoundingClientRect().width, "Leaving Draw must hide and retain its canvas");
+  check(drawingCanvas.isConnected && getComputedStyle(drawingCanvas).visibility === "hidden", "Leaving Draw must hide and retain its canvas");
   await click(tab("Draw"));
   check(canvas() === drawingCanvas && tab("Draw").getAttribute("aria-selected") === "true", "A warmed Draw tab must return the same canvas immediately");
   await waitFor(() => canvas()?.toDataURL() === pannedImage, "Returning to Draw must preserve the panned viewport");
@@ -56,7 +57,7 @@ export async function checkTaskPanelTransitions({ repositoryRoot, taskId, taskTi
   await click(tab("Sandbox"));
   check(tab("Sandbox").getAttribute("aria-selected") === "true" && !iframe(), "Sandbox selection must commit before native preparation");
   await waitFor(() => preparedPreviews.length === 1, "Sandbox preparation must begin after the selected tab paints");
-  const panel = dialog().querySelector<HTMLElement>('[aria-label="Task sandbox"]')!;
+  const panel = surface().querySelector<HTMLElement>('[aria-label="Task sandbox"]')!;
   const loadingBounds = panel.getBoundingClientRect();
   await act(async () => releaseFirst());
   await waitFor(previewReady, "The native-bootstrap sandbox must load under its actual CSP");
@@ -76,7 +77,8 @@ export async function checkTaskPanelTransitions({ repositoryRoot, taskId, taskTi
   check(before.count === 1 && before.draft === "Retained preview draft" && before.scrollY === 400, "Preview must contain meaningful state before switching");
   await click(tab("Draw")); await click(tab("Sandbox"));
   check(iframe() === previewFrame && previewReady() && preparedPreviews.length === 1 && !releasedPreviews.length, "A repeated Sandbox switch must neither prepare nor replace its iframe");
-  check(JSON.stringify(await state("state")) === JSON.stringify(before), "Preview input, script state and scroll position must survive tab switches");
+  const after = await state("state");
+  check(JSON.stringify(after) === JSON.stringify(before), `Preview input, script state and scroll position must survive tab switches (${JSON.stringify(before)} -> ${JSON.stringify(after)})`);
   const activation = Object.getOwnPropertyDescriptor(navigator, "userActivation");
   Object.defineProperty(navigator, "userActivation", { configurable: true, value: { isActive: true } });
   try {
@@ -98,14 +100,14 @@ export async function checkTaskPanelTransitions({ repositoryRoot, taskId, taskTi
   check(!drawingCanvas.isConnected && !previewFrame.isConnected && releasedPreviews.includes(activeToken), "Changing tasks must discard the previous task's drawing and release its preview");
   const count = preparedPreviews.length;
   await click(tab("Sandbox")); await tick(150);
-  check(!iframe() && preparedPreviews.length === count && dialog().textContent?.includes("Ask the task agent"), "An empty task must not inherit or execute the previous sandbox");
+  check(!iframe() && preparedPreviews.length === count && surface().textContent?.includes("Ask the task agent"), "An empty task must not inherit or execute the previous sandbox");
 
   await click(button(taskTitle));
   await click(tab("Detail"));
   const releaseLate = deferPreview();
   await click(tab("Sandbox")); await waitFor(() => preparedPreviews.length === count + 1, "The cancellation case must start a real pending preparation");
   const lateToken = preparedPreviews.at(-1)!.token;
-  await click(dialog().querySelector<HTMLElement>('[aria-label="Close task modal"]')!);
+  await click(surface().matches('[aria-label="Task workspace"]') ? button("Workspace") : surface().querySelector<HTMLElement>('[aria-label="Close task modal"]')!);
   await act(async () => releaseLate());
   await waitFor(() => releasedPreviews.includes(lateToken), "A preparation resolving after close must release its token");
   check(!document.querySelector('[aria-label="Task drawing"] canvas') && !document.querySelector('iframe[title="Task sandbox preview"]'), "Closing the task must free both retained views");

@@ -14,14 +14,14 @@ const browser = async (...args) => (await promisify(execFile)("agent-browser", [
   encoding: "utf8", timeout: 190_000,
   env: { ...process.env, AGENT_BROWSER_DEFAULT_TIMEOUT: "180000" },
 })).stdout;
-const sandbox = suites.includes("task-tabs-ui.html") ? await startSandboxFixture() : undefined;
+const sandbox = suites.some((suite) => ["task-tabs-ui.html", "task-list-ui.html"].includes(suite)) ? await startSandboxFixture() : undefined;
 const results = [];
 try {
   for (const suite of suites) {
     session = `lotse-ui-${process.pid}-${suite.replace(/\W/g, "-")}`;
     try {
       await browser("set", "viewport", "1440", "1000");
-      await browser("open", `http://127.0.0.1:1430/scripts/${suite}${sandbox && suite === "task-tabs-ui.html" ? `?sandboxUrl=${encodeURIComponent(sandbox.url)}` : ""}`);
+      await browser("open", `http://127.0.0.1:1430/scripts/${suite}${sandbox && ["task-tabs-ui.html", "task-list-ui.html"].includes(suite) ? `?sandboxUrl=${encodeURIComponent(sandbox.url)}` : ""}`);
       await browser("wait", "--fn", '/^(PASS|FAIL)|checks passed/i.test(document.querySelector("#result")?.textContent ?? "")');
       await browser("wait", "--fn", '!document.querySelector("#root")?.childElementCount');
       const result = (await browser("get", "text", "#result")).trim();
