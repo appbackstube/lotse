@@ -211,12 +211,15 @@ export type AiSettings = {
 };
 export type McpServerSettings = {
   name: string;
+  originalName?: string;
   kind: "http" | "stdio";
   url: string;
   command: string;
   args: string[];
   env: Record<string, string>;
   bearerTokenEnvVar: string;
+  bearerToken?: string;
+  bearerTokenStored: boolean;
   oauthClientId: string;
   oauthCallbackUrl: string;
   oauthScopes: string[];

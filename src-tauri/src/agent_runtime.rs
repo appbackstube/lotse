@@ -66,6 +66,8 @@ const MCP_TOKEN_ENV: &str = "CHAOTICREVIEW_MCP_BEARER_TOKEN";
 #[serde(rename_all = "camelCase")]
 pub struct McpServerSettings {
     pub name: String,
+    #[serde(default, skip_serializing)]
+    pub original_name: Option<String>,
     pub kind: String,
     #[serde(default)]
     pub url: String,
@@ -77,6 +79,10 @@ pub struct McpServerSettings {
     pub env: HashMap<String, String>,
     #[serde(default)]
     pub bearer_token_env_var: String,
+    #[serde(default, skip_serializing)]
+    pub bearer_token: Option<String>,
+    #[serde(default)]
+    pub bearer_token_stored: bool,
     #[serde(default)]
     pub oauth_client_id: String,
     #[serde(default)]
@@ -105,6 +111,7 @@ fn normalize_mcp_server(server: &mut McpServerSettings) -> Result<(), String> {
     server.oauth_client_id = server.oauth_client_id.trim().to_owned();
     server.oauth_callback_url = server.oauth_callback_url.trim().to_owned();
     server.oauth_error = None;
+    if let Some(token) = &mut server.bearer_token { *token = token.trim().to_owned(); }
     if !server.oauth_client_id.is_empty() && !server.oauth_callback_url.is_empty() {
         let url = reqwest::Url::parse(&server.url).map_err(|_| format!("{}: enter a valid MCP URL.", server.name))?;
         let mut callback = reqwest::Url::parse(&server.oauth_callback_url)
@@ -147,8 +154,11 @@ fn validate_mcp_servers(servers: &[McpServerSettings]) -> Result<(), String> {
                 if !server.bearer_token_env_var.is_empty() && !valid_env_name(&server.bearer_token_env_var) {
                     return Err(format!("{}: the bearer token variable must use letters, numbers and underscores.", server.name));
                 }
-                if !server.oauth_client_id.is_empty() && !server.bearer_token_env_var.is_empty() {
-                    return Err(format!("{}: choose either OAuth or a bearer token variable.", server.name));
+                if server.bearer_token.as_deref().is_some_and(|token| token.chars().any(char::is_control)) {
+                    return Err(format!("{}: enter a bearer token without control characters.", server.name));
+                }
+                if !server.oauth_client_id.is_empty() && mcp_bearer_env(server).is_some() {
+                    return Err(format!("{}: choose either OAuth or a bearer token.", server.name));
                 }
                 if (server.oauth_secret_stored || server.oauth_client_secret.as_deref().is_some_and(|secret| !secret.is_empty()))
                     && server.oauth_client_id.is_empty() {
@@ -175,6 +185,8 @@ fn validate_mcp_servers(servers: &[McpServerSettings]) -> Result<(), String> {
                 if server.command.trim().is_empty()
                     || server.command.contains('\n')
                     || server.env.keys().any(|key| !valid_env_name(key))
+                    || server.bearer_token_stored
+                    || server.bearer_token.as_deref().is_some_and(|token| !token.is_empty())
                     || !server.oauth_client_id.is_empty()
                     || server.oauth_client_secret.is_some()
                     || server.oauth_secret_stored
@@ -216,8 +228,8 @@ fn read_mcp_servers(home: &Path) -> Result<Vec<McpServerSettings>, String> {
 fn mcp_server_config(server: &McpServerSettings) -> Value {
     if server.kind == "http" {
         let mut config = json!({"url": server.url, "enabled": server.enabled});
-        if !server.bearer_token_env_var.is_empty() {
-            config["bearer_token_env_var"] = json!(server.bearer_token_env_var);
+        if let Some(key) = mcp_bearer_env(server) {
+            config["bearer_token_env_var"] = json!(key);
         }
         if !server.oauth_client_id.is_empty() || !server.oauth_callback_url.is_empty() {
             config["oauth"] = json!({});
@@ -241,6 +253,15 @@ fn mcp_server_config(server: &McpServerSettings) -> Value {
     } else {
         json!({"command": server.command, "args": server.args, "env": server.env, "enabled": server.enabled})
     }
+}
+
+fn mcp_bearer_secret_env(name: &str) -> String {
+    format!("CHAOTICREVIEW_MCP_BEARER_{}_TOKEN", name.as_bytes().iter().map(|byte| format!("{byte:02X}")).collect::<String>())
+}
+
+fn mcp_bearer_env(server: &McpServerSettings) -> Option<String> {
+    if server.bearer_token_stored { Some(mcp_bearer_secret_env(&server.name)) }
+    else { (!server.bearer_token_env_var.is_empty()).then(|| server.bearer_token_env_var.clone()) }
 }
 
 fn mcp_oauth_secret_env(name: &str) -> String {
@@ -568,23 +589,75 @@ fn provider_env(app: &AppHandle) -> Result<Vec<(String, String)>, String> {
     Ok(pairs)
 }
 
+// Secret values are persisted separately; clients can only submit replacements, not stored-state flags.
+fn prepare_mcp_secret_changes(
+    previous: &[McpServerSettings],
+    servers: &mut [McpServerSettings],
+    mut load: impl FnMut(&str) -> Result<Option<String>, String>,
+) -> Result<Vec<(String, String)>, String> {
+    let mut changed = Vec::new();
+    for server in servers.iter_mut() {
+        normalize_mcp_server(server)?;
+        let original_name = server.original_name.take();
+        let old_name = original_name.as_deref().unwrap_or(&server.name);
+        let old = previous.iter().find(|old| old.name == old_name);
+        if original_name.is_some() && old.is_none() {
+            return Err("MCP settings changed. Reload the servers before saving.".into());
+        }
+        server.bearer_token_stored = server.bearer_token.as_ref().map(|token| !token.is_empty())
+            .unwrap_or_else(|| old.is_some_and(|old| old.bearer_token_stored));
+        server.oauth_secret_stored = !server.oauth_client_id.is_empty()
+            && server.oauth_client_secret.as_ref().map(|secret| !secret.is_empty())
+                .unwrap_or_else(|| old.is_some_and(|old| old.oauth_secret_stored));
+        for (key, value, stored, old_key) in [
+            (mcp_bearer_secret_env(&server.name), &server.bearer_token, server.bearer_token_stored, old.map(|old| mcp_bearer_secret_env(&old.name))),
+            (mcp_oauth_secret_env(&server.name), &server.oauth_client_secret, server.oauth_secret_stored, old.map(|old| mcp_oauth_secret_env(&old.name))),
+        ] {
+            if let Some(value) = value { changed.push((key, value.clone())); }
+            else if stored {
+                if let Some(old_key) = old_key.filter(|old_key| old_key != &key) {
+                    let secret = load(&old_key)?.filter(|secret| !secret.trim().is_empty())
+                        .ok_or_else(|| format!("{}: saved secret is unavailable. Enter it again before renaming this server.", server.name))?;
+                    changed.push((key, secret));
+                }
+            }
+        }
+    }
+    validate_mcp_servers(servers)?;
+    for old in previous {
+        for (stored, retained, key) in [
+            (old.bearer_token_stored, servers.iter().any(|server| server.name == old.name && server.bearer_token_stored), mcp_bearer_secret_env(&old.name)),
+            (old.oauth_secret_stored, servers.iter().any(|server| server.name == old.name && server.oauth_secret_stored), mcp_oauth_secret_env(&old.name)),
+        ] {
+            if stored && !retained && !changed.iter().any(|(changed_key, _)| changed_key == &key) {
+                changed.push((key, String::new()));
+            }
+        }
+    }
+    Ok(changed)
+}
+
 fn resolve_mcp_secrets(
     mut servers: Vec<McpServerSettings>,
     mut load: impl FnMut(&str) -> Result<Option<String>, String>,
 ) -> (Vec<McpServerSettings>, Vec<(String, String)>) {
     let mut env = Vec::new();
     for server in &mut servers {
-        if !server.oauth_secret_stored { continue; }
-        let key = mcp_oauth_secret_env(&server.name);
-        match load(&key) {
-            Ok(Some(secret)) if !secret.trim().is_empty() => {
-                if server.enabled { env.push((key, secret)); }
-            }
-            result => {
-                server.oauth_error = Some(match result {
-                    Err(error) => format!("Cannot read this server's saved secret: {error}"),
-                    _ => "OAuth secret is missing from ~/.lotse/credentials.json. Enter it again or disable this server.".into(),
-                });
+        for (stored, key, label) in [
+            (server.bearer_token_stored, mcp_bearer_secret_env(&server.name), "Bearer token"),
+            (server.oauth_secret_stored, mcp_oauth_secret_env(&server.name), "OAuth secret"),
+        ] {
+            if !stored { continue; }
+            match load(&key) {
+                Ok(Some(secret)) if !secret.trim().is_empty() => {
+                    if server.enabled { env.push((key, secret)); }
+                }
+                result => {
+                    server.oauth_error = Some(match result {
+                        Err(error) => format!("Cannot read this server's saved secret: {error}"),
+                        _ => format!("{label} is missing from ~/.lotse/credentials.json. Enter it again or disable this server."),
+                    });
+                }
             }
         }
     }
@@ -599,7 +672,7 @@ fn effective_mcp_servers(mut servers: Vec<McpServerSettings>) -> Vec<McpServerSe
 }
 
 fn mcp_secret_bindings(servers: &[McpServerSettings]) -> std::collections::HashSet<&str> {
-    servers.iter().filter(|server| server.enabled && server.oauth_secret_stored && server.oauth_error.is_none())
+    servers.iter().filter(|server| server.enabled && (server.oauth_secret_stored || server.bearer_token_stored) && server.oauth_error.is_none())
         .map(|server| server.name.as_str()).collect()
 }
 
@@ -625,7 +698,7 @@ fn write_runtime_config(home: &Path, settings: &AgentProviderSettings) -> Result
 fn write_runtime_config_for_servers(home: &Path, settings: &AgentProviderSettings, servers: &[McpServerSettings]) -> Result<(), String> {
     validate_provider_settings(settings)?;
     let mut config = String::from(
-        "check_for_update_on_startup = false\ncli_auth_credentials_store = \"file\"\nmcp_oauth_credentials_store = \"file\"\nshell_environment_policy.exclude = [\"CHAOTICREVIEW_MCP_OAUTH_*\"]\n",
+        "check_for_update_on_startup = false\ncli_auth_credentials_store = \"file\"\nmcp_oauth_credentials_store = \"file\"\nshell_environment_policy.exclude = [\"CHAOTICREVIEW_MCP_OAUTH_*\", \"CHAOTICREVIEW_MCP_BEARER_*\"]\n",
     );
     for provider in &settings.providers {
         config.push_str(&format!(
@@ -641,8 +714,8 @@ fn write_runtime_config_for_servers(home: &Path, settings: &AgentProviderSetting
         config.push_str(&format!("\n[mcp_servers.{}]\nenabled = {}\n", server.name, server.enabled));
         if server.kind == "http" {
             config.push_str(&format!("url = {}\n", toml_string(&server.url)));
-            if !server.bearer_token_env_var.is_empty() {
-                config.push_str(&format!("bearer_token_env_var = {}\n", toml_string(&server.bearer_token_env_var)));
+            if let Some(key) = mcp_bearer_env(server) {
+                config.push_str(&format!("bearer_token_env_var = {}\n", toml_string(&key)));
             }
             if !server.oauth_scopes.is_empty() {
                 config.push_str(&format!("scopes = [{}]\n", server.oauth_scopes.iter().map(|scope| toml_string(scope)).collect::<Vec<_>>().join(", ")));
@@ -1008,18 +1081,7 @@ impl AgentRuntime {
             return Err("Complete or cancel MCP sign-in before changing servers.".into());
         }
         let previous = self.mcp_servers(app)?;
-        for server in &mut servers {
-            normalize_mcp_server(server)?;
-            server.oauth_secret_stored = !server.oauth_client_id.is_empty()
-                && server.oauth_client_secret.as_ref().map(|secret| !secret.is_empty())
-                    .unwrap_or_else(|| previous.iter().any(|old| old.name == server.name && old.oauth_secret_stored));
-        }
-        validate_mcp_servers(&servers)?;
-        let mut changed: Vec<_> = servers.iter().filter_map(|server| server.oauth_client_secret.as_ref().map(|secret| (mcp_oauth_secret_env(&server.name), secret.clone()))).collect();
-        let removed: Vec<_> = previous.iter().filter(|old| old.oauth_secret_stored && !servers.iter().any(|server| server.name == old.name && server.oauth_secret_stored)).map(|old| mcp_oauth_secret_env(&old.name)).collect();
-        for key in removed {
-            if !changed.iter().any(|(changed_key, _)| changed_key == &key) { changed.push((key, String::new())); }
-        }
+        let changed = prepare_mcp_secret_changes(&previous, &mut servers, |key| load_provider_secret(app, key))?;
         let secrets_changed = !changed.is_empty();
         let (resolved_servers, _) = resolve_mcp_secrets(servers.clone(), |key| {
             match changed.iter().find(|(changed_key, _)| changed_key == key) {
@@ -1030,7 +1092,7 @@ impl AgentRuntime {
         let desired_bindings: std::collections::HashSet<String> = mcp_secret_bindings(&resolved_servers).into_iter().map(str::to_owned).collect();
         let restart_required = secrets_changed || self.0.lock().map_err(|_| "Cannot access App Server")?.mcp_oauth_bindings != desired_bindings;
         if restart_required && self.has_active_turns() {
-            return Err("Wait for the active Agent Chat before changing MCP OAuth credentials.".into());
+            return Err("Wait for the active Agent Chat before changing MCP credentials.".into());
         }
         let home = agent_home(app)?;
         fs::create_dir_all(&home).map_err(|e| format!("Cannot create app agent data: {e}"))?;
@@ -1079,7 +1141,7 @@ impl AgentRuntime {
         Ok(statuses)
     }
     pub fn login_mcp(&self, app: &AppHandle, name: &str) -> Result<Option<String>, String> {
-        let server = self.mcp_servers(app)?.into_iter().find(|server| server.name == name && server.kind == "http" && server.enabled && server.bearer_token_env_var.is_empty())
+        let server = self.mcp_servers(app)?.into_iter().find(|server| server.name == name && server.kind == "http" && server.enabled && mcp_bearer_env(server).is_none())
             .ok_or("Save an enabled HTTP MCP server without a bearer token before signing in.")?;
         let _configuration = self.2.lock().map_err(|_| "Cannot start MCP sign-in")?;
         self.ensure_started_locked(app)?;
@@ -3226,9 +3288,9 @@ mod tests {
     #[test]
     fn thread_config_sets_chat_permissions_and_comment_policy() {
         let servers = vec![McpServerSettings {
-            name: "docs".into(), kind: "http".into(), url: "https://example.com/mcp".into(),
+            name: "docs".into(), original_name: None, kind: "http".into(), url: "https://example.com/mcp".into(),
             command: String::new(), args: Vec::new(), env: HashMap::new(),
-            bearer_token_env_var: "DOCS_TOKEN".into(), oauth_client_id: String::new(), oauth_callback_url: String::new(), oauth_scopes: Vec::new(), oauth_client_secret: None, oauth_secret_stored: false, oauth_error: None, enabled: true,
+            bearer_token: None, bearer_token_stored: false, bearer_token_env_var: "DOCS_TOKEN".into(), oauth_client_id: String::new(), oauth_callback_url: String::new(), oauth_scopes: Vec::new(), oauth_client_secret: None, oauth_secret_stored: false, oauth_error: None, enabled: true,
         }];
         assert!(validate_mcp_servers(&servers).is_ok());
         let config = thread_config(&ThreadOptions { root: Path::new("/repo"), provider: "openai", model: "gpt-5.6-terra", effort: "medium", mcp_url: "http://127.0.0.1:8080/mcp", developer_instructions: &developer_instructions("Explain in plain language.", ""), mode: ChatMode::Default, approval_mode: ApprovalMode::User, user_mcp_servers: &servers }, None);
@@ -3280,10 +3342,10 @@ mod tests {
         ));
         fs::create_dir_all(&home).unwrap();
         let server = McpServerSettings {
-            name: "local-tools".into(), kind: "stdio".into(), url: String::new(),
+            name: "local-tools".into(), original_name: None, kind: "stdio".into(), url: String::new(),
             command: "/usr/bin/env".into(), args: vec!["node".into(), "server.js".into()],
             env: HashMap::from([("TOKEN".into(), "secret".into())]),
-            bearer_token_env_var: String::new(), oauth_client_id: String::new(), oauth_callback_url: String::new(), oauth_scopes: Vec::new(), oauth_client_secret: None, oauth_secret_stored: false, oauth_error: None, enabled: false,
+            bearer_token: None, bearer_token_stored: false, bearer_token_env_var: String::new(), oauth_client_id: String::new(), oauth_callback_url: String::new(), oauth_scopes: Vec::new(), oauth_client_secret: None, oauth_secret_stored: false, oauth_error: None, enabled: false,
         };
         write_private_file(&home.join("mcp-servers.json"), &serde_json::to_vec(&vec![server]).unwrap()).unwrap();
         let loaded = read_mcp_servers(&home).unwrap();
@@ -3300,16 +3362,16 @@ mod tests {
         assert!(runtime_config.contains("[mcp_servers.local-tools]\nenabled = false\ncommand = \"/usr/bin/env\""));
         assert!(runtime_config.contains("[mcp_servers.local-tools.env]\nTOKEN = \"secret\""));
         assert_eq!(toml_string("line\nnext"), "\"line\\nnext\"");
-        let http = McpServerSettings { name: "figma".into(), kind: "http".into(), url: "https://mcp.figma.com/mcp".into(), command: String::new(), args: Vec::new(), env: HashMap::new(), bearer_token_env_var: String::new(), oauth_client_id: "public-client".into(), oauth_callback_url: String::new(), oauth_scopes: Vec::new(), oauth_client_secret: None, oauth_secret_stored: false, oauth_error: None, enabled: true };
+        let http = McpServerSettings { name: "figma".into(), original_name: None, kind: "http".into(), url: "https://mcp.figma.com/mcp".into(), command: String::new(), args: Vec::new(), env: HashMap::new(), bearer_token: None, bearer_token_stored: false, bearer_token_env_var: String::new(), oauth_client_id: "public-client".into(), oauth_callback_url: String::new(), oauth_scopes: Vec::new(), oauth_client_secret: None, oauth_secret_stored: false, oauth_error: None, enabled: true };
         assert_eq!(mcp_server_config(&http)["oauth"]["client_id"], "public-client");
         write_private_file(&home.join("mcp-servers.json"), &serde_json::to_vec(&vec![http]).unwrap()).unwrap();
         write_runtime_config(&home, &providers).unwrap();
         assert!(fs::read_to_string(home.join("config.toml")).unwrap().contains("[mcp_servers.figma]\nenabled = true\nurl = \"https://mcp.figma.com/mcp\""));
         assert!(fs::read_to_string(home.join("config.toml")).unwrap().contains("[mcp_servers.figma.oauth]\nclient_id = \"public-client\""));
         let slack = McpServerSettings {
-            name: "slack".into(), kind: "http".into(), url: "https://mcp.slack.com/mcp".into(),
+            name: "slack".into(), original_name: None, kind: "http".into(), url: "https://mcp.slack.com/mcp".into(),
             command: String::new(), args: Vec::new(), env: HashMap::new(),
-            bearer_token_env_var: String::new(), oauth_client_id: "client-id".into(),
+            bearer_token: None, bearer_token_stored: false, bearer_token_env_var: String::new(), oauth_client_id: "client-id".into(),
             oauth_callback_url: "http://localhost:43123/callback".into(),
             oauth_scopes: vec!["search:read.public".into()],
             oauth_client_secret: Some("secret-must-not-persist".into()), oauth_secret_stored: true, oauth_error: None, enabled: true,
@@ -3380,8 +3442,134 @@ mod tests {
         assert!(config.contains("callback_url = \"http://localhost:43123/callback\""));
         assert!(config.contains("callback_port = 43123"));
         assert!(!config.contains("client_id ="));
-        assert!(config.contains("shell_environment_policy.exclude = [\"CHAOTICREVIEW_MCP_OAUTH_*\"]"));
+        assert!(config.contains("shell_environment_policy.exclude = [\"CHAOTICREVIEW_MCP_OAUTH_*\", \"CHAOTICREVIEW_MCP_BEARER_*\"]"));
         fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn mcp_bearer_token_save_replace_keep_and_remove() {
+        let mut server = oauth_test_server("docs");
+        server.url = "https://example.com/mcp".into();
+        server.oauth_client_id.clear();
+        server.oauth_callback_url.clear();
+        server.oauth_scopes.clear();
+        server.oauth_client_secret = None;
+        server.oauth_secret_stored = false;
+        server.bearer_token = Some("synthetic-bearer-token".into());
+        let key = mcp_bearer_secret_env("docs");
+        assert_eq!(prepare_mcp_secret_changes(&[], std::slice::from_mut(&mut server), |_| panic!("unexpected secret read")).unwrap(),
+            vec![(key.clone(), "synthetic-bearer-token".into())]);
+        assert!(server.bearer_token_stored);
+        let serialized = serde_json::to_string(&server).unwrap();
+        assert!(!serialized.contains("synthetic-bearer-token"));
+        let stored: McpServerSettings = serde_json::from_str(&serialized).unwrap();
+        assert!(stored.bearer_token.is_none());
+        let mut edited = stored.clone();
+        edited.enabled = false;
+        assert!(prepare_mcp_secret_changes(std::slice::from_ref(&stored), std::slice::from_mut(&mut edited), |_| panic!("unexpected secret read")).unwrap().is_empty());
+        assert!(edited.bearer_token_stored);
+        edited.bearer_token = Some("replacement-token".into());
+        assert_eq!(prepare_mcp_secret_changes(std::slice::from_ref(&stored), std::slice::from_mut(&mut edited), |_| panic!("unexpected secret read")).unwrap(),
+            vec![(key.clone(), "replacement-token".into())]);
+        edited.bearer_token = Some(String::new());
+        assert_eq!(prepare_mcp_secret_changes(std::slice::from_ref(&stored), std::slice::from_mut(&mut edited), |_| panic!("unexpected secret read")).unwrap(),
+            vec![(key.clone(), String::new())]);
+        assert!(!edited.bearer_token_stored);
+        assert_eq!(prepare_mcp_secret_changes(std::slice::from_ref(&stored), &mut [], |_| panic!("unexpected secret read")).unwrap(),
+            vec![(key, String::new())]);
+    }
+
+    #[test]
+    fn mcp_renaming_preserves_saved_secrets_and_honors_replacements() {
+        for bearer in [true, false] {
+            let mut stored = oauth_test_server("docs");
+            stored.url = "https://example.com/mcp".into();
+            if bearer {
+                stored.oauth_client_id.clear();
+                stored.oauth_callback_url.clear();
+                stored.oauth_scopes.clear();
+                stored.oauth_secret_stored = false;
+                stored.bearer_token_stored = true;
+            }
+            let secret_key = if bearer { mcp_bearer_secret_env } else { mcp_oauth_secret_env };
+            let old_key = secret_key("docs");
+            let new_key = secret_key("renamed");
+            let mut renamed = stored.clone();
+            renamed.original_name = Some(stored.name.clone());
+            renamed.name = "renamed".into();
+            let mut credentials = HashMap::from([(old_key.clone(), "synthetic-token".to_owned())]);
+            let changes = prepare_mcp_secret_changes(std::slice::from_ref(&stored), std::slice::from_mut(&mut renamed), |key| Ok(credentials.get(key).cloned())).unwrap();
+            assert_eq!(changes, vec![(new_key.clone(), "synthetic-token".into()), (old_key.clone(), String::new())]);
+            for (key, value) in changes {
+                if value.is_empty() { credentials.remove(&key); }
+                else { credentials.insert(key, value); }
+            }
+            let serialized = serde_json::to_string(&renamed).unwrap();
+            assert!(!serialized.contains("synthetic-token"));
+            assert!(!serialized.contains("originalName"));
+            let reloaded = serde_json::from_str(&serialized).unwrap();
+            let (resolved, env) = resolve_mcp_secrets(vec![reloaded], |key| Ok(credentials.get(key).cloned()));
+            assert!(resolved[0].oauth_error.is_none());
+            assert_eq!(env, vec![(new_key.clone(), "synthetic-token".into())]);
+            assert!(!credentials.contains_key(&old_key));
+
+            // Explicit replacement and removal take precedence over migration.
+            for replacement in ["replacement-token", ""] {
+                let mut edited = renamed.clone();
+                edited.original_name = Some(stored.name.clone());
+                if bearer { edited.bearer_token = Some(replacement.into()); }
+                else { edited.oauth_client_secret = Some(replacement.into()); }
+                let changes = prepare_mcp_secret_changes(std::slice::from_ref(&stored), std::slice::from_mut(&mut edited), |_| panic!("replacement must not read the old secret")).unwrap();
+                assert_eq!(changes, vec![(new_key.clone(), replacement.into()), (old_key.clone(), String::new())]);
+            }
+            renamed.original_name = Some(stored.name.clone());
+            assert!(prepare_mcp_secret_changes(std::slice::from_ref(&stored), std::slice::from_mut(&mut renamed), |_| Ok(None)).is_err());
+            renamed.original_name = Some(stored.name.clone());
+            assert!(prepare_mcp_secret_changes(std::slice::from_ref(&stored), std::slice::from_mut(&mut renamed), |_| Err("Cannot read credentials".into())).is_err());
+        }
+    }
+
+    #[test]
+    fn mcp_bearer_token_resolution_and_config_do_not_persist_values() {
+        let mut server = oauth_test_server("docs");
+        server.url = "https://example.com/mcp".into();
+        server.oauth_client_id.clear();
+        server.oauth_callback_url.clear();
+        server.oauth_scopes.clear();
+        server.oauth_client_secret = None;
+        server.oauth_secret_stored = false;
+        server.bearer_token_stored = true;
+        let key = mcp_bearer_secret_env("docs");
+        // A stored token takes precedence over a legacy environment-variable reference.
+        server.bearer_token_env_var = "LEGACY_TOKEN".into();
+        let (resolved, env) = resolve_mcp_secrets(vec![server.clone()], |_| Ok(Some("synthetic-bearer-token".into())));
+        assert_eq!(env, vec![(key.clone(), "synthetic-bearer-token".into())]);
+        assert!(mcp_secret_bindings(&resolved).contains("docs"));
+        assert_eq!(mcp_server_config(&resolved[0])["bearer_token_env_var"], key);
+        let home = std::env::temp_dir().join(format!("lotse-bearer-{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir_all(&home).unwrap();
+        let providers = AgentProviderSettings::default();
+        write_runtime_config_for_servers(&home, &providers, &resolved).unwrap();
+        let config = fs::read_to_string(home.join("config.toml")).unwrap();
+        assert!(config.contains(&format!("bearer_token_env_var = \"{key}\"")));
+        assert!(config.contains("CHAOTICREVIEW_MCP_BEARER_*"));
+        assert!(!config.contains("synthetic-bearer-token"));
+        fs::remove_dir_all(home).unwrap();
+        let (missing, env) = resolve_mcp_secrets(vec![server.clone()], |_| Ok(None));
+        assert!(env.is_empty());
+        assert!(missing[0].oauth_error.as_deref().unwrap().contains("Bearer token is missing"));
+        assert!(!effective_mcp_servers(missing)[0].enabled);
+        let (unreadable, _) = resolve_mcp_secrets(vec![server.clone()], |_| Err("Credentials file unavailable".into()));
+        assert!(!effective_mcp_servers(unreadable)[0].enabled);
+        server.enabled = false;
+        let (disabled, env) = resolve_mcp_secrets(vec![server.clone()], |_| Ok(Some("synthetic-bearer-token".into())));
+        assert!(env.is_empty());
+        assert!(mcp_secret_bindings(&disabled).is_empty());
+        server.bearer_token_stored = false;
+        assert_eq!(mcp_server_config(&server)["bearer_token_env_var"], "LEGACY_TOKEN");
+        server.bearer_token_stored = true;
+        server.oauth_client_id = "client-id".into();
+        assert!(validate_mcp_servers(&[server]).unwrap_err().contains("either OAuth or a bearer token"));
     }
 
     #[test]
