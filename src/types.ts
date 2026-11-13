@@ -217,6 +217,8 @@ export type McpServerSettings = {
   args: string[];
   env: Record<string, string>;
   bearerTokenEnvVar: string;
+  bearerToken?: string;
+  bearerTokenStored: boolean;
   oauthClientId: string;
   oauthCallbackUrl: string;
   oauthScopes: string[];
