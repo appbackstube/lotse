@@ -2284,7 +2284,7 @@ function App() {
   const memoryFlushRef = useRef<(() => Promise<boolean>) | null>(null);
   const commentDrafts = useRef(new Map<string, string>());
   useEffect(() => { commentDrafts.current.clear(); }, [repositoryRoot]);
-  const memoryOpenRef = useRef<((path: string, query: string) => Promise<boolean>) | null>(null);
+  const memoryOpenRef = useRef<((path: string, query: string, signal: AbortSignal) => Promise<boolean>) | null>(null);
   const [searchSource, setSearchSource] = useState<{ document: SearchDocument; query: string; request: number } | null>(null);
   const [searchArchive, setSearchArchive] = useState<{ session: ReviewSession; messageId: string; query: string } | null>(null);
   useEffect(() => { setSearchSource(null); setSearchArchive(null); }, [repositoryRoot]);
@@ -4265,12 +4265,12 @@ function App() {
     setBoardDrawerOpen(true);
   };
 
-  const openSearchDocument = async (doc: SearchDocument, query: string): Promise<boolean> => {
+  const openSearchDocument = async (doc: SearchDocument, query: string, signal: AbortSignal): Promise<boolean> => {
     const root = repositoryRef.current?.rootPath;
-    if (!root) return false;
+    if (!root || signal.aborted) return false;
     window.dispatchEvent(new Event("flush-task-fields"));
     if (memoryFlushRef.current && !await memoryFlushRef.current()) return false;
-    if (repositoryRef.current?.rootPath !== root) return false;
+    if (signal.aborted || repositoryRef.current?.rootPath !== root) return false;
     const target = doc.target;
     if (target.type === "task") {
       const current = tasksRef.current.find((task) => task.id === target.taskId);
@@ -4280,8 +4280,8 @@ function App() {
       setCollapsedTaskIds((collapsed) => { const next = new Set(collapsed); let parent = current.parentId; const seen = new Set<string>(); while (parent && !seen.has(parent)) { seen.add(parent); next.delete(parent); parent = tasksRef.current.find((task) => task.id === parent)?.parentId ?? null; } return next; });
       openBoardTask(current, "detail");
     } else if (target.type === "memory") {
-      if (!memoryOpenRef.current || !await memoryOpenRef.current(target.path, query)) return false;
-      if (repositoryRef.current?.rootPath !== root) return false;
+      if (!memoryOpenRef.current || !await memoryOpenRef.current(target.path, query, signal)) return false;
+      if (signal.aborted || repositoryRef.current?.rootPath !== root) return false;
       setSettingsOpen(false); setZenMode(false); setBoardDrawerOpen(false); setWorkspaceMode("memory");
     } else {
       const current = reviewRef.current;
@@ -4292,7 +4292,7 @@ function App() {
       } else {
         if (!target.archiveId) throw new Error("This workspace chat is no longer available. Search again.");
         const session = await invoke<ReviewSession>("read_spotlight_chat", { repositoryRoot: root, archiveId: target.archiveId });
-        if (repositoryRef.current?.rootPath !== root) return false;
+        if (signal.aborted || repositoryRef.current?.rootPath !== root) return false;
         const fresh = workspaceSearchDocuments(session).find((entry) => entry.target.type === "workspace" && entry.target.messageId === target.messageId);
         if (!fresh || !searchDocuments([fresh], query).length) throw new Error("This message has changed or was deleted. Search again.");
         setSearchArchive({ session, messageId: target.messageId, query });

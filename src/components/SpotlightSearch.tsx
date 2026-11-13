@@ -15,7 +15,7 @@ export function SearchHighlight({ text, query }: { text: string; query: string }
 
 export function SpotlightSearch({ repositoryRoot, repositoryName, tasks, review, onNavigate, onOpening }: {
   repositoryRoot: string; repositoryName: string; tasks: RepositoryTask[]; review: ReviewSession | null;
-  onNavigate: (document: SearchDocument, query: string) => Promise<boolean>;
+  onNavigate: (document: SearchDocument, query: string, signal: AbortSignal) => Promise<boolean>;
   onOpening: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -30,20 +30,22 @@ export function SpotlightSearch({ repositoryRoot, repositoryName, tasks, review,
   const previousFocus = useRef<HTMLElement | null>(null);
   const list = useRef<HTMLDivElement>(null);
   const mounted = useRef(true);
-  const openingRef = useRef(false);
+  const navigation = useRef<AbortController | null>(null);
   const onOpeningRef = useRef(onOpening);
   onOpeningRef.current = onOpening;
   const hasQuery = searchWords(query).length > 0;
   const changeOpen = (value: boolean) => {
+    navigation.current?.abort(); navigation.current = null; setOpening(false);
     if (value) { previousFocus.current = document.activeElement as HTMLElement | null; onOpeningRef.current(); setQuery(""); setNavigationError(""); setResponse({ documents: [], errors: [] }); }
     setOpen(value);
   };
-  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; navigation.current?.abort(); }; }, []);
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== "k" || event.isComposing) return;
       event.preventDefault(); event.stopPropagation();
       if (open) { input.current?.focus(); return; }
+      navigation.current?.abort(); navigation.current = null; setOpening(false);
       previousFocus.current = document.activeElement as HTMLElement | null;
       onOpeningRef.current(); setQuery(""); setNavigationError(""); setOpen(true);
     };
@@ -73,13 +75,18 @@ export function SpotlightSearch({ repositoryRoot, repositoryName, tasks, review,
   const index = Math.min(selected, Math.max(0, documents.length - 1));
   useEffect(() => { list.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" }); }, [index, documents]);
   const navigate = async (document: SearchDocument) => {
-    if (openingRef.current) return;
-    openingRef.current = true; setOpening(true); setNavigationError("");
+    if (navigation.current) return;
+    const controller = new AbortController();
+    navigation.current = controller;
+    const active = () => mounted.current && !controller.signal.aborted && navigation.current === controller;
+    setOpening(true); setNavigationError("");
     try {
-      if (await onNavigate(document, query)) { if (mounted.current) setOpen(false); }
-      else if (mounted.current) { setNavigationError("This result could not be opened. Your drafts are preserved. Search again or retry."); setRevision((value) => value + 1); }
-    } catch (reason) { if (mounted.current) { setNavigationError(reason instanceof Error ? reason.message : String(reason)); setRevision((value) => value + 1); } }
-    finally { openingRef.current = false; if (mounted.current) setOpening(false); }
+      const opened = await onNavigate(document, query, controller.signal);
+      if (!active()) return;
+      if (opened) changeOpen(false);
+      else { setNavigationError("This result could not be opened. Your drafts are preserved. Search again or retry."); setRevision((value) => value + 1); }
+    } catch (reason) { if (active()) { setNavigationError(reason instanceof Error ? reason.message : String(reason)); setRevision((value) => value + 1); } }
+    finally { if (active()) { navigation.current = null; setOpening(false); } }
   };
   return <Dialog open={open} onOpenChange={changeOpen}>
     <DialogPrimitive.Trigger className="top-button spotlight-trigger" aria-label="Search current repository" aria-keyshortcuts="Meta+K Control+K" title="Search (⌘K / Ctrl+K)"><Search size={15} /><span>Search</span><kbd>⌘ K</kbd></DialogPrimitive.Trigger>

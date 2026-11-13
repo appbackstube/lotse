@@ -6,6 +6,8 @@ export const spotlightFixture = {
   fail: false,
   delay: 0,
   reads: 0,
+  memoryReadDelay: 0,
+  archiveReadDelay: 0,
   memory: "# Navigation\n\nUse the keyboard to open Spotlight and find your source.",
   async search(query: string): Promise<SearchResponse> {
     this.reads++;
@@ -67,6 +69,29 @@ export async function checkSpotlight(taskId: string, taskTitle: string, otherTas
   check(get(`[data-search-comment="review-comment"]`).classList.contains("spotlight-source-current"), "Comment result must reveal its exact source");
   await launch(); await query("ready for review"); await click(result("ready for review", "Chat")); await settle(300);
   check(get('[data-search-message="response"]').classList.contains('spotlight-source-current'), "Chat result must reveal its exact message");
+  // A read started by a dismissed dialog must not navigate or close a later opening.
+  spotlightFixture.memoryReadDelay = 1400;
+  await launch(); await query("Spotlight keyboard"); await click(result("navigation.md", "Memory"));
+  await key(input(), "Escape"); await launch(); await query("monthly report"); await settle(1500);
+  check(document.querySelector('.spotlight-popup'), "An old Memory navigation must not close a reopened search");
+  check(get<HTMLInputElement>('.task-details-title-input').value === taskTitle, "Cancelled Memory navigation must keep the previous view");
+  check(!get('[aria-label="Memory editor"]').textContent?.includes('navigation.md'), "Cancelled reads must not change the selected Memory file");
+  check(!get('.spotlight-footer').textContent?.includes('Opening'), "A reopened search must not retain the old opening state");
+  spotlightFixture.memoryReadDelay = 0;
+  await key(input(), "Escape");
+
+  // Validate the current content before replacing the selected Memory file.
+  await launch(); await query("Spotlight keyboard");
+  const originalMemory = spotlightFixture.memory;
+  spotlightFixture.memory = "# Changed\n\nThe matching passage was removed.";
+  await click(result("navigation.md", "Memory")); await settle(350);
+  check(get('.spotlight-error').textContent?.includes('changed or was deleted'), "Changed Memory results must explain why navigation was refused");
+  check(!document.querySelector('.spotlight-result'), "Changed Memory results must refresh the list");
+  check(get<HTMLInputElement>('.task-details-title-input').value === taskTitle, "Changed Memory must preserve the previous view");
+  await query("navigation.md"); await click(result("navigation.md", "Memory"));
+  check(!document.querySelector('.spotlight-popup'), "Filename-only Memory matches must still open");
+  check(get('[aria-label="Memory editor"]').textContent?.includes('matching passage was removed'), "Filename matches must load the current content");
+  spotlightFixture.memory = originalMemory;
   await launch(); await query("Spotlight keyboard"); await click(result("navigation.md", "Memory")); await settle(400);
   check(get('[aria-label="Memory editor"]').textContent?.includes('navigation.md'), "Memory result must open its file");
   check(document.querySelector('.memory-description-content.spotlight-source-current'), "Memory result must reveal its content");
@@ -86,6 +111,11 @@ export async function checkSpotlight(taskId: string, taskTitle: string, otherTas
   spotlightFixture.delay = 0;
   await query("not-present-anywhere"); await settle(600);
   check(!document.querySelector('.spotlight-result'), "An older async response must not replace the latest query");
+  spotlightFixture.archiveReadDelay = 1400;
+  await query("Archived discussion"); await click(result("Archived discussion", "Chat"));
+  await key(input(), "Escape"); await launch(); await query("not-present-anywhere"); await settle(1500);
+  check(document.querySelector('.spotlight-popup') && !document.querySelector('.spotlight-archive'), "Cancelled archive navigation must neither open the archive nor close a reopened search");
+  spotlightFixture.archiveReadDelay = 0;
   await query("Archived discussion"); await click(result("Archived discussion", "Chat")); await settle(300);
   check(get('.spotlight-archive').textContent?.includes('Read only'), "Historical workspace chats must open without replacing the live session");
   check(get('[data-archive-message="archived-message"]').classList.contains('spotlight-source-current'), "Historical chat must reveal its matching message");

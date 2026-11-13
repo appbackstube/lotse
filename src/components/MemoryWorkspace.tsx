@@ -5,7 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { ChevronDown, ChevronRight, Copy, Ellipsis, FilePlus2, FileText, Folder, FolderPlus, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { revealSearchSource } from "../spotlight";
+import { revealSearchSource, searchWords } from "../spotlight";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
 
 type Entry = { path: string; name: string; folder: boolean };
@@ -32,7 +32,7 @@ function MemoryRootTarget({ draggingPath, children }: { draggingPath: string | n
   return children({ ref, isDropTarget: isDropTarget && !!draggingPath && canMoveTo(draggingPath, "") });
 }
 
-export function MemoryWorkspace({ repositoryRoot, flushRef, openRef, visible }: { repositoryRoot: string; flushRef: RefObject<(() => Promise<boolean>) | null>; openRef: RefObject<((path: string, query: string) => Promise<boolean>) | null>; visible: boolean }) {
+export function MemoryWorkspace({ repositoryRoot, flushRef, openRef, visible }: { repositoryRoot: string; flushRef: RefObject<(() => Promise<boolean>) | null>; openRef: RefObject<((path: string, query: string, signal: AbortSignal) => Promise<boolean>) | null>; visible: boolean }) {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [file, setFile] = useState<MemoryFile | null>(null);
@@ -61,17 +61,24 @@ export function MemoryWorkspace({ repositoryRoot, flushRef, openRef, visible }: 
     try { setEntries(await invoke<Entry[]>("list_memory")); setError(""); }
     catch (reason) { setError(errorText(reason)); }
   };
-  const loadFile = useCallback(async (path: string) => {
+  const loadFile = useCallback(async (path: string, search?: { query: string; signal: AbortSignal }) => {
     const request = ++loadRequest.current;
     try {
       const loaded = await invoke<Omit<MemoryFile, "draft">>("read_memory", { path });
-      if (request !== loadRequest.current) return false;
+      if (request !== loadRequest.current || search?.signal.aborted) return false;
+      if (search && (loaded.path !== path || !searchWords(search.query).every((word) => `${loaded.path}\n${loaded.content}`.toLowerCase().includes(word)))) {
+        throw new Error("This result has changed or was deleted. Search again.");
+      }
       setCurrent({ ...loaded, draft: loaded.content });
       setSelectedFolder("");
       setConflict(false);
       setError("");
       return true;
-    } catch (reason) { if (request === loadRequest.current) setError(errorText(reason)); return false; }
+    } catch (reason) {
+      if (request !== loadRequest.current || search?.signal.aborted) return false;
+      if (search) throw reason;
+      setError(errorText(reason)); return false;
+    }
   }, []);
   const save = async (): Promise<boolean> => {
     if (savePromise.current) {
@@ -156,9 +163,9 @@ export function MemoryWorkspace({ repositoryRoot, flushRef, openRef, visible }: 
     return loadFile(path);
   };
   useEffect(() => {
-    openRef.current = async (path, query) => {
+    openRef.current = async (path, query, signal) => {
       // Re-read even an already selected file to detect removed or changed results.
-      if (!await saveRef.current() || !await loadFile(path)) return false;
+      if (signal.aborted || !await saveRef.current() || signal.aborted || !await loadFile(path, { query, signal })) return false;
       setExpanded((current) => { const next = new Set(current); let parent = parentOf(path); while (parent) { next.add(parent); parent = parentOf(parent); } return next; });
       setSearchReveal({ path, query, request: Date.now() });
       return true;
