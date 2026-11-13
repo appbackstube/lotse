@@ -66,6 +66,8 @@ const MCP_TOKEN_ENV: &str = "CHAOTICREVIEW_MCP_BEARER_TOKEN";
 #[serde(rename_all = "camelCase")]
 pub struct McpServerSettings {
     pub name: String,
+    #[serde(default, skip_serializing)]
+    pub original_name: Option<String>,
     pub kind: String,
     #[serde(default)]
     pub url: String,
@@ -588,21 +590,37 @@ fn provider_env(app: &AppHandle) -> Result<Vec<(String, String)>, String> {
 }
 
 // Secret values are persisted separately; clients can only submit replacements, not stored-state flags.
-fn prepare_mcp_secret_changes(previous: &[McpServerSettings], servers: &mut [McpServerSettings]) -> Result<Vec<(String, String)>, String> {
+fn prepare_mcp_secret_changes(
+    previous: &[McpServerSettings],
+    servers: &mut [McpServerSettings],
+    mut load: impl FnMut(&str) -> Result<Option<String>, String>,
+) -> Result<Vec<(String, String)>, String> {
     let mut changed = Vec::new();
     for server in servers.iter_mut() {
         normalize_mcp_server(server)?;
-        let old = previous.iter().find(|old| old.name == server.name);
+        let original_name = server.original_name.take();
+        let old_name = original_name.as_deref().unwrap_or(&server.name);
+        let old = previous.iter().find(|old| old.name == old_name);
+        if original_name.is_some() && old.is_none() {
+            return Err("MCP settings changed. Reload the servers before saving.".into());
+        }
         server.bearer_token_stored = server.bearer_token.as_ref().map(|token| !token.is_empty())
             .unwrap_or_else(|| old.is_some_and(|old| old.bearer_token_stored));
         server.oauth_secret_stored = !server.oauth_client_id.is_empty()
             && server.oauth_client_secret.as_ref().map(|secret| !secret.is_empty())
                 .unwrap_or_else(|| old.is_some_and(|old| old.oauth_secret_stored));
-        for (key, value) in [
-            (mcp_bearer_secret_env(&server.name), &server.bearer_token),
-            (mcp_oauth_secret_env(&server.name), &server.oauth_client_secret),
+        for (key, value, stored, old_key) in [
+            (mcp_bearer_secret_env(&server.name), &server.bearer_token, server.bearer_token_stored, old.map(|old| mcp_bearer_secret_env(&old.name))),
+            (mcp_oauth_secret_env(&server.name), &server.oauth_client_secret, server.oauth_secret_stored, old.map(|old| mcp_oauth_secret_env(&old.name))),
         ] {
             if let Some(value) = value { changed.push((key, value.clone())); }
+            else if stored {
+                if let Some(old_key) = old_key.filter(|old_key| old_key != &key) {
+                    let secret = load(&old_key)?.filter(|secret| !secret.trim().is_empty())
+                        .ok_or_else(|| format!("{}: saved secret is unavailable. Enter it again before renaming this server.", server.name))?;
+                    changed.push((key, secret));
+                }
+            }
         }
     }
     validate_mcp_servers(servers)?;
@@ -1063,7 +1081,7 @@ impl AgentRuntime {
             return Err("Complete or cancel MCP sign-in before changing servers.".into());
         }
         let previous = self.mcp_servers(app)?;
-        let changed = prepare_mcp_secret_changes(&previous, &mut servers)?;
+        let changed = prepare_mcp_secret_changes(&previous, &mut servers, |key| load_provider_secret(app, key))?;
         let secrets_changed = !changed.is_empty();
         let (resolved_servers, _) = resolve_mcp_secrets(servers.clone(), |key| {
             match changed.iter().find(|(changed_key, _)| changed_key == key) {
@@ -3270,7 +3288,7 @@ mod tests {
     #[test]
     fn thread_config_sets_chat_permissions_and_comment_policy() {
         let servers = vec![McpServerSettings {
-            name: "docs".into(), kind: "http".into(), url: "https://example.com/mcp".into(),
+            name: "docs".into(), original_name: None, kind: "http".into(), url: "https://example.com/mcp".into(),
             command: String::new(), args: Vec::new(), env: HashMap::new(),
             bearer_token: None, bearer_token_stored: false, bearer_token_env_var: "DOCS_TOKEN".into(), oauth_client_id: String::new(), oauth_callback_url: String::new(), oauth_scopes: Vec::new(), oauth_client_secret: None, oauth_secret_stored: false, oauth_error: None, enabled: true,
         }];
@@ -3324,7 +3342,7 @@ mod tests {
         ));
         fs::create_dir_all(&home).unwrap();
         let server = McpServerSettings {
-            name: "local-tools".into(), kind: "stdio".into(), url: String::new(),
+            name: "local-tools".into(), original_name: None, kind: "stdio".into(), url: String::new(),
             command: "/usr/bin/env".into(), args: vec!["node".into(), "server.js".into()],
             env: HashMap::from([("TOKEN".into(), "secret".into())]),
             bearer_token: None, bearer_token_stored: false, bearer_token_env_var: String::new(), oauth_client_id: String::new(), oauth_callback_url: String::new(), oauth_scopes: Vec::new(), oauth_client_secret: None, oauth_secret_stored: false, oauth_error: None, enabled: false,
@@ -3344,14 +3362,14 @@ mod tests {
         assert!(runtime_config.contains("[mcp_servers.local-tools]\nenabled = false\ncommand = \"/usr/bin/env\""));
         assert!(runtime_config.contains("[mcp_servers.local-tools.env]\nTOKEN = \"secret\""));
         assert_eq!(toml_string("line\nnext"), "\"line\\nnext\"");
-        let http = McpServerSettings { name: "figma".into(), kind: "http".into(), url: "https://mcp.figma.com/mcp".into(), command: String::new(), args: Vec::new(), env: HashMap::new(), bearer_token: None, bearer_token_stored: false, bearer_token_env_var: String::new(), oauth_client_id: "public-client".into(), oauth_callback_url: String::new(), oauth_scopes: Vec::new(), oauth_client_secret: None, oauth_secret_stored: false, oauth_error: None, enabled: true };
+        let http = McpServerSettings { name: "figma".into(), original_name: None, kind: "http".into(), url: "https://mcp.figma.com/mcp".into(), command: String::new(), args: Vec::new(), env: HashMap::new(), bearer_token: None, bearer_token_stored: false, bearer_token_env_var: String::new(), oauth_client_id: "public-client".into(), oauth_callback_url: String::new(), oauth_scopes: Vec::new(), oauth_client_secret: None, oauth_secret_stored: false, oauth_error: None, enabled: true };
         assert_eq!(mcp_server_config(&http)["oauth"]["client_id"], "public-client");
         write_private_file(&home.join("mcp-servers.json"), &serde_json::to_vec(&vec![http]).unwrap()).unwrap();
         write_runtime_config(&home, &providers).unwrap();
         assert!(fs::read_to_string(home.join("config.toml")).unwrap().contains("[mcp_servers.figma]\nenabled = true\nurl = \"https://mcp.figma.com/mcp\""));
         assert!(fs::read_to_string(home.join("config.toml")).unwrap().contains("[mcp_servers.figma.oauth]\nclient_id = \"public-client\""));
         let slack = McpServerSettings {
-            name: "slack".into(), kind: "http".into(), url: "https://mcp.slack.com/mcp".into(),
+            name: "slack".into(), original_name: None, kind: "http".into(), url: "https://mcp.slack.com/mcp".into(),
             command: String::new(), args: Vec::new(), env: HashMap::new(),
             bearer_token: None, bearer_token_stored: false, bearer_token_env_var: String::new(), oauth_client_id: "client-id".into(),
             oauth_callback_url: "http://localhost:43123/callback".into(),
@@ -3439,7 +3457,7 @@ mod tests {
         server.oauth_secret_stored = false;
         server.bearer_token = Some("synthetic-bearer-token".into());
         let key = mcp_bearer_secret_env("docs");
-        assert_eq!(prepare_mcp_secret_changes(&[], std::slice::from_mut(&mut server)).unwrap(),
+        assert_eq!(prepare_mcp_secret_changes(&[], std::slice::from_mut(&mut server), |_| panic!("unexpected secret read")).unwrap(),
             vec![(key.clone(), "synthetic-bearer-token".into())]);
         assert!(server.bearer_token_stored);
         let serialized = serde_json::to_string(&server).unwrap();
@@ -3448,17 +3466,67 @@ mod tests {
         assert!(stored.bearer_token.is_none());
         let mut edited = stored.clone();
         edited.enabled = false;
-        assert!(prepare_mcp_secret_changes(std::slice::from_ref(&stored), std::slice::from_mut(&mut edited)).unwrap().is_empty());
+        assert!(prepare_mcp_secret_changes(std::slice::from_ref(&stored), std::slice::from_mut(&mut edited), |_| panic!("unexpected secret read")).unwrap().is_empty());
         assert!(edited.bearer_token_stored);
         edited.bearer_token = Some("replacement-token".into());
-        assert_eq!(prepare_mcp_secret_changes(std::slice::from_ref(&stored), std::slice::from_mut(&mut edited)).unwrap(),
+        assert_eq!(prepare_mcp_secret_changes(std::slice::from_ref(&stored), std::slice::from_mut(&mut edited), |_| panic!("unexpected secret read")).unwrap(),
             vec![(key.clone(), "replacement-token".into())]);
         edited.bearer_token = Some(String::new());
-        assert_eq!(prepare_mcp_secret_changes(std::slice::from_ref(&stored), std::slice::from_mut(&mut edited)).unwrap(),
+        assert_eq!(prepare_mcp_secret_changes(std::slice::from_ref(&stored), std::slice::from_mut(&mut edited), |_| panic!("unexpected secret read")).unwrap(),
             vec![(key.clone(), String::new())]);
         assert!(!edited.bearer_token_stored);
-        assert_eq!(prepare_mcp_secret_changes(std::slice::from_ref(&stored), &mut []).unwrap(),
+        assert_eq!(prepare_mcp_secret_changes(std::slice::from_ref(&stored), &mut [], |_| panic!("unexpected secret read")).unwrap(),
             vec![(key, String::new())]);
+    }
+
+    #[test]
+    fn mcp_renaming_preserves_saved_secrets_and_honors_replacements() {
+        for bearer in [true, false] {
+            let mut stored = oauth_test_server("docs");
+            stored.url = "https://example.com/mcp".into();
+            if bearer {
+                stored.oauth_client_id.clear();
+                stored.oauth_callback_url.clear();
+                stored.oauth_scopes.clear();
+                stored.oauth_secret_stored = false;
+                stored.bearer_token_stored = true;
+            }
+            let secret_key = if bearer { mcp_bearer_secret_env } else { mcp_oauth_secret_env };
+            let old_key = secret_key("docs");
+            let new_key = secret_key("renamed");
+            let mut renamed = stored.clone();
+            renamed.original_name = Some(stored.name.clone());
+            renamed.name = "renamed".into();
+            let mut credentials = HashMap::from([(old_key.clone(), "synthetic-token".to_owned())]);
+            let changes = prepare_mcp_secret_changes(std::slice::from_ref(&stored), std::slice::from_mut(&mut renamed), |key| Ok(credentials.get(key).cloned())).unwrap();
+            assert_eq!(changes, vec![(new_key.clone(), "synthetic-token".into()), (old_key.clone(), String::new())]);
+            for (key, value) in changes {
+                if value.is_empty() { credentials.remove(&key); }
+                else { credentials.insert(key, value); }
+            }
+            let serialized = serde_json::to_string(&renamed).unwrap();
+            assert!(!serialized.contains("synthetic-token"));
+            assert!(!serialized.contains("originalName"));
+            let reloaded = serde_json::from_str(&serialized).unwrap();
+            let (resolved, env) = resolve_mcp_secrets(vec![reloaded], |key| Ok(credentials.get(key).cloned()));
+            assert!(resolved[0].oauth_error.is_none());
+            assert_eq!(env, vec![(new_key.clone(), "synthetic-token".into())]);
+            assert!(!credentials.contains_key(&old_key));
+
+            // Explicit replacement and removal take precedence over migration.
+            for replacement in ["replacement-token", ""] {
+                let mut edited = renamed.clone();
+                edited.original_name = Some(stored.name.clone());
+                if bearer { edited.bearer_token = Some(replacement.into()); }
+                else { edited.oauth_client_secret = Some(replacement.into()); }
+                let changes = prepare_mcp_secret_changes(std::slice::from_ref(&stored), std::slice::from_mut(&mut edited), |_| panic!("replacement must not read the old secret")).unwrap();
+                assert_eq!(changes, vec![(new_key.clone(), replacement.into()), (old_key.clone(), String::new())]);
+            }
+            renamed.original_name = Some(stored.name.clone());
+            assert!(prepare_mcp_secret_changes(std::slice::from_ref(&stored), std::slice::from_mut(&mut renamed), |_| Ok(None)).is_err());
+            renamed.original_name = Some(stored.name.clone());
+            assert!(prepare_mcp_secret_changes(std::slice::from_ref(&stored), std::slice::from_mut(&mut renamed), |_| Err("Cannot read credentials".into())).is_err());
+        }
     }
 
     #[test]

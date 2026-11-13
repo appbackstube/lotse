@@ -211,6 +211,7 @@ export type AiSettings = {
 };
 export type McpServerSettings = {
   name: string;
+  originalName?: string;
   kind: "http" | "stdio";
   url: string;
   command: string;

@@ -250,6 +250,7 @@ type ProviderSettings = { activeProvider: string; providers: ProviderSettingsEnt
 type McpServerDraft = Omit<McpServerSettings, "args" | "env" | "oauthScopes"> & { argsText: string; envText: string; oauthScopesText: string };
 const mcpDraft = ({ args, env, oauthScopes, ...server }: McpServerSettings): McpServerDraft => ({
   ...server,
+  originalName: server.name || undefined,
   argsText: args.join("\n"),
   envText: Object.entries(env).map(([key, value]) => `${key}=${value}`).join("\n"),
   oauthScopesText: (oauthScopes ?? []).join(" "),
