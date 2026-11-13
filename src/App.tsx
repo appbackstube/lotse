@@ -1856,7 +1856,12 @@ function TaskDetailsPanel({ task, branchPrefix, onBranchNameChange, customFields
               : previewAsset.preview.kind === "image" ? <img src={convertFileSrc(previewAsset.preview.path)} alt={expandedAsset?.name ?? ""} className="max-h-full max-w-full object-contain" />
                 : previewAsset.preview.kind === "pdf" ? <iframe src={convertFileSrc(previewAsset.preview.path)} title={expandedAsset?.name ?? "PDF preview"} className="h-full w-full rounded bg-white" />
                   : previewAsset.preview.kind === "video" ? <video src={convertFileSrc(previewAsset.preview.path)} controls playsInline preload="metadata" className="h-full w-full min-h-0 min-w-0 rounded bg-black object-contain" aria-label={expandedAsset?.name ?? "Video preview"} />
-                  : previewAsset.preview.kind === "text" ? <div className="h-full w-full overflow-auto"><pre className="whitespace-pre-wrap break-words font-mono text-xs text-[#E8FFF0]">{previewAsset.preview.content || "This file is empty."}</pre>{previewAsset.preview.truncated && <p className="mt-4 text-xs text-[#7C9B88]">Showing the first 1 MB.</p>}</div>
+                  : previewAsset.preview.kind === "text" ? <div className="h-full w-full overflow-auto">
+                    {/\.(md|markdown)$/i.test(expandedAsset?.name ?? "")
+                      ? <div className="chat-markdown text-[#E8FFF0]"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: ({ href, children }) => <ExternalLink href={href}>{children}</ExternalLink> }}>{previewAsset.preview.content || "This file is empty."}</ReactMarkdown></div>
+                      : <pre className="whitespace-pre-wrap break-words font-mono text-xs text-[#E8FFF0]">{previewAsset.preview.content || "This file is empty."}</pre>}
+                    {previewAsset.preview.truncated && <p className="mt-4 text-xs text-[#7C9B88]">Showing the first 1 MB.</p>}
+                  </div>
                     : <p className="text-[#7C9B88]">Preview unavailable for this file type.</p>}
         </div>
       </DialogContent>
