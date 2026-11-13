@@ -4,6 +4,7 @@ compile_error!("browser-qa must never be enabled in a release build");
 mod agent_runtime;
 mod credentials;
 mod memory;
+mod spotlight;
 mod github;
 mod scheduler;
 mod task_control;
@@ -6693,6 +6694,8 @@ pub fn run() {
             save_repository_file,
             open_repository_file,
             open_task_folder,
+            spotlight::search_repository_content,
+            spotlight::read_spotlight_chat,
             list_memory,
             read_memory,
             write_memory,

@@ -1,0 +1,27 @@
+import assert from "node:assert/strict";
+import { searchDocuments, searchSnippet, taskSearchDocuments, workspaceSearchDocuments, workspaceSearchContext } from "../src/spotlight.ts";
+import type { RepositoryTask, ReviewSession } from "../src/types.ts";
+
+const task = { id: "task", title: "Keyboard search", description: "Find café notes without leaving the repository.", completed: true, comments: [{ id: "comment", author: "user", body: "Keyboard access to archived discussions." }], chatMessages: [{ id: "message", role: "assistant", body: "Search follows the selected source." }], sandboxHtml: "excludedUniquePhrase", attachments: [{ name: "excludedAttachment" }] } as RepositoryTask;
+const docs = taskSearchDocuments([task]);
+assert.equal(searchDocuments(docs, "KEYBOARD search")[0].target.type, "task");
+assert.equal(searchDocuments(docs, "café")[0].id, "task:task");
+assert.equal(searchDocuments(docs, "keyboard archived")[0].id, "comment:task:comment");
+assert.equal(searchDocuments(docs, "selected source")[0].id, "chat:task:message");
+assert.equal(searchDocuments(docs, "excludedUniquePhrase").length, 0);
+assert.equal(searchDocuments(docs, "excludedAttachment").length, 0);
+assert.equal(searchDocuments(docs, "  \n ").length, 0);
+assert.equal(searchDocuments(docs, "not present").length, 0);
+assert.ok(docs[0].breadcrumb.includes("Done"));
+const extra = [{ ...docs[0], id: "body", title: "Other", body: "Keyboard search" }, { ...docs[0], id: "prefix", title: "Keyboard search navigation" }];
+assert.deepEqual(searchDocuments([...extra, docs[0]], "Keyboard search").map(doc => doc.id), ["task:task", "prefix", "body"]);
+assert.deepEqual(searchDocuments(docs, "search"), searchDocuments([...docs].reverse(), "search"));
+assert.equal(searchDocuments(taskSearchDocuments([{ ...task, description: "Changed" }]), "café").length, 0);
+assert.equal(searchDocuments(taskSearchDocuments([]), "keyboard").length, 0);
+const snippet = searchSnippet("Before ".repeat(30) + "needle after", "needle");
+assert.ok(snippet.startsWith("…") && snippet.includes("needle"));
+const review = { mode: "workingCopy", baseRef: null, compareRef: null, baseOid: "base", chatMessages: task.chatMessages } as ReviewSession;
+assert.equal(workspaceSearchDocuments(review)[0].target.type, "workspace");
+assert.equal(workspaceSearchContext(review), '["workingCopy",null,null,"base"]');
+assert.equal(workspaceSearchDocuments(null).length, 0);
+console.log("PASS: Spotlight corpus, content boundaries, completed tasks, multiword matching, ranking, deterministic ties, edits/deletions and workspace identity.");

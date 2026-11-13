@@ -3,6 +3,7 @@ import { act, Profiler } from "react";
 import { createRoot } from "react-dom/client";
 import { mockConvertFileSrc, mockWindows } from "@tauri-apps/api/mocks";
 import { mockIPC } from "./mockTauri";
+import { checkSpotlight, spotlightFixture } from "./spotlight-checks";
 import { checkTaskDetailFields } from "./task-detail-fields";
 import { checkTaskPanelTransitions } from "./task-panel-transitions";
 import { emit } from "@tauri-apps/api/event";
@@ -12,6 +13,7 @@ import App from "../src/App";
 let fixtureRoot: ReturnType<typeof createRoot> | undefined;
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+const spotlightOnly = location.pathname.endsWith("spotlight-ui.html");
 const listOnly = location.pathname.endsWith("task-list-ui.html");
 const tabsOnly = location.pathname.endsWith("task-tabs-ui.html");
 const foldersOnly = location.pathname.endsWith("task-folders-ui.html");
@@ -97,7 +99,10 @@ mockIPC(async (command, args: any) => {
   if (command === "compare_working_copy") return comparison;
   if (command === "load_review" || command === "github_connection") return null;
   if (command === "scheduler_list") { scheduleReads++; return []; }
-  if (command === "list_memory") return [];
+  if (spotlightOnly && command === "search_repository_content") { if (args.repositoryRoot !== currentRepository.rootPath) throw new Error("Wrong search repository"); return currentRepository.rootPath === repo.rootPath ? spotlightFixture.search(args.query) : { documents: [], errors: [] }; }
+  if (spotlightOnly && command === "read_spotlight_chat") { await new Promise((resolve) => setTimeout(resolve, spotlightFixture.archiveReadDelay)); return { repoPath: repo.rootPath, baseOid: comparison.baseOid, mode: "workingCopy", baseRef: null, compareRef: null, approvedFiles: [], approvedFileSnapshots: {}, approvedSnapshotId: null, comments: [], agentThreadId: null, chatMessages: [{ ...task.chatMessages[0], id: "archived-message", body: "Archived discussion: we agreed on repository navigation." }] }; }
+  if (spotlightOnly && command === "read_memory") { await new Promise((resolve) => setTimeout(resolve, spotlightFixture.memoryReadDelay)); return { path: args.path, content: spotlightFixture.memory, revision: "revision" }; }
+  if (command === "list_memory") return spotlightOnly ? [{ path: "navigation.md", name: "navigation.md", folder: false }] : [];
   if (command === "agent_models") return [];
   if (command === "ai_chat_send") { agentSend = args; return { requestId: "plan-check", threadId: "plan-thread", turnId: "plan-turn" }; }
   if (command === "start_terminal") { startedTerminals.push(args); return; }
@@ -220,7 +225,15 @@ try {
     await click(button(task.title));
   }
   const fieldsOnly = location.pathname.endsWith("task-fields-ui.html");
-  if (!listOnly && !fieldsOnly && !tabsOnly && !foldersOnly) {
+  if (spotlightOnly) {
+    if (new URLSearchParams(location.search).get("preview") === "1") {
+      document.getElementById("result")!.hidden = true;
+      await click(document.querySelector<HTMLElement>('[aria-label="Search current repository"]'));
+      await act(async () => { const input = document.querySelector<HTMLInputElement>('.spotlight-popup input')!; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "report"); input.dispatchEvent(new Event("input", { bubbles: true })); });
+      await new Promise<void>(() => {});
+    }
+    await checkSpotlight(task.id, task.title, auditTask.title, async () => { currentRepository = { ...repo, rootPath: "/other-spotlight-repository", name: "Other repository" }; await emit("repository-changed", { rootPath: repo.rootPath, paths: [] }); });
+  } else if (!listOnly && !fieldsOnly && !tabsOnly && !foldersOnly) {
   check(document.querySelector('[aria-label="Changes, uncommitted changes"]'), "The lightweight Git status must preserve the dirty marker while Changes is hidden");
   const field = document.querySelector<HTMLInputElement>('#task-custom-perf')!;
   check(field, "The task custom field must be available");
@@ -329,9 +342,9 @@ try {
   }
   await act(async () => root.unmount()); await settle();
   check(startedTerminals.every((session) => stoppedTerminals.includes(session.sessionId)), "Unmount must stop every retained terminal");
-  document.getElementById("result")!.textContent = listOnly ? "PASS: inline list empty state, side-by-side details/chat, task switching and isolated drafts, keyboard dividers, Escape, Kanban/Gantt modal regressions; retained drawing/sandbox state and cleanup." : foldersOnly ? "PASS: folder menu waits for selection and opens Finder or Terminal with task/worktree or repository scope." : tabsOnly ? "PASS: early drawing preparation, immediate tab selection, retained canvas/zoom/pan and sandbox state, preview retry, inactive link blocking, task isolation and cleanup." : fieldsOnly ? "PASS: every task detail field; local typing, validation, links, attachments, checklist/comments, native close and pending edits across task/repository changes." : "PASS: explicit terminal disposal, reuse across task switches, shared workspace terminal, five-session limit, unmount cleanup; visible-only Git refresh and immediate reload; coalesced task/MCP writes, trimmed context, scheduler isolation and background visibility; frame-batched task streaming and boundary flushes.";
+  document.getElementById("result")!.textContent = spotlightOnly ? "PASS: Spotlight keyboard opening, focus, motion, ranking, task/comment/chat/memory/archive navigation, draft preservation, empty states, partial failure/retry, stale responses, cancelled Memory/archive navigation, changed Memory revalidation and filename matches." : listOnly ? "PASS: inline list empty state, side-by-side details/chat, task switching and isolated drafts, keyboard dividers, Escape, Kanban/Gantt modal regressions; retained drawing/sandbox state and cleanup." : foldersOnly ? "PASS: folder menu waits for selection and opens Finder or Terminal with task/worktree or repository scope." : tabsOnly ? "PASS: early drawing preparation, immediate tab selection, retained canvas/zoom/pan and sandbox state, preview retry, inactive link blocking, task isolation and cleanup." : fieldsOnly ? "PASS: every task detail field; local typing, validation, links, attachments, checklist/comments, native close and pending edits across task/repository changes." : "PASS: explicit terminal disposal, reuse across task switches, shared workspace terminal, five-session limit, unmount cleanup; visible-only Git refresh and immediate reload; coalesced task/MCP writes, trimmed context, scheduler isolation and background visibility; frame-batched task streaming and boundary flushes.";
 } catch (error) {
-  document.getElementById("result")!.textContent = `FAIL: ${error instanceof Error ? error.stack : String(error)}`;
+  document.getElementById("result")!.textContent = `FAIL: ${error instanceof Error ? `${error.message}\n${error.stack}` : String(error)}`;
   console.error(error);
 } finally {
   if (!new URLSearchParams(location.search).has("preview")) await act(async () => fixtureRoot?.unmount());

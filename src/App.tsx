@@ -55,6 +55,9 @@ import { MarkdownEditor } from "@/components/MarkdownEditor";
 import { NewTaskButton } from "@/components/NewTaskButton";
 import { ChatGoalSettings } from "./components/ChatGoalSettings";
 import { defaultChatGoal, normalizeChatGoal } from "./chatGoal";
+import { SpotlightSearch, SearchHighlight } from "./components/SpotlightSearch";
+import "./components/SpotlightSearch.css";
+import { revealSearchSource, searchDocuments, taskSearchDocuments, workspaceSearchContext, workspaceSearchDocuments, type SearchDocument } from "./spotlight";
 import { MemoryWorkspace } from "@/components/MemoryWorkspace";
 import { TaskGantt, TaskScheduleFields } from "@/components/TaskGantt";
 import { TaskAssetThumbnail } from "@/components/TaskAssetThumbnail";
@@ -1104,6 +1107,7 @@ function AiChatPanel({
   onCancelPlaybook,
   taskSelected = true,
   active = true,
+  searchMessage,
 }: {
   messages: ChatMessage[];
   draft: string;
@@ -1177,9 +1181,15 @@ function AiChatPanel({
   onCancelPlaybook: () => void;
   taskSelected?: boolean;
   active?: boolean;
+  searchMessage?: { id: string; query: string; request: number };
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const followChatRef = useRef(true);
+  useEffect(() => {
+    if (!active || !searchMessage) return;
+    followChatRef.current = false;
+    return revealSearchSource(() => scrollRef.current?.querySelector<HTMLElement>(`[data-search-message="${CSS.escape(searchMessage.id)}"]`) ?? null, searchMessage.query);
+  }, [active, searchMessage]);
   const wasRunningRef = useRef(running);
   const [fileReference, setFileReference] = useState<FileReference | null>(null);
   const [configOpen, setConfigOpen] = useState(false);
@@ -1299,7 +1309,7 @@ function AiChatPanel({
             </p>
           </div>}
           {messages.map((entry) => entry.role === "user" ? (
-              <div key={entry.id} className="ios-chat-user-turn">
+              <div key={entry.id} data-search-message={entry.id} className="ios-chat-user-turn">
                 <article className="ios-chat-user">
                   <ChatUploads images={entry.attachments ?? []} />
                   <ChatAssetNames attachments={entry.attachments ?? []} />
@@ -1310,7 +1320,7 @@ function AiChatPanel({
                 </div>
               </div>
             ) : (
-              <article key={entry.id} className={`ios-chat-assistant ${entry.plan ? "ios-chat-plan" : ""}`}>
+              <article key={entry.id} data-search-message={entry.id} className={`ios-chat-assistant ${entry.plan ? "ios-chat-plan" : ""}`}>
                 {entry.plan && <div className="ios-chat-plan-header"><span>Plan ready</span>{entry.canImplementPlan && <button type="button" onClick={onImplementPlan} disabled={running} className="accent-button h-8 px-3 text-xs disabled:opacity-50">Implement now <ArrowUp size={12} /></button>}</div>}
                 <div className="chat-markdown text-[#E8FFF0]"><ChatMarkdown text={entry.body} onFileReference={setFileReference} onOpenTask={onOpenTask} /></div>
                 <AppliedDiffs changes={entry.appliedDiffs ?? []} />
@@ -1706,16 +1716,18 @@ function TaskDetailsTitleInput({ value, onChange }: { value: string; onChange: (
   return <Input value={draft} onChange={(event) => setDraft(event.currentTarget.value)} onBlur={() => { const title = draft.trim(); if (title && title !== value) onChange(title); else setDraft(value); }} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} maxLength={500} className="task-details-title-input" />;
 }
 
-function TaskCommentForm({ onAdd }: { onAdd: (body: string) => void }) {
-  const [draft, setDraft] = useState("");
-  const submit = () => { const body = draft.trim(); if (!body) return; onAdd(body); setDraft(""); };
-  return <form onSubmit={(event) => { event.preventDefault(); submit(); }} className="space-y-2"><Textarea value={draft} onChange={(event) => setDraft(event.currentTarget.value)} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && !event.nativeEvent.isComposing) { event.preventDefault(); submit(); } }} maxLength={5_000} rows={3} placeholder="Write a comment…" aria-label="Write a task comment" className="task-details-control min-h-20 w-full resize-y px-3 py-2 text-sm" /><div className="flex justify-end"><button type="submit" disabled={!draft.trim()} className="quiet-button text-xs disabled:opacity-40">Add comment</button></div></form>;
+function TaskCommentForm({ taskId, drafts, onAdd }: { taskId: string; drafts: Map<string, string>; onAdd: (body: string) => void }) {
+  const [draft, setDraft] = useState(() => drafts.get(taskId) ?? "");
+  const changeDraft = (value: string) => { drafts.set(taskId, value); setDraft(value); };
+  const submit = () => { const body = draft.trim(); if (!body) return; onAdd(body); drafts.delete(taskId); setDraft(""); };
+  return <form onSubmit={(event) => { event.preventDefault(); submit(); }} className="space-y-2"><Textarea value={draft} onChange={(event) => changeDraft(event.currentTarget.value)} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && !event.nativeEvent.isComposing) { event.preventDefault(); submit(); } }} maxLength={5_000} rows={3} placeholder="Write a comment…" aria-label="Write a task comment" className="task-details-control min-h-20 w-full resize-y px-3 py-2 text-sm" /><div className="flex justify-end"><button type="submit" disabled={!draft.trim()} className="quiet-button text-xs disabled:opacity-40">Add comment</button></div></form>;
 }
 
 type TaskAssetPreview = { kind: "image" | "pdf" | "video"; path: string } | { kind: "text"; content: string; truncated: boolean } | { kind: "unsupported" };
 
-function TaskDetailsPanel({ task, branchPrefix, onBranchNameChange, customFields, branches, remoteBranches, workspaceBranch, startLocked, assetBusy, onTitleChange, onDescriptionChange, onScheduleChange, onCustomFieldChange, onStatusChange, onColorChange, onLocationChange, onStartChange, onStartOpen, onAddAssets, onRemoveAsset, onAddComment, onUpdateComment, onDeleteComment }: {
+function TaskDetailsPanel({ task, commentDrafts, branchPrefix, onBranchNameChange, customFields, branches, remoteBranches, workspaceBranch, startLocked, assetBusy, onTitleChange, onDescriptionChange, onScheduleChange, onCustomFieldChange, onStatusChange, onColorChange, onLocationChange, onStartChange, onStartOpen, onAddAssets, onRemoveAsset, onAddComment, onUpdateComment, onDeleteComment }: {
   task: RepositoryTask | null;
+  commentDrafts: Map<string, string>;
   branchPrefix: string;
   onBranchNameChange: (name: string) => void;
   customFields: TaskCustomField[];
@@ -1793,7 +1805,7 @@ function TaskDetailsPanel({ task, branchPrefix, onBranchNameChange, customFields
     return branch;
   };
   return <section className="relative flex h-full min-h-0 min-w-0 flex-col border-l border-[#294536] bg-[var(--ios-grouped-background)]" aria-label="Task details">
-    {!task ? <p className="p-5 text-sm text-[#7C9B88]">Select a task to see its details.</p> : <div className="task-details-form min-h-0 flex-1 overflow-y-auto">
+    {!task ? <p className="p-5 text-sm text-[#7C9B88]">Select a task to see its details.</p> : <div data-search-task={task.id} className="task-details-form min-h-0 flex-1 overflow-y-auto">
       <label className="task-details-title"><span className="sr-only">Task title</span><TaskDetailsTitleInput key={task.id} value={task.title} onChange={onTitleChange} /></label>
       <GitHubTaskLink key={`github-${task.id}`} task={task} />
       <div className="task-details-description space-y-2"><div className="flex items-center justify-between gap-2"><span className="text-xs font-semibold text-[#7C9B88]">Description</span><div className="flex items-center gap-1"><button type="button" disabled={!task.description} onClick={() => { void navigator.clipboard.writeText(task.description).then(() => setCopyError(null)).catch((reason) => setCopyError(message(reason))); }} className="task-details-copy quiet-button h-7 px-2 text-xs disabled:opacity-40" aria-label="Copy issue description" title="Copy description"><Copy size={13} /></button></div></div><TaskDescriptionEditor key={task.id} github={task.github} value={task.description} onChange={onDescriptionChange} />{copyError && <p role="alert" className="text-xs text-[#FB7185]">Could not copy description: {copyError}</p>}</div>
@@ -1844,8 +1856,8 @@ function TaskDetailsPanel({ task, branchPrefix, onBranchNameChange, customFields
       </div>
       <section className="space-y-3" aria-label="Task comments">
         <h3 className="task-details-heading">Comments</h3>
-        {task.comments.length === 0 ? <p className="text-xs text-[#7C9B88]">No comments yet.</p> : <ol className="space-y-2">{task.comments.map((comment) => <li key={comment.id} className="task-details-control px-3 py-2.5"><div className="mb-2 flex items-center justify-between gap-2 text-xs text-[#7C9B88]"><span className="font-semibold">{comment.author === "agent" ? "Agent" : "You"}</span><div className="flex items-center gap-2"><time dateTime={new Date(comment.createdAt).toISOString()}>{new Date(comment.createdAt).toLocaleString()}</time><button type="button" onClick={() => onDeleteComment(comment.id)} aria-label={`Delete ${comment.author} comment`} title="Delete comment" className="grid size-6 place-items-center rounded-md text-[#7C9B88] hover:bg-[#294536] hover:text-[#FB7185]"><Trash2 size={13} /></button></div></div><div className="chat-markdown task-comment-markdown text-sm text-[#E8FFF0]"><TaskCommentMarkdown body={comment.body} onChange={(body) => onUpdateComment(comment.id, body)} /></div></li>)}</ol>}
-        <TaskCommentForm key={task.id} onAdd={onAddComment} />
+        {task.comments.length === 0 ? <p className="text-xs text-[#7C9B88]">No comments yet.</p> : <ol className="space-y-2">{task.comments.map((comment) => <li key={comment.id} data-search-comment={comment.id} className="task-details-control px-3 py-2.5"><div className="mb-2 flex items-center justify-between gap-2 text-xs text-[#7C9B88]"><span className="font-semibold">{comment.author === "agent" ? "Agent" : "You"}</span><div className="flex items-center gap-2"><time dateTime={new Date(comment.createdAt).toISOString()}>{new Date(comment.createdAt).toLocaleString()}</time><button type="button" onClick={() => onDeleteComment(comment.id)} aria-label={`Delete ${comment.author} comment`} title="Delete comment" className="grid size-6 place-items-center rounded-md text-[#7C9B88] hover:bg-[#294536] hover:text-[#FB7185]"><Trash2 size={13} /></button></div></div><div className="chat-markdown task-comment-markdown text-sm text-[#E8FFF0]"><TaskCommentMarkdown body={comment.body} onChange={(body) => onUpdateComment(comment.id, body)} /></div></li>)}</ol>}
+        <TaskCommentForm key={task.id} taskId={task.id} drafts={commentDrafts} onAdd={onAddComment} />
       </section>
     </div>}
     <Dialog open={!!expandedAsset} onOpenChange={(open) => { if (!open) setPreviewAsset(null); }}>
@@ -2270,6 +2282,24 @@ function App() {
   const boardMode = taskMode && !zenMode;
   const memoryMode = workspaceMode === "memory";
   const memoryFlushRef = useRef<(() => Promise<boolean>) | null>(null);
+  const commentDrafts = useRef(new Map<string, string>());
+  useEffect(() => { commentDrafts.current.clear(); }, [repositoryRoot]);
+  const memoryOpenRef = useRef<((path: string, query: string, signal: AbortSignal) => Promise<boolean>) | null>(null);
+  const [searchSource, setSearchSource] = useState<{ document: SearchDocument; query: string; request: number } | null>(null);
+  const [searchArchive, setSearchArchive] = useState<{ session: ReviewSession; messageId: string; query: string } | null>(null);
+  useEffect(() => { setSearchSource(null); setSearchArchive(null); }, [repositoryRoot]);
+  useEffect(() => {
+    if (!searchSource || searchSource.document.target.type !== "task" || searchSource.document.target.messageId) return;
+    const target = searchSource.document.target;
+    return revealSearchSource(() => {
+      const form = document.querySelector<HTMLElement>(`[data-search-task="${CSS.escape(target.taskId)}"]`);
+      return target.commentId ? form?.querySelector<HTMLElement>(`[data-search-comment="${CSS.escape(target.commentId)}"]`) ?? null : form?.querySelector<HTMLElement>(searchDocuments([{ ...searchSource.document, body: "" }], searchSource.query).length ? ".task-details-title-input" : ".task-description-editor") ?? null;
+    }, searchSource.query);
+  }, [searchSource]);
+  useEffect(() => {
+    if (!searchArchive) return;
+    return revealSearchSource(() => document.querySelector<HTMLElement>(`[data-archive-message="${CSS.escape(searchArchive.messageId)}"]`), searchArchive.query);
+  }, [searchArchive]);
   const modeSwitchRef = useRef<(mode: "workspace" | "tasks" | "memory") => void>(() => {});
   const [branchPrefix, setBranchPrefix] = useState(() => repository ? loadBranchPrefix(repository.rootPath) : "feature/");
   useEffect(() => { setBranchPrefix(repositoryRoot ? loadBranchPrefix(repositoryRoot) : "feature/"); }, [repositoryRoot]);
@@ -4235,6 +4265,43 @@ function App() {
     setBoardDrawerOpen(true);
   };
 
+  const openSearchDocument = async (doc: SearchDocument, query: string, signal: AbortSignal): Promise<boolean> => {
+    const root = repositoryRef.current?.rootPath;
+    if (!root || signal.aborted) return false;
+    window.dispatchEvent(new Event("flush-task-fields"));
+    if (memoryFlushRef.current && !await memoryFlushRef.current()) return false;
+    if (signal.aborted || repositoryRef.current?.rootPath !== root) return false;
+    const target = doc.target;
+    if (target.type === "task") {
+      const current = tasksRef.current.find((task) => task.id === target.taskId);
+      const fresh = current && taskSearchDocuments([current]).find((entry) => entry.id === doc.id);
+      if (!current || !fresh || !searchDocuments([fresh], query).length) throw new Error("This result has changed or was deleted. Search again.");
+      setSettingsOpen(false); setZenMode(false); setTerminalOpen(false); setWorkspaceMode("tasks");
+      setCollapsedTaskIds((collapsed) => { const next = new Set(collapsed); let parent = current.parentId; const seen = new Set<string>(); while (parent && !seen.has(parent)) { seen.add(parent); next.delete(parent); parent = tasksRef.current.find((task) => task.id === parent)?.parentId ?? null; } return next; });
+      openBoardTask(current, "detail");
+    } else if (target.type === "memory") {
+      if (!memoryOpenRef.current || !await memoryOpenRef.current(target.path, query, signal)) return false;
+      if (signal.aborted || repositoryRef.current?.rootPath !== root) return false;
+      setSettingsOpen(false); setZenMode(false); setBoardDrawerOpen(false); setWorkspaceMode("memory");
+    } else {
+      const current = reviewRef.current;
+      if (current && target.context === workspaceSearchContext(current)) {
+        const fresh = workspaceSearchDocuments(current).find((entry) => entry.target.type === "workspace" && entry.target.messageId === target.messageId);
+        if (!fresh || !searchDocuments([fresh], query).length) throw new Error("This message has changed or was deleted. Search again.");
+        setSettingsOpen(false); setZenMode(false); setTerminalOpen(false); setBoardDrawerOpen(false); setWorkspaceMode("workspace");
+      } else {
+        if (!target.archiveId) throw new Error("This workspace chat is no longer available. Search again.");
+        const session = await invoke<ReviewSession>("read_spotlight_chat", { repositoryRoot: root, archiveId: target.archiveId });
+        if (signal.aborted || repositoryRef.current?.rootPath !== root) return false;
+        const fresh = workspaceSearchDocuments(session).find((entry) => entry.target.type === "workspace" && entry.target.messageId === target.messageId);
+        if (!fresh || !searchDocuments([fresh], query).length) throw new Error("This message has changed or was deleted. Search again.");
+        setSearchArchive({ session, messageId: target.messageId, query });
+      }
+    }
+    setSearchSource({ document: doc, query, request: Date.now() });
+    return true;
+  };
+
   openNotificationRef.current = (target) => {
     if (repositoryRef.current?.rootPath !== target.repositoryRoot) return;
     const window = getCurrentWindow();
@@ -4992,6 +5059,13 @@ function App() {
 
   const agentChatExpanded = !zenMode && workspaceMode === "workspace" && !!repository && !terminalOpen && comparison?.mode === "workingCopy" && !comparison.files.length;
   const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? null;
+  const searchChatMessage = useMemo(() => {
+    if (!searchSource) return undefined;
+    const target = searchSource.document.target;
+    const id = target.type === "task" && taskMode && target.taskId === selectedTaskId ? target.messageId
+      : target.type === "workspace" && !target.archiveId && !taskMode ? target.messageId : undefined;
+    return id ? { id, query: searchSource.query, request: searchSource.request } : undefined;
+  }, [searchSource, taskMode, selectedTaskId]);
   const taskVisualSessionOpen = !!selectedTask && taskMode && !settingsOpen && !zenMode && (!boardMode || inlineTaskMode || boardDrawerOpen);
   const activeApprovalReviewer = approvalReviewerOverrides[taskMode ? selectedTask?.id ?? "" : "review"] ?? approvalReviewerDefault;
   const selectedTaskHasPendingChanges = !!selectedTask && taskPendingChanges?.taskId === selectedTask.id && taskPendingChanges.location === selectedTask.location && taskPendingChanges.pending;
@@ -5462,6 +5536,7 @@ function App() {
           <button type="button" onClick={() => selectWorkspaceMode("memory")} aria-pressed={memoryMode} aria-keyshortcuts="Meta+3 Control+3" className="workspace-mode-button" title="Memory (⌘3 / Ctrl+3)"><FileText size={14} /> Memory</button>
         </div>}
         <div className="ios-nav-actions relative flex shrink-0 items-center justify-end gap-1">
+          {repository && taskStorageRoot === repository.rootPath && <SpotlightSearch key={repository.rootPath} repositoryRoot={repository.rootPath} repositoryName={repository.name} tasks={tasks} review={review} onOpening={() => { window.dispatchEvent(new Event("flush-task-fields")); }} onNavigate={openSearchDocument} />}
           <PomodoroTimer onSettings={openPomodoroSettings} />
           {!settingsOpen && <>
           <span aria-hidden className="ios-nav-divider" />
@@ -5836,7 +5911,7 @@ function App() {
             : `${sidebarWidths.left}px minmax(0, 1fr)`,
         }}
       >
-        {repository && <MemoryWorkspace key={repository.rootPath} repositoryRoot={repository.rootPath} flushRef={memoryFlushRef} visible={memoryMode} />}
+        {repository && <MemoryWorkspace key={repository.rootPath} repositoryRoot={repository.rootPath} flushRef={memoryFlushRef} openRef={memoryOpenRef} visible={memoryMode} />}
         {!zenMode && !tasksTabActive && !memoryMode && <aside className="ios-file-list relative z-10 mt-[-52px] flex h-[calc(100%+52px)] min-h-0 flex-col border-r border-[#294536] bg-[#0B110E]">
           <div
             data-tauri-drag-region
@@ -6255,7 +6330,7 @@ function App() {
             <div className="ml-auto flex min-w-0 items-center gap-1"><PomodoroTimer onSettings={openPomodoroSettings} />{taskMode && !boardMode && !zenMode && taskGitToolbar && <><span className="task-modal-toolbar-divider" aria-hidden="true" />{taskGitToolbar}</>}</div>
           </div>
           <div id="task-details-panel" role="tabpanel" aria-labelledby="task-details-tab" data-active={taskDetailsTab === "details"} className="task-tab-panel min-h-0 flex-1" style={{ display: taskDetailsTab === "details" ? undefined : "none" }}>
-          <TaskSurface board={boardMode} target={boardDetailHost}><TaskDetailsPanel key={repository.rootPath} branchPrefix={branchPrefix} onBranchNameChange={(newBranchName) => { if (selectedTask && taskStartEditable(selectedTask, taskStartingRef.current.has(selectedTask.id))) updateTaskAtRoot(repository.rootPath, selectedTask.id, (task) => ({ ...task, newBranchName })); }} onScheduleChange={(schedule) => { if (selectedTask) updateTaskAtRoot(repository.rootPath, selectedTask.id, (task) => ({ ...task, ...schedule })); }} customFields={customFields} onCustomFieldChange={(id, value) => { if (selectedTask) changeTaskCustomField(repository.rootPath, selectedTask.id, id, value); }} assetBusy={selectedTaskRootBusy} task={selectedTask} branches={branchRefs?.refs ?? []} remoteBranches={branchRefs?.remoteRefs ?? []} workspaceBranch={repository.currentBranch} startLocked={!taskStartEditable(selectedTask, !!(selectedTask && taskStartingIds.has(selectedTask.id)))} onTitleChange={(title) => { if (selectedTask) { updateTask(selectedTask.id, (task) => ({ ...task, title })); } }} onDescriptionChange={(description) => { if (selectedTask) updateTaskAtRoot(repository.rootPath, selectedTask.id, (task) => ({ ...task, description })); }} onStatusChange={(status) => { if (selectedTask) setTaskStatus(selectedTask.id, status); }} onColorChange={(color) => { if (selectedTask) updateTask(selectedTask.id, (task) => ({ ...task, color })); }} onLocationChange={(location) => { if (selectedTask && taskStartEditable(selectedTask, taskStartingRef.current.has(selectedTask.id))) updateTask(selectedTask.id, (task) => ({ ...task, ...taskLocationFields(location), worktree: null })); }} onStartChange={(worktreeStart) => { if (selectedTask && taskStartEditable(selectedTask, taskStartingRef.current.has(selectedTask.id))) updateTask(selectedTask.id, (task) => ({ ...task, worktreeStart })); }} onStartOpen={() => { void invoke<BranchRefs>("list_branch_refs").then(setBranchRefs).catch((reason) => setError(message(reason))); }} onAddAssets={(paths) => { if (selectedTask) void addTaskAssets(selectedTask.id, paths); }} onRemoveAsset={(assetId) => { if (selectedTask) void removeTaskAsset(selectedTask, assetId); }} onAddComment={(body) => { if (selectedTask) updateTask(selectedTask.id, (task) => ({ ...task, comments: [...task.comments, { id: crypto.randomUUID(), author: "user", body, createdAt: Date.now() }] })); }} onUpdateComment={(commentId, body) => { if (selectedTask) updateTask(selectedTask.id, (task) => ({ ...task, comments: task.comments.map((comment) => comment.id === commentId ? { ...comment, body } : comment) })); }} onDeleteComment={(commentId) => { if (selectedTask) updateTask(selectedTask.id, (task) => ({ ...task, comments: task.comments.filter((comment) => comment.id !== commentId) })); }} /></TaskSurface>
+          <TaskSurface board={boardMode} target={boardDetailHost}><TaskDetailsPanel commentDrafts={commentDrafts.current} key={repository.rootPath} branchPrefix={branchPrefix} onBranchNameChange={(newBranchName) => { if (selectedTask && taskStartEditable(selectedTask, taskStartingRef.current.has(selectedTask.id))) updateTaskAtRoot(repository.rootPath, selectedTask.id, (task) => ({ ...task, newBranchName })); }} onScheduleChange={(schedule) => { if (selectedTask) updateTaskAtRoot(repository.rootPath, selectedTask.id, (task) => ({ ...task, ...schedule })); }} customFields={customFields} onCustomFieldChange={(id, value) => { if (selectedTask) changeTaskCustomField(repository.rootPath, selectedTask.id, id, value); }} assetBusy={selectedTaskRootBusy} task={selectedTask} branches={branchRefs?.refs ?? []} remoteBranches={branchRefs?.remoteRefs ?? []} workspaceBranch={repository.currentBranch} startLocked={!taskStartEditable(selectedTask, !!(selectedTask && taskStartingIds.has(selectedTask.id)))} onTitleChange={(title) => { if (selectedTask) { updateTask(selectedTask.id, (task) => ({ ...task, title })); } }} onDescriptionChange={(description) => { if (selectedTask) updateTaskAtRoot(repository.rootPath, selectedTask.id, (task) => ({ ...task, description })); }} onStatusChange={(status) => { if (selectedTask) setTaskStatus(selectedTask.id, status); }} onColorChange={(color) => { if (selectedTask) updateTask(selectedTask.id, (task) => ({ ...task, color })); }} onLocationChange={(location) => { if (selectedTask && taskStartEditable(selectedTask, taskStartingRef.current.has(selectedTask.id))) updateTask(selectedTask.id, (task) => ({ ...task, ...taskLocationFields(location), worktree: null })); }} onStartChange={(worktreeStart) => { if (selectedTask && taskStartEditable(selectedTask, taskStartingRef.current.has(selectedTask.id))) updateTask(selectedTask.id, (task) => ({ ...task, worktreeStart })); }} onStartOpen={() => { void invoke<BranchRefs>("list_branch_refs").then(setBranchRefs).catch((reason) => setError(message(reason))); }} onAddAssets={(paths) => { if (selectedTask) void addTaskAssets(selectedTask.id, paths); }} onRemoveAsset={(assetId) => { if (selectedTask) void removeTaskAsset(selectedTask, assetId); }} onAddComment={(body) => { if (selectedTask) updateTask(selectedTask.id, (task) => ({ ...task, comments: [...task.comments, { id: crypto.randomUUID(), author: "user", body, createdAt: Date.now() }] })); }} onUpdateComment={(commentId, body) => { if (selectedTask) updateTask(selectedTask.id, (task) => ({ ...task, comments: task.comments.map((comment) => comment.id === commentId ? { ...comment, body } : comment) })); }} onDeleteComment={(commentId) => { if (selectedTask) updateTask(selectedTask.id, (task) => ({ ...task, comments: task.comments.filter((comment) => comment.id !== commentId) })); }} /></TaskSurface>
           </div>
           <div id="task-draw-panel" role="tabpanel" aria-labelledby="task-draw-tab" data-active={taskDetailsTab === "draw"} className="task-tab-panel min-h-0 flex-1" style={{ display: taskDetailsTab === "draw" ? undefined : "none" }}>
             <TaskSurface board={boardMode} target={boardDrawHost}>{selectedTask && taskVisualSessionOpen && <TaskDrawingPanel key={`${repository.rootPath}:${selectedTask.id}`} active={boardMode ? boardTab === "draw" : taskDetailsTab === "draw"} value={selectedTask.drawing} onChange={(drawing) => {
@@ -6301,6 +6376,7 @@ function App() {
               else discardFileEdit(() => { setZenMode(false); setWorkspaceMode("tasks"); openBoardTask(task, "detail"); });
             }}
             key={taskMode ? selectedTask?.id ?? "no-task" : "agent-chat"}
+            searchMessage={searchChatMessage}
             messages={taskMode ? selectedTask?.chatMessages ?? [] : review?.chatMessages ?? []}
             draft={taskMode && selectedTask ? taskDrafts[selectedTask.id] ?? "" : aiChatDraft}
             running={taskMode ? !!selectedTaskRun || !!(selectedTask && taskStartingIds.has(selectedTask.id)) : aiChatRunning}
@@ -6596,6 +6672,13 @@ function App() {
         </AlertDialog>
       )}
 
+      <Dialog open={!!searchArchive} onOpenChange={(open) => { if (!open) setSearchArchive(null); }}>
+        <DialogContent className="spotlight-archive w-[min(760px,94vw)] !max-w-none max-h-[85vh] overflow-y-auto">
+          <DialogTitle>Workspace chat</DialogTitle>
+          <DialogDescription>Saved conversation · {searchArchive?.session.mode === "branch" ? `${searchArchive.session.baseRef} → ${searchArchive.session.compareRef}` : `Working copy · ${searchArchive?.session.baseOid.slice(0, 7)}`} · Read only</DialogDescription>
+          {searchArchive?.session.chatMessages.map((entry) => <article key={entry.id} data-archive-message={entry.id} className="border-t border-[var(--ios-separator)] py-4"><p className="mb-2 text-xs text-[var(--ios-secondary-label)]">{entry.role === "user" ? "You" : "Agent"} · {new Date(entry.createdAt).toLocaleString()}</p><div className="whitespace-pre-wrap text-sm"><SearchHighlight text={entry.body} query={searchArchive.query} /></div></article>)}
+        </DialogContent>
+      </Dialog>
       {authOnboardingOpen && (
         <Dialog open onOpenChange={() => {}}>
           <DialogContent showCloseButton={false} className="ios-sheet max-h-[90vh] w-[min(560px,94vw)] !max-w-none overflow-y-auto rounded-xl border border-[#294536] bg-[#111A15] p-6 shadow-2xl shadow-black/60">

@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { ChevronDown, ChevronRight, Copy, Ellipsis, FilePlus2, FileText, Folder, FolderPlus, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { revealSearchSource, searchWords } from "../spotlight";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
 
 type Entry = { path: string; name: string; folder: boolean };
@@ -31,7 +32,7 @@ function MemoryRootTarget({ draggingPath, children }: { draggingPath: string | n
   return children({ ref, isDropTarget: isDropTarget && !!draggingPath && canMoveTo(draggingPath, "") });
 }
 
-export function MemoryWorkspace({ repositoryRoot, flushRef, visible }: { repositoryRoot: string; flushRef: RefObject<(() => Promise<boolean>) | null>; visible: boolean }) {
+export function MemoryWorkspace({ repositoryRoot, flushRef, openRef, visible }: { repositoryRoot: string; flushRef: RefObject<(() => Promise<boolean>) | null>; openRef: RefObject<((path: string, query: string, signal: AbortSignal) => Promise<boolean>) | null>; visible: boolean }) {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [file, setFile] = useState<MemoryFile | null>(null);
@@ -47,6 +48,12 @@ export function MemoryWorkspace({ repositoryRoot, flushRef, visible }: { reposit
   const savePromise = useRef<Promise<boolean> | null>(null);
   const saveRef = useRef<() => Promise<boolean>>(async () => true);
   const loadRequest = useRef(0);
+  const [searchReveal, setSearchReveal] = useState<{ path: string; query: string; request: number } | null>(null);
+  const editorPanel = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!searchReveal || !visible || file?.path !== searchReveal.path) return;
+    return revealSearchSource(() => editorPanel.current?.querySelector<HTMLElement>(".memory-description-content, textarea") ?? null, searchReveal.query);
+  }, [searchReveal, visible, file?.path]);
 
   const setCurrent = (next: MemoryFile | null) => { fileRef.current = next; setFile(next); };
   const setConflict = (next: boolean) => { conflictRef.current = next; setConflictState(next); };
@@ -54,16 +61,24 @@ export function MemoryWorkspace({ repositoryRoot, flushRef, visible }: { reposit
     try { setEntries(await invoke<Entry[]>("list_memory")); setError(""); }
     catch (reason) { setError(errorText(reason)); }
   };
-  const loadFile = useCallback(async (path: string) => {
+  const loadFile = useCallback(async (path: string, search?: { query: string; signal: AbortSignal }) => {
     const request = ++loadRequest.current;
     try {
       const loaded = await invoke<Omit<MemoryFile, "draft">>("read_memory", { path });
-      if (request !== loadRequest.current) return;
+      if (request !== loadRequest.current || search?.signal.aborted) return false;
+      if (search && (loaded.path !== path || !searchWords(search.query).every((word) => `${loaded.path}\n${loaded.content}`.toLowerCase().includes(word)))) {
+        throw new Error("This result has changed or was deleted. Search again.");
+      }
       setCurrent({ ...loaded, draft: loaded.content });
       setSelectedFolder("");
       setConflict(false);
       setError("");
-    } catch (reason) { if (request === loadRequest.current) setError(errorText(reason)); }
+      return true;
+    } catch (reason) {
+      if (request !== loadRequest.current || search?.signal.aborted) return false;
+      if (search) throw reason;
+      setError(errorText(reason)); return false;
+    }
   }, []);
   const save = async (): Promise<boolean> => {
     if (savePromise.current) {
@@ -142,11 +157,21 @@ export function MemoryWorkspace({ repositoryRoot, flushRef, visible }: { reposit
   }, [file]);
 
   const selectFile = async (path: string) => {
-    if (fileRef.current?.path === path) { setSelectedFolder(""); return; }
-    if (!await saveRef.current()) return;
+    if (fileRef.current?.path === path) { setSelectedFolder(""); return true; }
+    if (!await saveRef.current()) return false;
     setSelectedFolder("");
-    await loadFile(path);
+    return loadFile(path);
   };
+  useEffect(() => {
+    openRef.current = async (path, query, signal) => {
+      // Re-read even an already selected file to detect removed or changed results.
+      if (signal.aborted || !await saveRef.current() || signal.aborted || !await loadFile(path, { query, signal })) return false;
+      setExpanded((current) => { const next = new Set(current); let parent = parentOf(path); while (parent) { next.add(parent); parent = parentOf(parent); } return next; });
+      setSearchReveal({ path, query, request: Date.now() });
+      return true;
+    };
+    return () => { openRef.current = null; };
+  }, [openRef, loadFile]);
   const toggleFolder = async (path: string) => {
     if (!await saveRef.current()) return;
     loadRequest.current++;
@@ -253,7 +278,7 @@ export function MemoryWorkspace({ repositoryRoot, flushRef, visible }: { reposit
         <div className="min-h-0 flex-1 overflow-y-auto p-2">{renderChildren("", 0)}{entries.length === 0 && !creating && <p className="px-3 py-4 text-xs text-[#7C9B88]">Create a file or folder to start.</p>}</div>
       </DragDropProvider>
     </aside>
-    <section className="memory-editor-panel flex min-h-0 min-w-0 flex-col bg-[#0B110E]" style={{ display: visible ? undefined : "none" }} aria-label="Memory editor">
+    <section ref={editorPanel} className="memory-editor-panel flex min-h-0 min-w-0 flex-col bg-[#0B110E]" style={{ display: visible ? undefined : "none" }} aria-label="Memory editor">
       <header className="flex h-12 shrink-0 items-center justify-between border-b border-[#294536] px-5"><span className="truncate text-sm font-semibold text-[#E8FFF0]">{file?.path ?? "Memory"}</span>{file && <div className="ml-3 flex shrink-0 items-center gap-3"><span className="text-xs text-[#7C9B88]">{conflict ? "Conflict" : error ? "Save failed" : file.draft !== file.content ? "Unsaved" : "Saved"}</span><button type="button" className="quiet-button flex items-center gap-1.5 text-xs" aria-label="Copy memory Markdown" title="Copy Markdown" onClick={() => { void navigator.clipboard.writeText(fileRef.current?.draft ?? "").catch((reason) => setError(errorText(reason))); }}><Copy size={14} /> Copy</button></div>}</header>
       {error && <div role="alert" className="flex items-center justify-between gap-3 border-b border-[#482631] bg-[#25151b] px-5 py-2 text-sm text-[#FB7185]"><span>{error}</span>{file && !conflict && file.draft !== file.content && <button type="button" onClick={() => { setError(""); void saveRef.current(); }} className="quiet-button shrink-0">Retry</button>}</div>}
       {conflict && <div role="alert" className="flex items-center gap-3 border-b border-[#705d28] bg-[#292518] px-5 py-2 text-sm text-[#E8D888]"><span className="flex-1">An agent changed or moved this file. Your draft is preserved.</span><button type="button" className="quiet-button" onClick={() => { if (file) void navigator.clipboard.writeText(file.draft).catch((reason) => setError(errorText(reason))); }}>Copy draft</button><button type="button" className="quiet-button" onClick={() => { if (file) void ask("Discard your unsaved draft and load the agent's version?", { title: "Reload memory", kind: "warning", okLabel: "Reload", cancelLabel: "Keep draft" }).then((confirmed) => { if (confirmed) void loadFile(file.path); }); }}>Reload</button></div>}
