@@ -695,6 +695,23 @@ fn write_runtime_config(home: &Path, settings: &AgentProviderSettings) -> Result
     write_runtime_config_for_servers(home, settings, &read_mcp_servers(home)?)
 }
 
+const OPENROUTER_APP_URL: &str = "https://appbackstube.github.io/lotse/";
+const OPENROUTER_APP_TITLE: &str = "Lotse";
+
+fn is_openrouter(base_url: &str) -> bool {
+    reqwest::Url::parse(base_url).is_ok_and(|url| {
+        url.scheme() == "https" && url.host_str() == Some("openrouter.ai") && url.port_or_known_default() == Some(443)
+    })
+}
+
+fn with_openrouter_attribution(request: reqwest::blocking::RequestBuilder, base_url: &str) -> reqwest::blocking::RequestBuilder {
+    if is_openrouter(base_url) {
+        request.header("HTTP-Referer", OPENROUTER_APP_URL).header("X-Title", OPENROUTER_APP_TITLE)
+    } else {
+        request
+    }
+}
+
 fn write_runtime_config_for_servers(home: &Path, settings: &AgentProviderSettings, servers: &[McpServerSettings]) -> Result<(), String> {
     validate_provider_settings(settings)?;
     let mut config = String::from(
@@ -702,10 +719,15 @@ fn write_runtime_config_for_servers(home: &Path, settings: &AgentProviderSetting
     );
     for provider in &settings.providers {
         config.push_str(&format!(
-            "\n[model_providers.{}]\nname = {}\nbase_url = {}\nrequires_openai_auth = false\n\n[model_providers.{}.auth]\ncommand = \"/bin/sh\"\nargs = [\"-c\", {}]\n",
+            "\n[model_providers.{}]\nname = {}\nbase_url = {}\nrequires_openai_auth = false\n{}\n[model_providers.{}.auth]\ncommand = \"/bin/sh\"\nargs = [\"-c\", {}]\n",
             provider.id,
             toml_string(provider.name.trim()),
             toml_string(provider.base_url.trim_end_matches('/')),
+            if is_openrouter(&provider.base_url) {
+                format!("http_headers = {{ \"HTTP-Referer\" = {}, \"X-Title\" = {} }}\n", toml_string(OPENROUTER_APP_URL), toml_string(OPENROUTER_APP_TITLE))
+            } else {
+                String::new()
+            },
             provider.id,
             toml_string(&format!("printf %s \"${}\"", provider.env_key)),
         ));
@@ -789,7 +811,7 @@ fn provider_models(provider: &AgentProvider, secret: Option<String>) -> Result<V
         .timeout(Duration::from_secs(15))
         .build()
         .map_err(|e| format!("Cannot create model-list client: {e}"))?;
-    let mut request = client.get(format!("{base_url}/models"));
+    let mut request = with_openrouter_attribution(client.get(format!("{base_url}/models")), base_url);
     if let Some(key) = secret.filter(|key| !key.is_empty()) {
         request = request.bearer_auth(key);
     }
@@ -836,9 +858,9 @@ pub fn test_provider(app: &AppHandle, mut provider: AgentProvider) -> Result<Str
         .timeout(Duration::from_secs(60))
         .build()
         .map_err(|error| format!("Cannot create provider client: {error}"))?;
-    let mut request = client
+    let mut request = with_openrouter_attribution(client
         .post(format!("{base_url}/chat/completions"))
-        .json(&json!({"model": model, "messages": [{"role": "user", "content": "Say Hello World."}], "max_tokens": 128}));
+        .json(&json!({"model": model, "messages": [{"role": "user", "content": "Say Hello World."}], "max_tokens": 128})), base_url);
     if let Some(key) = secret.filter(|key| !key.is_empty()) {
         request = request.bearer_auth(key);
     }
@@ -887,7 +909,7 @@ fn custom_provider_completion(
         .timeout(Duration::from_secs(60))
         .build()
         .map_err(|e| format!("Cannot create provider client: {e}"))?;
-    let mut request = client
+    let mut request = with_openrouter_attribution(client
         .post(format!("{}/chat/completions", provider.base_url.trim_end_matches('/')))
         .json(&json!({
             "model": model,
@@ -896,7 +918,7 @@ fn custom_provider_completion(
                 {"role": "user", "content": content}
             ],
             "max_tokens": 512
-        }));
+        })), &provider.base_url);
     if let Some(secret) = provider_secret(app, provider)?
         .filter(|secret| !secret.is_empty())
     {
@@ -2682,20 +2704,39 @@ for line in sys.stdin:
         let config = fs::read_to_string(root.join("config.toml")).unwrap();
         assert!(!config.contains("model_provider ="));
         assert!(config.contains("[model_providers.openrouter.auth]"));
+        assert!(config.contains("http_headers = { \"HTTP-Referer\" = \"https://appbackstube.github.io/lotse/\", \"X-Title\" = \"Lotse\" }"));
         assert!(config.contains("$OPENROUTER_API_KEY"));
         assert!(!config.contains("sk-or-"));
         let mut openai = settings.clone();
         openai.active_provider = "openai-api".into();
         openai.providers[0].id = "openai-api".into();
+        openai.providers[0].base_url = "https://api.openai.com/v1".into();
         write_runtime_config(&root, &openai).unwrap();
         let config = fs::read_to_string(root.join("config.toml")).unwrap();
         assert!(config.contains("[model_providers.openai-api.auth]"));
         assert!(config.contains("requires_openai_auth = false"));
+        assert!(!config.contains("HTTP-Referer"));
+        assert!(!config.contains("X-Title"));
         fs::remove_dir_all(root).unwrap();
 
         let mut invalid = settings;
         invalid.providers[0].env_key = "BAD KEY".into();
         assert!(validate_provider_settings(&invalid).is_err());
+    }
+
+    #[test]
+    fn attributes_only_openrouter_requests() {
+        let client = reqwest::blocking::Client::new();
+        for base_url in ["https://openrouter.ai/api/v1", "https://openrouter.ai/api/v1/"] {
+            let request = with_openrouter_attribution(client.get(base_url), base_url).build().unwrap();
+            assert_eq!(request.headers()["HTTP-Referer"], OPENROUTER_APP_URL);
+            assert_eq!(request.headers()["X-Title"], OPENROUTER_APP_TITLE);
+        }
+        for base_url in ["https://api.openai.com/v1", "https://openrouter.ai.example.com/api/v1", "http://openrouter.ai/api/v1", "https://openrouter.ai:8443/api/v1"] {
+            let request = with_openrouter_attribution(client.get(base_url), base_url).build().unwrap();
+            assert!(!request.headers().contains_key("HTTP-Referer"));
+            assert!(!request.headers().contains_key("X-Title"));
+        }
     }
 
     #[test]
