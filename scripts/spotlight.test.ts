@@ -15,6 +15,16 @@ assert.equal(searchDocuments(docs, "not present").length, 0);
 assert.ok(docs[0].breadcrumb.includes("Done"));
 const extra = [{ ...docs[0], id: "body", title: "Other", body: "Keyboard search" }, { ...docs[0], id: "prefix", title: "Keyboard search navigation" }];
 assert.deepEqual(searchDocuments([...extra, docs[0]], "Keyboard search").map(doc => doc.id), ["task:task", "prefix", "body"]);
+const repeatedComments = taskSearchDocuments([{ ...task, title: "Check release", description: "", comments: [
+  { id: "unrelated", author: "agent", body: "Tests passed." },
+  { id: "partial", author: "agent", body: "Follow-up after release." },
+  { id: "matching", author: "agent", body: "Check release notes." },
+] } as RepositoryTask]);
+assert.deepEqual(searchDocuments(repeatedComments, "check release").map(doc => doc.id), ["task:task", "comment:task:matching"]);
+assert.equal(searchDocuments(repeatedComments, "check release").some(doc => doc.id === "comment:task:unrelated"), false);
+assert.equal(searchDocuments(repeatedComments, "release follow-up")[0].id, "comment:task:partial");
+assert.equal(searchDocuments(repeatedComments, "release notes")[0].id, "comment:task:matching");
+assert.equal(searchDocuments([{ ...docs[0], id: "task-body", title: "Other", body: "Keyboard search" }, { ...docs[2], id: "chat-title", title: "Keyboard search" }], "keyboard search")[0].id, "task-body");
 assert.deepEqual(searchDocuments(docs, "search"), searchDocuments([...docs].reverse(), "search"));
 assert.equal(searchDocuments(taskSearchDocuments([{ ...task, description: "Changed" }]), "café").length, 0);
 assert.equal(searchDocuments(taskSearchDocuments([]), "keyboard").length, 0);

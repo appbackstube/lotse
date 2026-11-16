@@ -54,6 +54,17 @@ export async function checkSpotlight(taskId: string, taskTitle: string, otherTas
   check(getComputedStyle(get('.spotlight-popup')).animationName === (matchMedia('(prefers-reduced-motion: reduce)').matches ? 'none' : 'spotlight-appear'), "Opening must use the approved motion setting");
   await query("monthly REPORT");
   check(result(taskTitle, "Task"), "Case-insensitive multiword search must find task titles");
+  check(get('.spotlight-result small').textContent === "Task", "Task results must rank first");
+  await click(get('.spotlight-filters button:nth-child(3)'));
+  check(get('.spotlight-filters button:nth-child(3)').getAttribute('aria-pressed') === 'true', "The active filter must be announced");
+  check(!document.querySelector('.spotlight-result'), "A task title alone must not turn its comments into matches");
+  await query("Keep the comment visible");
+  check(result(taskTitle, "Comment") && [...document.querySelectorAll('.spotlight-result small')].every(el => el.textContent === "Comment"), "The comment filter must retain matching comments and exclude other result types");
+  await query("monthly REPORT");
+  await click(get('.spotlight-filters button:nth-child(5)'));
+  check(get('.spotlight-empty p').textContent?.includes('filter'), "An empty filter must suggest changing it");
+  await click(get('.spotlight-filters button:first-child'));
+  check(document.activeElement === input(), "Changing filters must return focus to search");
   await key(input(), "ArrowDown");
   check(input().getAttribute("aria-activedescendant") === "spotlight-result-1", "Arrow keys must move the active selection");
   await key(input(), "Escape");

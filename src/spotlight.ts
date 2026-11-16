@@ -30,12 +30,17 @@ export function searchDocuments(documents: SearchDocument[], query: string): Sea
   const normalized = query.trim().toLowerCase();
   const rank = (doc: SearchDocument) => {
     const title = doc.title.toLowerCase();
-    return title === normalized ? 0 : title.startsWith(normalized) ? 1 : words.every((word) => title.includes(word)) ? 2 : 3;
+    const body = doc.body.toLowerCase();
+    if (doc.kind === "Comment") return body.includes(normalized) ? 0 : words.every((word) => body.includes(word)) ? 1 : 2;
+    return title === normalized ? 0 : title.startsWith(normalized) ? 1 : words.every((word) => title.includes(word)) ? 2 : body.includes(normalized) ? 3 : 4;
   };
   return documents.filter((doc) => {
-    const text = `${doc.title}\n${doc.body}`.toLowerCase();
-    return words.every((word) => text.includes(word));
-  }).sort((a, b) => rank(a) - rank(b) || a.id.localeCompare(b.id));
+    const title = doc.title.toLowerCase();
+    const body = doc.body.toLowerCase();
+    if (!words.every((word) => title.includes(word) || body.includes(word))) return false;
+    if (doc.kind !== "Comment") return true;
+    return words.every((word) => title.includes(word)) ? words.every((word) => body.includes(word)) : words.some((word) => body.includes(word));
+  }).sort((a, b) => Number(b.kind === "Task") - Number(a.kind === "Task") || rank(a) - rank(b) || a.id.localeCompare(b.id));
 }
 
 export function searchSnippet(body: string, query: string): string {
