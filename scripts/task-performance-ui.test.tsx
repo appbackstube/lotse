@@ -99,7 +99,7 @@ mockIPC(async (command, args: any) => {
   if (command === "compare_working_copy") return comparison;
   if (command === "load_review" || command === "github_connection") return null;
   if (command === "scheduler_list") { scheduleReads++; return []; }
-  if (spotlightOnly && command === "search_repository_content") { if (args.repositoryRoot !== currentRepository.rootPath) throw new Error("Wrong search repository"); return currentRepository.rootPath === repo.rootPath ? spotlightFixture.search(args.query) : { documents: [], errors: [] }; }
+  if (spotlightOnly && command === "search_repository_content") { if (args.repositoryRoot !== currentRepository.rootPath) throw new Error("Wrong search repository"); return currentRepository.rootPath === repo.rootPath ? spotlightFixture.search(args.query, args.documents, args.currentContext) : { documents: [], errors: [] }; }
   if (spotlightOnly && command === "read_spotlight_chat") { await new Promise((resolve) => setTimeout(resolve, spotlightFixture.archiveReadDelay)); return { repoPath: repo.rootPath, baseOid: comparison.baseOid, mode: "workingCopy", baseRef: null, compareRef: null, approvedFiles: [], approvedFileSnapshots: {}, approvedSnapshotId: null, comments: [], agentThreadId: null, chatMessages: [{ ...task.chatMessages[0], id: "archived-message", body: "Archived discussion: we agreed on repository navigation." }] }; }
   if (spotlightOnly && command === "read_memory") { await new Promise((resolve) => setTimeout(resolve, spotlightFixture.memoryReadDelay)); return { path: args.path, content: spotlightFixture.memory, revision: "revision" }; }
   if (command === "list_memory") return spotlightOnly ? [{ path: "navigation.md", name: "navigation.md", folder: false }] : [];

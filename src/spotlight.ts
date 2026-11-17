@@ -4,7 +4,7 @@ export type SearchTarget =
   | { type: "task"; taskId: string; commentId?: string; messageId?: string }
   | { type: "memory"; path: string }
   | { type: "workspace"; messageId: string; context: string; archiveId?: string };
-export type SearchDocument = { id: string; kind: "Task" | "Comment" | "Chat" | "Memory"; title: string; body: string; breadcrumb: string; target: SearchTarget };
+export type SearchDocument = { id: string; kind: "Task" | "Comment" | "Chat" | "Memory"; title: string; body: string; breadcrumb: string; target: SearchTarget; searchContext?: string; titleMatched?: boolean; titleMatches?: string[]; bodyMatches?: string[] };
 export type SearchResponse = { documents: SearchDocument[]; errors: string[] };
 export const searchWords = (query: string) => [...new Set(query.toLowerCase().trim().split(/\s+/).filter(Boolean))];
 export const workspaceSearchContext = (review: ReviewSession) => JSON.stringify([review.mode, review.baseRef, review.compareRef, review.mode === "workingCopy" ? review.baseOid : null]);
@@ -14,7 +14,7 @@ export function taskSearchDocuments(tasks: RepositoryTask[]): SearchDocument[] {
   return tasks.flatMap((task) => [
     { id: `task:${task.id}`, kind: "Task" as const, title: task.title, body: task.description, breadcrumb: `Tasks / ${task.completed ? "Done / " : ""}${task.title}`, target: { type: "task" as const, taskId: task.id } },
     ...task.comments.map((comment) => ({ id: `comment:${task.id}:${comment.id}`, kind: "Comment" as const, title: task.title, body: comment.body, breadcrumb: `${task.title} / Comments / ${comment.author === "user" ? "You" : "Agent"}`, target: { type: "task" as const, taskId: task.id, commentId: comment.id } })),
-    ...task.chatMessages.map((message) => ({ id: `chat:${task.id}:${message.id}`, kind: "Chat" as const, title: messageTitle(message), body: message.body, breadcrumb: `${task.title} / Chat / ${message.role === "user" ? "You" : "Agent"}`, target: { type: "task" as const, taskId: task.id, messageId: message.id } })),
+    ...task.chatMessages.map((message) => ({ id: `chat:${task.id}:${message.id}`, kind: "Chat" as const, title: messageTitle(message), body: message.body, searchContext: task.title, breadcrumb: `${task.title} / Chat / ${message.role === "user" ? "You" : "Agent"}`, target: { type: "task" as const, taskId: task.id, messageId: message.id } })),
   ]);
 }
 
@@ -22,20 +22,6 @@ export function workspaceSearchDocuments(review: ReviewSession | null): SearchDo
   if (!review) return [];
   const context = workspaceSearchContext(review);
   return review.chatMessages.map((message) => ({ id: `workspace:current:${message.id}`, kind: "Chat", title: messageTitle(message), body: message.body, breadcrumb: `Workspace / Chat / ${message.role === "user" ? "You" : "Agent"}`, target: { type: "workspace", messageId: message.id, context } }));
-}
-
-export function searchDocuments(documents: SearchDocument[], query: string): SearchDocument[] {
-  const words = searchWords(query);
-  if (!words.length) return [];
-  const normalized = query.trim().toLowerCase();
-  const rank = (doc: SearchDocument) => {
-    const title = doc.title.toLowerCase();
-    return title === normalized ? 0 : title.startsWith(normalized) ? 1 : words.every((word) => title.includes(word)) ? 2 : 3;
-  };
-  return documents.filter((doc) => {
-    const text = `${doc.title}\n${doc.body}`.toLowerCase();
-    return words.every((word) => text.includes(word));
-  }).sort((a, b) => rank(a) - rank(b) || a.id.localeCompare(b.id));
 }
 
 export function searchSnippet(body: string, query: string): string {
@@ -78,6 +64,14 @@ export function revealSearchSource(find: () => HTMLElement | null, query: string
     if (highlights && HighlightClass) highlights.set("spotlight-source", new HighlightClass(...ranges));
     const first = ranges[0]?.startContainer.parentElement ?? source;
     first.scrollIntoView({ block: "center", behavior: "instant" });
+    if (ranges[0]) {
+      for (let parent = first.parentElement; parent; parent = parent.parentElement) {
+        if (parent.scrollHeight <= parent.clientHeight || !/(auto|scroll|overlay)/.test(getComputedStyle(parent).overflowY)) continue;
+        const match = ranges[0].getBoundingClientRect();
+        const bounds = parent.getBoundingClientRect();
+        parent.scrollBy({ top: match.top + match.height / 2 - bounds.top - parent.clientHeight / 2, behavior: "instant" });
+      }
+    }
     return true;
   };
   const observer = new MutationObserver(() => { cancelAnimationFrame(frame); frame = requestAnimationFrame(() => { if (reveal()) observer.disconnect(); }); });

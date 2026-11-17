@@ -3,7 +3,7 @@ import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { FileText, ListTodo, MessageCircle, Search, X, CircleX } from "lucide-react";
 import { Dialog, DialogClose, DialogTitle } from "./ui/dialog";
-import { searchDocuments, searchSnippet, searchWords, taskSearchDocuments, workspaceSearchContext, workspaceSearchDocuments, type SearchDocument, type SearchResponse } from "../spotlight";
+import { searchSnippet, searchWords, taskSearchDocuments, workspaceSearchContext, workspaceSearchDocuments, type SearchDocument, type SearchResponse } from "../spotlight";
 import type { RepositoryTask, ReviewSession } from "../types";
 
 export function SearchHighlight({ text, query }: { text: string; query: string }) {
@@ -20,6 +20,7 @@ export function SpotlightSearch({ repositoryRoot, repositoryName, tasks, review,
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<"All" | SearchDocument["kind"]>("All");
   const [response, setResponse] = useState<SearchResponse>({ documents: [], errors: [] });
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState(0);
@@ -34,9 +35,11 @@ export function SpotlightSearch({ repositoryRoot, repositoryName, tasks, review,
   const onOpeningRef = useRef(onOpening);
   onOpeningRef.current = onOpening;
   const hasQuery = searchWords(query).length > 0;
+  const liveDocuments = useMemo(() => [...taskSearchDocuments(tasks), ...workspaceSearchDocuments(review)], [tasks, review]);
+  const currentContext = review ? workspaceSearchContext(review) : null;
   const changeOpen = (value: boolean) => {
     navigation.current?.abort(); navigation.current = null; setOpening(false);
-    if (value) { previousFocus.current = document.activeElement as HTMLElement | null; onOpeningRef.current(); setQuery(""); setNavigationError(""); setResponse({ documents: [], errors: [] }); }
+    if (value) { previousFocus.current = document.activeElement as HTMLElement | null; onOpeningRef.current(); setQuery(""); setFilter("All"); setNavigationError(""); setResponse({ documents: [], errors: [] }); }
     setOpen(value);
   };
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; navigation.current?.abort(); }; }, []);
@@ -47,7 +50,7 @@ export function SpotlightSearch({ repositoryRoot, repositoryName, tasks, review,
       if (open) { input.current?.focus(); return; }
       navigation.current?.abort(); navigation.current = null; setOpening(false);
       previousFocus.current = document.activeElement as HTMLElement | null;
-      onOpeningRef.current(); setQuery(""); setNavigationError(""); setOpen(true);
+      onOpeningRef.current(); setQuery(""); setFilter("All"); setNavigationError(""); setOpen(true);
     };
     window.addEventListener("keydown", shortcut, true);
     return () => window.removeEventListener("keydown", shortcut, true);
@@ -59,19 +62,16 @@ export function SpotlightSearch({ repositoryRoot, repositoryName, tasks, review,
     if (!open || !hasQuery) { setLoading(false); return; }
     setLoading(true);
     const timer = setTimeout(() => {
-      void invoke<SearchResponse>("search_repository_content", { repositoryRoot, query }).then((next) => {
+      void invoke<SearchResponse>("search_repository_content", { repositoryRoot, query, documents: liveDocuments, currentContext }).then((next) => {
         if (!cancelled && mounted.current) setResponse(next);
       }).catch(() => {
-        if (!cancelled && mounted.current) setResponse({ documents: [], errors: ["Memory and saved workspace chats could not be searched. Results are incomplete."] });
+        if (!cancelled && mounted.current) setResponse({ documents: [], errors: ["Search could not be completed."] });
       }).finally(() => { if (!cancelled && mounted.current) setLoading(false); });
     }, 150);
     return () => { clearTimeout(timer); cancelled = true; };
-  }, [open, query, hasQuery, repositoryRoot, revision]);
-  const documents = useMemo(() => {
-    if (!open || !hasQuery) return [];
-    const context = review ? workspaceSearchContext(review) : null;
-    return searchDocuments([...taskSearchDocuments(tasks), ...workspaceSearchDocuments(review), ...response.documents.filter((doc) => doc.target.type !== "workspace" || doc.target.context !== context)], query);
-  }, [tasks, review, response, query, open, hasQuery]);
+  }, [open, query, hasQuery, repositoryRoot, revision, liveDocuments, currentContext]);
+  const results = useMemo(() => open && hasQuery ? response.documents : [], [open, hasQuery, response.documents]);
+  const documents = useMemo(() => filter === "All" ? results : results.filter((document) => document.kind === filter), [results, filter]);
   const index = Math.min(selected, Math.max(0, documents.length - 1));
   useEffect(() => { list.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" }); }, [index, documents]);
   const navigate = async (document: SearchDocument) => {
@@ -81,7 +81,8 @@ export function SpotlightSearch({ repositoryRoot, repositoryName, tasks, review,
     const active = () => mounted.current && !controller.signal.aborted && navigation.current === controller;
     setOpening(true); setNavigationError("");
     try {
-      const opened = await onNavigate(document, query, controller.signal);
+      const matches = document.titleMatched ? document.titleMatches : document.bodyMatches?.length ? document.bodyMatches : document.titleMatches;
+      const opened = await onNavigate(document, matches?.join(" ") || query, controller.signal);
       if (!active()) return;
       if (opened) changeOpen(false);
       else { setNavigationError("This result could not be opened. Your drafts are preserved. Search again or retry."); setRevision((value) => value + 1); }
@@ -99,14 +100,19 @@ export function SpotlightSearch({ repositoryRoot, repositoryName, tasks, review,
           if ((event.key === "ArrowDown" || event.key === "ArrowUp") && documents.length) { event.preventDefault(); setSelected((index + (event.key === "ArrowDown" ? 1 : -1) + documents.length) % documents.length); }
           if (event.key === "Enter" && documents[index]) { event.preventDefault(); void navigate(documents[index]); }
         }} />{query && <button type="button" className="spotlight-icon-button" aria-label="Clear search" onClick={() => { setQuery(""); input.current?.focus(); }}><CircleX size={16} /></button>}<DialogClose className="spotlight-icon-button" aria-label="Close search"><X size={17} /></DialogClose></div>
+        <div className="spotlight-filters" role="group" aria-label="Filter search results">
+          {([ ["All", "All"], ["Task", "Tasks"], ["Comment", "Comments"], ["Chat", "Chats"], ["Memory", "Memory"] ] as const).map(([value, label]) => <button key={value} type="button" aria-pressed={filter === value} onClick={() => { setFilter(value); setSelected(0); input.current?.focus(); }}>{label}</button>)}
+        </div>
         {(response.errors.length > 0 || navigationError) && <div className="spotlight-error" role="alert">{navigationError || `Results are incomplete. ${response.errors.join(" ")}`} <button type="button" onClick={() => setRevision((value) => value + 1)}>Retry</button></div>}
         <div ref={list} id="spotlight-results" role="listbox" aria-label="Search results" aria-busy={loading} className="spotlight-results">
           {documents.map((document, resultIndex) => {
             const Icon = document.kind === "Task" ? ListTodo : document.kind === "Memory" ? FileText : MessageCircle;
-            return <div key={document.id} id={`spotlight-result-${resultIndex}`} role="option" aria-selected={resultIndex === index} aria-disabled={opening} className="spotlight-result" onMouseDown={(event) => event.preventDefault()} onClick={() => { void navigate(document); }}><span className="spotlight-result-icon"><Icon size={19} /></span><div className="spotlight-result-body"><div className="spotlight-result-heading"><span><SearchHighlight text={document.title} query={query} /></span><small>{document.kind}</small></div><div className="spotlight-breadcrumb">{document.breadcrumb}</div><div className="spotlight-snippet"><SearchHighlight text={searchSnippet(document.body, query)} query={query} /></div></div><span className="spotlight-enter" aria-hidden="true">↵</span></div>;
+            const titleQuery = document.titleMatches?.join(" ") || query;
+            const bodyQuery = document.bodyMatches?.join(" ") || query;
+            return <div key={document.id} id={`spotlight-result-${resultIndex}`} role="option" aria-selected={resultIndex === index} aria-disabled={opening} className="spotlight-result" onMouseDown={(event) => event.preventDefault()} onClick={() => { void navigate(document); }}><span className="spotlight-result-icon"><Icon size={19} /></span><div className="spotlight-result-body"><div className="spotlight-result-heading"><span><SearchHighlight text={document.title} query={titleQuery} /></span><small>{document.kind}</small></div><div className="spotlight-breadcrumb">{document.breadcrumb}</div><div className="spotlight-snippet"><SearchHighlight text={searchSnippet(document.body, bodyQuery)} query={bodyQuery} /></div></div><span className="spotlight-enter" aria-hidden="true">↵</span></div>;
           })}
         </div>
-        {!documents.length && <div className="spotlight-empty"><Search size={25} aria-hidden="true" /><h2>{!hasQuery ? "Find your place." : loading ? "Searching…" : "No results found"}</h2><p>{!hasQuery ? "Search tasks, conversations and memory." : loading ? "Searching this repository." : "Try another word or a shorter phrase."}</p></div>}
+        {!documents.length && <div className="spotlight-empty"><Search size={25} aria-hidden="true" /><h2>{!hasQuery ? "Find your place." : loading ? "Searching…" : "No results found"}</h2><p>{!hasQuery ? "Search tasks, conversations and memory." : loading ? "Searching this repository." : filter !== "All" && results.length ? "Try another filter or search term." : "Try another word or a shorter phrase."}</p></div>}
         <footer className="spotlight-footer"><span role="status" aria-live="polite">{opening ? "Opening…" : !hasQuery ? "Start typing to search" : `${documents.length} result${documents.length === 1 ? "" : "s"}${loading ? " · Searching…" : ""}`}</span><span><kbd>↑</kbd><kbd>↓</kbd> select</span><span><kbd>↵</kbd> open</span><span><kbd>esc</kbd> close</span></footer>
       </DialogPrimitive.Popup>
     </DialogPrimitive.Portal>

@@ -14,6 +14,10 @@
 .spotlight-icon-button { display: grid; place-items: center; flex-shrink: 0; width: 28px; height: 28px; border-radius: 7px; color: var(--ios-secondary-label); }
 .spotlight-icon-button:hover { background: var(--ios-fill); }
 .spotlight-popup button:focus-visible { outline: 2px solid var(--ios-tint); outline-offset: 2px; }
+.spotlight-filters { display: flex; gap: 4px; padding: 9px 14px 2px; overflow-x: auto; flex-shrink: 0; }
+.spotlight-filters button { flex-shrink: 0; padding: 5px 9px; border-radius: 6px; color: var(--ios-secondary-label); font-size: 11px; }
+.spotlight-filters button:hover { background: var(--ios-fill); }
+.spotlight-filters button[aria-pressed="true"] { background: var(--ios-fill-strong); color: var(--ios-label); font-weight: 600; }
 .spotlight-results { overflow-y: auto; overscroll-behavior: contain; padding: 7px; min-height: 0; max-height: 390px; }
 .spotlight-results:empty { display: none; }
 .spotlight-result { display: flex; align-items: flex-start; gap: 12px; padding: 12px; border-radius: 9px; cursor: pointer; }
