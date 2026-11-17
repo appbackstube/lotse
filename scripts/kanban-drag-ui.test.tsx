@@ -4,19 +4,20 @@ import { createRoot } from "react-dom/client";
 import { mockConvertFileSrc, mockWindows } from "@tauri-apps/api/mocks";
 import { mockIPC } from "./mockTauri";
 import { initializeFileStore } from "../src/fileStore";
-import { taskStorageKey, normalizeTask, taskBoardStatus } from "../src/tasks";
+import { customFieldsStorageKey, taskStorageKey, normalizeTask, taskBoardStatus } from "../src/tasks";
 import App from "../src/App";
 let fixtureRoot: ReturnType<typeof createRoot> | undefined;
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const repo = { rootPath: "/synthetic-kanban", name: "Kanban drag", currentBranch: "main", hasOrigin: false };
 const comparison = { mode: "workingCopy", baseRef: null, compareRef: null, baseOid: "a".repeat(40), baseCommitOid: "a".repeat(40), compareCommitOid: "a".repeat(40), snapshotId: "snapshot", files: [] };
-const tasks = Array.from({ length: 200 }, (_, index) => normalizeTask({ id: `task-${index}`, title: `Card ${index}`, manualStatus: ["inbox", null, "inProgress", "inReview"][index % 4], chatMode: "plan", chatModel: "custom-plan", chatEffort: "high" })!);
+const tasks = Array.from({ length: 200 }, (_, index) => normalizeTask({ id: `task-${index}`, title: `Card ${index}`, manualStatus: ["inbox", null, "inProgress", "inReview"][index % 4], chatMode: "plan", chatModel: "custom-plan", chatEffort: "high", customFields: index === 0 ? { priority: "High" } : {} })!);
 const taskKey = taskStorageKey(repo.rootPath);
 const storage: Record<string, string> = {
   "chaoticreview.auth-onboarding-v1": "complete",
   "chaoticreview.chat-defaults": JSON.stringify({ default: { model: "default-model", effort: "low" }, plan: { model: "plan-model", effort: "high" } }),
   [taskKey]: JSON.stringify(tasks),
+  [customFieldsStorageKey]: JSON.stringify([{ id: "priority", name: "Priority", type: "text", showOnCards: true, options: [] }]),
   "chaoticreview.task-view": JSON.stringify({ [repo.rootPath]: "kanban" }),
 };
 let writes = 0;
@@ -75,6 +76,10 @@ try {
   const tasksButton = [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "Tasks")!;
   await act(async () => tasksButton.click()); await settle();
   check(document.querySelectorAll(".task-board-card").length === tasks.length, "Render all 200 cards");
+  check(!card().textContent?.includes("Inbox"), "Cards must not repeat the column status");
+  const priority = card().querySelector<HTMLElement>('[title="Priority: High"]');
+  check(priority?.textContent === "Priority: High" && !priority.classList.contains("border-l"), "The first custom field must remain visible without a leading separator");
+  check(!card("task-4").querySelector(".mt-2"), "Cards without metadata must not leave an empty metadata row");
   // Packaged Tauri policies can block the style element injected by dnd-kit.
   let feedbackStyles: CSSStyleSheet | null | undefined;
   try {
