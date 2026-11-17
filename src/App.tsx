@@ -5198,6 +5198,13 @@ function App() {
   }
   for (const approval of mcpApprovals) addAttention(approval.taskId, null, approval);
   attentionRequests.sort((a, b) => a.requestId - b.requestId);
+  const taskChatVisible = !!repository && !!selectedTask && taskMode && !settingsOpen && !memoryMode
+    && (zenMode || inlineTaskMode || boardDrawerOpen);
+  const visibleAttentionRequests = taskChatVisible ? attentionRequests.filter((request) => {
+    if (request.taskId !== selectedTask.id) return true;
+    if (request.kind === "question") return request.requestId !== selectedTaskRun?.input?.requestId;
+    return request.requestId !== inlineAgentApproval?.requestId;
+  }) : attentionRequests;
   const selectedTaskRootBusy = !!taskGitAction || !!selectedTaskRun || !!(selectedTask && taskStartingIds.has(selectedTask.id))
     || (selectedTask?.location === "workspace" && (aiChatRunning || tasks.some((task) => task.location === "workspace" && (!!taskRuns[task.id] || taskStartingIds.has(task.id)))));
   const taskGitToolbar = selectedTask && repository ? <TaskGitToolbar
@@ -6730,7 +6737,7 @@ function App() {
         </Dialog>
       )}
 
-      <AgentAttentionStack key={repository?.rootPath ?? "no-repository"} requests={attentionRequests} onOpen={({ taskId, kind, requestId }) => discardFileEdit(() => {
+      <AgentAttentionStack key={repository?.rootPath ?? "no-repository"} requests={visibleAttentionRequests} onOpen={({ taskId, kind, requestId }) => discardFileEdit(() => {
         setSettingsOpen(false); setZenMode(false); setTerminalOpen(false);
         if (kind === "approval") setMcpApprovals((current) => [...current.filter((approval) => approval.requestId === requestId), ...current.filter((approval) => approval.requestId !== requestId)]);
         if (taskId === null) { setWorkspaceMode("workspace"); setBoardDrawerOpen(false); }
