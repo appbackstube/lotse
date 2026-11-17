@@ -7,6 +7,7 @@ import { emit } from "@tauri-apps/api/event";
 import { fileStore, initializeFileStore } from "../src/fileStore";
 import { agentsStorageKey, defaultAgentStorageKey } from "../src/agents";
 import { normalizeTask, taskStorageKey } from "../src/tasks";
+import { loadTaskStatuses, taskStatusStorageKey } from "../src/taskStatuses";
 import App from "../src/App";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -79,6 +80,48 @@ try {
     await click(nav(name));
     check(active()?.dataset.settingsPage === id, `${name} page is not reachable`);
   }
+  await click(nav("Tasks"));
+  const statusNames = () => [...document.querySelectorAll<HTMLInputElement>('.task-status-settings-name')].map((input) => input.value);
+  check(statusNames().join(",") === "Inbox,Planning,In development,In review,Done", "Existing statuses must appear in board order");
+  check(!document.querySelector('.task-status-settings-card [aria-label^="Type"]'), "Status settings must not expose type controls");
+  await click([...active()!.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent?.trim() === "Add status"));
+  const statusName = control("Status name: New status") as HTMLInputElement;
+  await change(statusName, "Quality assurance");
+  await act(async () => statusName.blur()); await settle();
+  const dragHandle = control("Status name: Quality assurance")!.closest('.task-status-settings-row')!.querySelector<HTMLElement>('[draggable]')!;
+  const dropRow = control("Status name: Done")!.closest('.task-status-settings-row')!;
+  const dataTransfer = new DataTransfer();
+  await act(async () => dragHandle.dispatchEvent(new DragEvent("dragstart", { bubbles: true, dataTransfer }))); await settle();
+  await act(async () => dropRow.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer }))); await settle();
+  await act(async () => dropRow.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer }))); await settle();
+  check(statusNames()[4] === "Quality assurance", "Dragging must reorder custom statuses");
+  await click(control("Move Quality assurance up"));
+  check(statusNames()[3] === "Quality assurance", "Arrow controls must move custom statuses up");
+  await click(control("Move Quality assurance down"));
+  check(statusNames()[4] === "Quality assurance", "Arrow controls must reorder custom statuses");
+  await click(control("Default status"));
+  await click([...document.querySelectorAll<HTMLElement>('[role="option"]')].find((item) => item.textContent === "Quality assurance"));
+  await fileStore.flush();
+  const workflow = JSON.parse(storage[taskStatusStorageKey(repo.rootPath)]);
+  const qa = workflow.statuses.find((status: any) => status.label === "Quality assurance");
+  check(workflow.defaultStatus === qa.id && loadTaskStatuses("/another-repository").defaultStatus === "inbox", "Default and ordering must persist per repository");
+  await click(control("Close settings"));
+  await click([...document.querySelectorAll<HTMLElement>('button')].find((item) => item.textContent?.trim() === "Tasks"));
+  await click(control("New task"));
+  check(control("Status")?.textContent?.includes("Quality assurance"), "New tasks must use the configured default");
+  await change(document.querySelector<HTMLInputElement>('input[placeholder="Task title"]')!, "Custom workflow task");
+  await click(document.querySelector<HTMLElement>('[role="dialog"] button[type="submit"]'));
+  await fileStore.flush();
+  check(JSON.parse(storage[taskStorageKey(repo.rootPath)]).find((task: any) => task.title === "Custom workflow task")?.manualStatus === qa.id, "New tasks must keep their custom status");
+  await click(control("Settings")); await click(nav("Tasks"));
+  check(statusNames()[4] === "Quality assurance", "Reopening settings must preserve custom status order");
+  await click(control("Delete Quality assurance"));
+  await click([...document.querySelectorAll<HTMLElement>('[role="dialog"] button')].find((button) => button.textContent?.trim() === "Delete status"));
+  await fileStore.flush();
+  check(!statusNames().includes("Quality assurance"), "Deleted status must disappear");
+  check(JSON.parse(storage[taskStorageKey(repo.rootPath)]).find((task: any) => task.title === "Custom workflow task")?.manualStatus === "inbox", "Deleting a status must move its tasks to the chosen replacement");
+  check(loadTaskStatuses(repo.rootPath).defaultStatus === "inbox", "Deleting the default must replace it");
+  check((control("Delete Done") as HTMLButtonElement)?.disabled, "Completion status must remain available for completed tasks");
   await click(nav("Agent preferences"));
   await click(control("Default approval mode"));
   await click([...document.querySelectorAll<HTMLElement>('[role="option"]')].find((item) => item.textContent === "YOLO mode"));
@@ -151,7 +194,7 @@ try {
   check(control("Agent role")?.textContent === "None", "New reviews must fall back to None when the default agent is missing");
   await click(control("Settings"));
   if (new URLSearchParams(location.search).has("preview")) await click(nav("General"));
-  document.getElementById("result")!.textContent = "PASS: settings navigation, YOLO selection and saved defaults, composer overrides, default agent persistence, new task/review defaults, existing roles and deleted-agent fallback.";
+  document.getElementById("result")!.textContent = "PASS: custom status creation, rename, order, default, task creation and deletion with reassignment; settings navigation, YOLO defaults, agent defaults and persistence.";
 } catch (error) {
   document.getElementById("result")!.textContent = `FAIL: ${error instanceof Error ? error.stack : error}`;
 } finally {

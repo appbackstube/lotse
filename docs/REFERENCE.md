@@ -16,6 +16,12 @@ The shadcn 4.19.0 Tailwind helpers are preserved locally in `src/styles/shadcn.c
 
 Rebuild/restart the native app after this cleanup: several Tauri commands now accept a typed `input` payload, and both frontend and backend must be updated together. Saved chat/proposal formats remain compatible.
 
+## Task statuses
+
+Use **Settings → Tasks → Task statuses** to add or rename statuses, reorder them by dragging or using the arrow buttons, and choose the default for new tasks. Settings belong to the current repository. The same names and order appear in List, Kanban, Gantt and task status menus; changing the default does not move existing tasks.
+
+Deleting a status requires a replacement for its tasks. Pause its automation and wait for active runs before deleting it. The completion status can be renamed or reordered, but remains available for completed tasks. Keep at least one other status. Agents discover the configured status IDs with `get_task_start_context` or `get_tasks`; custom lanes support the same automation as built-in lanes.
+
 ## Task browser (macOS 11+)
 
 The **Browser** tab in task details and the task dialog opens public websites and localhost servers. Enter an address and press Enter; bare domains use HTTPS, and localhost addresses use HTTP. Back, Forward and Reload use the page's native WebKit history. Website cookies and logins are shared across Lotse tasks and persist between app launches; this does not use your Safari profile.

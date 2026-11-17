@@ -1,6 +1,6 @@
 import type { RepositoryTask, TaskCustomField } from "./types.ts";
 import { moveTask, reparentTask, taskBoardStatus, taskColors, taskSubtreeIds } from "./tasks.ts";
-import { laneStatuses } from "./laneAutomation.ts";
+import { defaultTaskStatuses, taskStatusFields, type TaskStatusSettings } from "./taskStatuses.ts";
 import { normalizeTaskDate } from "./taskSchedule.ts";
 import { switchChatAgent, type ChatAgent } from "./agents.ts";
 import type { Playbook } from "./playbooks.ts";
@@ -44,7 +44,7 @@ export function getTask(tasks: RepositoryTask[], id: unknown): RepositoryTask {
   if (!task) throw new Error("Task not found. Read tasks again.");
   return task;
 }
-export function taskMetadata(tasks: RepositoryTask[], original: RepositoryTask, args: Record<string, unknown>, fields: TaskCustomField[], agents: ChatAgent[] = []): RepositoryTask[] {
+export function taskMetadata(tasks: RepositoryTask[], original: RepositoryTask, args: Record<string, unknown>, fields: TaskCustomField[], agents: ChatAgent[] = [], statuses: TaskStatusSettings = defaultTaskStatuses): RepositoryTask[] {
   let task = { ...original, customFields: { ...original.customFields } };
   if ("agentId" in args) {
     const agentId = args.agentId === null ? null : requiredText(args.agentId, "Agent ID");
@@ -59,8 +59,8 @@ export function taskMetadata(tasks: RepositoryTask[], original: RepositoryTask, 
   if ("description" in args) { if (typeof args.description !== "string" || args.description.length > 20_000) throw new Error("Description must be at most 20,000 characters."); task.description = args.description; }
   if ("color" in args) { if (!taskColors.some((color) => color.value === args.color)) throw new Error("Invalid task color."); task.color = args.color as RepositoryTask["color"]; }
   if ("status" in args) {
-    if (!laneStatuses.includes(args.status as typeof laneStatuses[number])) throw new Error("Invalid task status.");
-    task = { ...task, completed: args.status === "done", manualStatus: args.status === "inbox" || args.status === "inProgress" || args.status === "inReview" ? args.status : null, planReady: false };
+    if (!statuses.statuses.some((status) => status.id === args.status)) throw new Error("Invalid task status. Read get_task_start_context for available statuses.");
+    task = { ...task, ...taskStatusFields(args.status as string), planReady: false };
   }
   for (const key of ["startDate", "deadline"] as const) if (key in args) {
     if (args[key] !== null && !normalizeTaskDate(args[key])) throw new Error("Dates must be valid YYYY-MM-DD values or null.");

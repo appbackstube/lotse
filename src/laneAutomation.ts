@@ -19,10 +19,10 @@ export function laneConfigError(config: LaneConfig): string | null {
   return null;
 }
 
-export function readLaneAutomations(raw: string | null, recover = false): LaneAutomations {
+export function readLaneAutomations(raw: string | null, recover = false, statuses: string[] = laneStatuses): LaneAutomations {
   const stored = JSON.parse(raw ?? "{}");
   if (!stored || typeof stored !== "object" || Array.isArray(stored)) throw new Error("Invalid lane automation storage.");
-  return Object.fromEntries(laneStatuses.map((status) => {
+  return Object.fromEntries([...new Set([...Object.keys(stored), ...statuses])].map((status) => {
     const lane = stored[status] ?? emptyLane();
     if (typeof lane.enabled !== "boolean" || typeof lane.prompt !== "string" || typeof lane.baseBranch !== "string" || laneConfigError(lane)
       || !lane.attempts || typeof lane.attempts !== "object" || Array.isArray(lane.attempts)) throw new Error("Invalid lane automation configuration.");
@@ -53,12 +53,12 @@ export function laneMessage(task: RepositoryTask, lane: LaneConfig, id: string):
 
 export function finishLaneAttempt(lanes: LaneAutomations, run: LaneRun, status: LaneAttempt["status"], error: string | null): LaneAutomations {
   const lane = lanes[run.lane];
-  if (lane.attempts[run.taskId]?.id !== run.id || lane.attempts[run.taskId]?.status !== "running") return lanes;
+  if (!lane || lane.attempts[run.taskId]?.id !== run.id || lane.attempts[run.taskId]?.status !== "running") return lanes;
   return { ...lanes, [run.lane]: { ...lane, attempts: { ...lane.attempts, [run.taskId]: { id: run.id, taskId: run.taskId, status, error } } } };
 }
 
 export function holdLaneTask(lanes: LaneAutomations, status: TaskBoardStatus, taskId: string, id: string): LaneAutomations {
   const lane = lanes[status];
-  if (!lane.enabled || lane.attempts[taskId]) return lanes;
+  if (!lane?.enabled || lane.attempts[taskId]) return lanes;
   return { ...lanes, [status]: { ...lane, attempts: { ...lane.attempts, [taskId]: { id, taskId, status: "held", error: "Created or moved by the task assistant. Start explicitly or approve a lane retry to run it." } } } };
 }

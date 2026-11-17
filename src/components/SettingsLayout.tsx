@@ -5,7 +5,7 @@ import { Button } from "./ui/button";
 
 const pages = [
   { id: "general", label: "General", group: "Personal", icon: Settings, keywords: "notifications diff review simulator" },
-  { id: "tasks", label: "Tasks", group: "Personal", icon: ListTodo, keywords: "kanban gantt list modal custom fields options" },
+  { id: "tasks", label: "Tasks", group: "Personal", icon: ListTodo, keywords: "kanban gantt list modal custom fields options statuses order default workflow" },
   { id: "pomodoro", label: "Pomodoro", group: "Personal", icon: Timer, keywords: "focus timer sessions breaks" },
   { id: "providers", label: "Model providers", group: "Agent", icon: SlidersHorizontal, keywords: "api keys openrouter global repository default credentials setup onboarding" },
   { id: "agent", label: "Agent preferences", group: "Agent", icon: Bot, keywords: "default agent role models favorites effort approval mode task location branch prefix commit user rules personalization" },
