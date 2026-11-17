@@ -31,7 +31,7 @@ Parallel agents create more work to keep track of. Lotse keeps that work visible
 | Context is scattered across chats, files, and browser tabs. | Keep the brief, conversation, attachments, drawing, browser, and preview with the task. |
 | An agent finishes and hands you a diff. | Compare changes against your chosen base branch and ask for revisions beside the code. |
 | An agent needs a decision or approval. | Find pending questions and approvals in the attention stack, even while viewing another task. |
-| You repeat the same instructions. | Reuse saved agent roles and playbooks, automate task lanes, or schedule prompts. |
+| You repeat the same instructions. | Reuse saved agent roles and playbooks, or schedule prompts. |
 
 ## Quick start
 
@@ -55,7 +55,7 @@ You need a Mac, a local Git repository, and an API key for OpenRouter or another
 
 Organize work in List, Kanban, or Gantt. Keep descriptions, attachments, dates, and conversations with each task. Save agent roles for recurring responsibilities and playbooks for reusable prompts. Ask a task agent or the Workspace chat to split work, start other task agents, and collect their results.
 
-Lane automation runs a prompt as tasks enter a lane, with a configurable worker limit. Scheduled prompts run once or at an interval while the repository is open.
+Scheduled prompts run once or at an interval while the repository is open.
 
 ### Review the result
 

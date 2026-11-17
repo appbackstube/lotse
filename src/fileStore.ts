@@ -84,9 +84,11 @@ async function flush() {
 export async function initializeFileStore(): Promise<void> {
   const legacy: Record<string, string> = {};
   try {
-    for (let index = 0; index < localStorage.length; index++) {
+    for (let index = localStorage.length - 1; index >= 0; index--) {
       const key = localStorage.key(index);
-      if (key?.startsWith("chaoticreview.")) {
+      if (key?.startsWith("chaoticreview.lane-automation:")) {
+        localStorage.removeItem(key);
+      } else if (key?.startsWith("chaoticreview.")) {
         const value = localStorage.getItem(key);
         if (value !== null) legacy[key] = value;
       }
@@ -95,6 +97,11 @@ export async function initializeFileStore(): Promise<void> {
 
   const saved = await invoke<Record<string, string>>("load_frontend_storage", { origin: location.origin, legacy });
   for (const [key, value] of Object.entries(saved)) { values.set(key, value); written.set(key, value); }
+  // Retire lane configuration for every repository without parsing obsolete values.
+  for (const key of fileStore.keys()) {
+    if (key.startsWith("chaoticreview.lane-automation:")) fileStore.removeItem(key);
+  }
+  await fileStore.flush();
   await listen<{ key: string; value: string | null; source: string }>("frontend-storage-changed", (event) => {
     const { key, value, source } = event.payload;
     if (source === getCurrentWindow().label) return;

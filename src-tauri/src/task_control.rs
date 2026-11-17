@@ -42,9 +42,6 @@ pub(super) fn tools() -> Vec<Value> {
         tool("start_task_run","Start or queue a prompt in another task using its existing agent. Only dispatch work within the human's requested scope. Do not send tasks messages solely to report back; read results with get_task or wait_task_runs. Use the existing task chat/model/effort; queue behind active work. startPoint explicitly sets an editable worktree start: current workspace snapshot, local branch, remote branch, or existing local or origin branch without resetting its work (set remote: true for origin). mode defaults to the task mode; use default for implementation and plan for planning.",json!({"taskId":id,"prompt":{"type":"string","minLength":1,"maxLength":20000},"startPoint":{"type":"object","additionalProperties":false,"required":["kind"],"properties":{"kind":{"type":"string","enum":["workspace","branch","remote","existing"]},"branch":{"type":"string"},"remote":{"type":"boolean"}}},"mode":{"type":"string","enum":["default","plan"]}}),&["taskId","prompt"]),
         tool("update_task_queue","Pause/resume a task's pending prompts or remove selected queued messages. Does not stop the active turn. Read the queue with get_task first.",json!({"taskId":id,"paused":{"type":"boolean"},"removeMessageIds":{"type":"array","maxItems":100,"items":id}}),&["taskId"]),
         tool("stop_task_run","Stop the current code-agent run of a task; partial work may remain.",json!({"taskId":id}),&["taskId"]),
-        tool("get_lanes","Read lane automation configuration, processing records and task IDs.",json!({}),&[]),
-        tool("update_lane","Configure, enable or pause a lane automation. Pause leaves active agents running. Use get_task or wait_task_runs to inspect affected tasks.",json!({"status":status,"enabled":{"type":"boolean"},"prompt":text,"baseBranch":{"type":"string"},"baseKind":{"type":"string","enum":["branch","remote"]},"workers":{"type":"integer","minimum":1}}),&["status"]),
-        tool("retry_lane_task","Release a held task or retry a failed/interrupted lane attempt within the human's requested scope.",json!({"status":status,"taskId":id}),&["status","taskId"]),
         tool("get_task_start_context","Read configured task defaults, custom-field definitions and available local/remote branch names; no repository code.",json!({}),&[]),
     ]
 }
@@ -233,7 +230,11 @@ mod tests {
         let tools = tools();
         let names: HashSet<_> = tools.iter().map(|tool| tool["name"].as_str().unwrap()).collect();
         assert_eq!(tools.len(), names.len());
-        for name in ["get_task", "add_task", "update_task", "update_task_comment", "start_task_run", "stop_task_run", "wait_task_runs", "run_task_playbook", "update_lane", "get_agents", "get_agent", "create_agent", "update_agent", "get_playbooks", "get_playbook", "create_playbook", "update_playbook"] { assert!(names.contains(name)); }
+        for name in ["get_lanes", "update_lane", "retry_lane_task"] {
+            assert!(!handles(name));
+            assert!(validate_arguments(name, &json!({})).is_err());
+        }
+        for name in ["get_task", "add_task", "update_task", "update_task_comment", "start_task_run", "stop_task_run", "wait_task_runs", "run_task_playbook", "get_agents", "get_agent", "create_agent", "update_agent", "get_playbooks", "get_playbook", "create_playbook", "update_playbook"] { assert!(names.contains(name)); }
         assert!(validate_arguments("start_task_run", &json!({"taskId":"b","prompt":"Build"})).is_ok());
         assert!(validate_arguments("start_task_run", &json!({"taskId":"b","prompt":"Build","shell":"no"})).is_err());
         assert!(validate_arguments("update_task_comment", &json!({"body":"missing target"})).is_err());
@@ -251,7 +252,6 @@ mod tests {
             ("create_task", json!({"title":"Custom status", "status":"custom-qa"})),
             ("get_tasks", json!({"status":"custom-qa"})),
             ("update_task", json!({"taskId":"b", "status":"custom-qa"})),
-            ("update_lane", json!({"status":"custom-qa", "enabled":false})),
         ] { assert!(validate_arguments(name, &args).is_ok()); }
         assert!(validate_arguments("create_playbook", &json!({"title":"Missing prompt"})).is_err());
         assert!(validate_arguments("update_agent", &json!({"title":"Missing ID"})).is_err());

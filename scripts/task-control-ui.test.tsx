@@ -7,7 +7,6 @@ import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { Window } from "@tauri-apps/api/window";
 import { fileStore, initializeFileStore } from "../src/fileStore";
 import { taskStorageKey, normalizeTask } from "../src/tasks";
-import { laneStorageKey } from "../src/laneAutomation";
 import { defaultTaskStatuses, taskStatusStorageKey } from "../src/taskStatuses";
 import { patchSavedSandbox } from "../src/taskSandbox";
 import App from "../src/App";
@@ -26,14 +25,17 @@ const failures: string[] = [];
 const cancelled: string[] = [];
 let selectedRepository = "/synthetic-other";
 
-let failClaimWrite = false;
-
-
 const acknowledgements: any[] = [];
 const pending = new Set<string>();
 let failWrite = false;
 let failLibraryWrite = false;
+const retiredLaneKey = `chaoticreview.lane-automation:${repo.rootPath}`;
+const brokenLaneKey = "chaoticreview.lane-automation:/inactive-repository";
+const legacyLaneKey = "chaoticreview.lane-automation:/legacy-repository";
 const storage: Record<string, string> = {
+  [retiredLaneKey]: JSON.stringify({ inbox: { enabled: true, prompt: "Must never run", baseBranch: "main", baseKind: "branch", workers: 2, attempts: {} } }),
+  [brokenLaneKey]: "{invalid json",
+  "chaoticreview.lane-automation-preferences": "preserve unrelated keys",
   "chaoticreview.auth-onboarding-v1": "complete",
   "chaoticreview.agents": JSON.stringify([savedAgent]),
   "chaoticreview.default-agent": savedAgent.id,
@@ -69,8 +71,7 @@ mockIPC(async (command, args: any) => {
   if (command === "set_frontend_storage") {
     if (failLibraryWrite && args.key === "chaoticreview.agents") throw new Error("Synthetic library write failure");
     if (failWrite && args.key === taskStorageKey(repo.rootPath)) throw new Error("Synthetic disk write failure");
-    if (failClaimWrite && args.key === laneStorageKey(repo.rootPath) && args.value?.includes('"status":"running"')) throw new Error("Synthetic disk write failure");
-    storage[args.key] = args.value; return;
+    if (args.value === null) delete storage[args.key]; else storage[args.key] = args.value; return;
   }
   if (command === "current_repository" || command === "refresh_repository") return repo;
   if (command === "list_branch_refs") return { refs: ["main", "feature/monthly-report"], remoteRefs: ["origin/main"], defaultBase: "main", pullCount: 0, pushCount: 0 };
@@ -121,8 +122,23 @@ const sendFromComposer = async (prompt: string) => {
 };
 const root = (fixtureRoot = createRoot(document.getElementById("root")!));
 try {
+  localStorage.setItem(legacyLaneKey, "{broken legacy data");
+  const tasksBeforeMigration = storage[taskStorageKey(repo.rootPath)];
   await initializeFileStore();
+  check(!Object.hasOwn(storage, retiredLaneKey) && !Object.hasOwn(storage, brokenLaneKey), "Upgrade must delete enabled and malformed lane data for all repositories");
+  check(localStorage.getItem(legacyLaneKey) === null && fileStore.getItem(legacyLaneKey) === null, "Legacy lane data must not be reimported");
+  check(storage[taskStorageKey(repo.rootPath)] === tasksBeforeMigration && storage["chaoticreview.lane-automation-preferences"] === "preserve unrelated keys", "Migration must preserve tasks and unrelated settings");
   await act(async () => root.render(<App />)); await settle();
+  await click(button("Tasks"));
+  for (const view of ["List", "Gantt", "Kanban"]) {
+    await click(button(view));
+    await click(button("Options for Inbox column"));
+    const items = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].filter(visible);
+    check(items.some((item) => item.textContent?.includes("Delete all cards")) && !items.some((item) => item.textContent?.includes("Automation")), `${view} must retain deletion without automation`);
+    await act(async () => document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    await settle();
+  }
+  check(sends.length === 0, "Opening repositories and switching views must not dispatch retired lane prompts");
   // Model a second window alongside the real App's main-window listeners.
   const otherWindow = new Window("other", { skip: true });
   for (const kind of ["drawing", "sandbox"] as const) {
@@ -226,6 +242,7 @@ try {
   const id = created.result.id;
   const changed = await request(null, "update_task", { taskId: id, title: "Updated from workspace", parentId: first.id, status: "inReview" });
   check(!changed.error && changed.result.parentId === first.id, "Cross-task metadata update failed");
+  check(sends.length === 1, "Task creation and status changes must not start an agent");
   const comment = await request(null, "add_task_comment", { taskId: second.id, body: "Workspace comment" });
   check(!comment.error, "Workspace comment failed");
   const update = await request(null, "update_task_comment", { taskId: second.id, commentId: comment.result.id, body: "Revised from workspace" });
@@ -326,10 +343,10 @@ try {
   check(!removed.error && !removed.result.queuedMessageIds.length, "Cannot remove a queued task prompt");
   const bad = await request(first.id, "update_task", { taskId: second.id, parentId: "unknown" });
   check(bad.error, "Invalid hierarchy accepted");
-  const lanes = await request(first.id, "get_lanes", {});
-  check(!lanes.error && lanes.result.length === 5, "Cannot inspect lanes");
-  const lane = await request(first.id, "update_lane", { status: "done", enabled: false, prompt: "Inspect completed work", baseBranch: "main", workers: 1 });
-  check(!lane.error, "Cannot configure lanes");
+  for (const name of ["get_lanes", "update_lane", "retry_lane_task"]) {
+    const removedTool = await request(null, name, {});
+    check(removedTool.error?.includes("Unknown task control tool"), `${name} must no longer be available`);
+  }
   const runningDelete = await request(null, "delete_task", { taskId: first.id });
   check(runningDelete.error?.includes("running"), "Running parent task was deletable");
   pending.add("delete-cancel");
@@ -374,16 +391,13 @@ try {
   check(startContext.result.defaultStatus === "custom-qa" && startContext.result.statuses.some((status: any) => status.id === "custom-qa"), "Agents must discover configured status IDs and the default");
   const customTask = await request(null, "create_task", { title: "Uses custom default" });
   check(!customTask.error && customTask.result.status === "custom-qa", "Agent-created tasks must use the custom default");
-  const configuredCustomLane = await request(null, "update_lane", { status: "custom-qa", enabled: false, prompt: "Inspect work", baseBranch: "main", workers: 1 });
-  check(!configuredCustomLane.error, "Custom lane configuration must initialize processing records");
-  const customLanes = await request(null, "get_lanes", {});
-  check(customLanes.result.find((lane: any) => lane.status === "custom-qa")?.prompt === "Inspect work", "Custom lane settings must persist");
   const customFilter = await request(null, "get_tasks", { status: "custom-qa" });
   check(customFilter.result.tasks.some((task: any) => task.id === customTask.result.id), "Status filters must support custom lanes");
   const customCompletion = await request(null, "update_task", { taskId: customTask.result.id, status: "done" });
   check(!customCompletion.error && customCompletion.result.status === "done", "Custom tasks must preserve normal completion behavior");
+  check(!fileStore.keys().some((key) => key.startsWith("chaoticreview.lane-automation:")), "Lane data must not be recreated");
   check(!failures.length, `Unexpected IPC commands: ${failures.join(", ")}`);
-  document.getElementById("result")!.textContent = "PASS: drawing/sandbox window isolation, single replies, persisted writes, stale repository rejection, workspace task-link modals with List/Kanban, unchanged active tab, separate drafts, task chat and changes, workspace/task agent coordination, sidebar removal, task metadata and hierarchy, cross-task comments, persisted writes, agent-template selection and role-switch protection, direct starts, model/worktree/draft preservation, exact queues, cycle prevention, cancellation, playbooks, lanes and stopped/foreign caller checks.";
+  document.getElementById("result")!.textContent = "PASS: drawing/sandbox window isolation, single replies, persisted writes, stale repository rejection, workspace task-link modals with List/Kanban, unchanged active tab, separate drafts, task chat and changes, workspace/task agent coordination, sidebar removal, task metadata and hierarchy, cross-task comments, persisted writes, agent-template selection and role-switch protection, direct starts, model/worktree/draft preservation, exact queues, cycle prevention, cancellation, playbooks, removed lane tools and stopped/foreign caller checks.";
 } catch (error) {
   document.getElementById("result")!.textContent = `FAIL: ${error instanceof Error ? error.stack : error}`;
 } finally {

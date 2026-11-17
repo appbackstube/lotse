@@ -488,7 +488,7 @@ try {
   check(!planButton() && savedTask().chatMode === "default", "Inbox tasks without an explicit mode must start with Plan Off, even with the legacy default enabled");
   const checkStatusChanges = async () => {
     const { chatMode, chatModel, chatEffort } = savedTask();
-    for (const status of ["Needs planning", "In development", "In review", "Done", "Inbox"]) {
+    for (const status of ["Planning", "In development", "In review", "Done", "Inbox"]) {
       await click(dialog().querySelector<HTMLElement>('[aria-label="Task status"]')!);
       await click([...document.querySelectorAll<HTMLElement>('[role="option"]')].find((element) => element.textContent?.trim() === status)!);
       const updated = savedTask();
