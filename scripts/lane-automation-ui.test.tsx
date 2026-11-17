@@ -41,7 +41,7 @@ mockIPC(async (command, args: any) => {
   if (command === "list_branch_refs") return { refs: ["main", "feature/monthly-report"], remoteRefs: ["origin/main"], defaultBase: "main", pullCount: 0, pushCount: 0 };
   if (command === "compare_working_copy") return comparison;
   if (command === "load_review" || command === "github_connection") return null;
-  if (command === "agent_models") return [];
+  if (command === "agent_models") return [{ model: "gpt-5.6-terra", displayName: "Default" }];
   if (command === "task_browser_supported") return false;
   if (command === "task_sandbox_supported") return true;
   if (command === "load_task_changes") return { comparison, pendingSnapshotId: "snapshot", pendingFiles: false, committedChanges: false, headOid: comparison.baseOid, squashMessage: "" };
@@ -159,6 +159,9 @@ try {
   check(sends.length === 9 && sends[8].taskId === workspaceThree.id, "Lane task was blocked by the running workspace review");
   await event(8, { kind: "completed" });
   await event(7, { kind: "completed" });
+  const missingModelTask = { ...first, id: "92345678-1234-1234-1234-123456789abc", title: "Unavailable role model", chatAgent: { id: "role", title: "Role", prompt: "Work", modelConfig: { model: "missing-model", effort: "high" } }, chatModel: "missing-model", chatEffort: "high", attachments: [] };
+  await act(async () => emit("mcp-task-added", { repositoryRoot: repo.rootPath, task: missingModelTask })); await settle();
+  check(sends.length === 9 && storedLanes().inbox.attempts[missingModelTask.id]?.status === "failed" && storedLanes().inbox.attempts[missingModelTask.id]?.error.includes("missing-model"), "Automation must fail visibly instead of substituting an unavailable model");
   await click(button("Tasks")); await click(button("Gantt")); await openAutomation();
   check(!document.querySelector('[aria-label="Generate issue description"]'), "Legacy Generate action remains");
   const form = document.querySelector("[role=dialog] form")!;

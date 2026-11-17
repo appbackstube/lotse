@@ -37,7 +37,8 @@ mockIPC(async (command, args: any) => {
   if (command === "list_branch_refs") return { refs: ["main", "origin/collision"], remoteRefs: ["origin/main", "origin/feature/continue", "origin/collision"], defaultBase: "main", pullCount: 0, pushCount: 0 };
   if (command === "compare_working_copy") return comparison;
   if (command === "load_review" || command === "github_connection") return null;
-  if (["scheduler_list", "list_memory", "agent_models", "load_mcp_servers"].includes(command)) return [];
+  if (command === "agent_models") return [{ model: "gpt-5.6-terra", displayName: "Default" }];
+  if (["scheduler_list", "list_memory", "load_mcp_servers"].includes(command)) return [];
   if (command === "task_git_status") return { repository: { ...repo, currentBranch: "feature/manual-name" }, upstream: null, pullCount: 0, pushCount: 0, dirty: false };
   if (command === "load_task_changes") return { comparison, pendingSnapshotId: "snapshot", pendingFiles: false, committedChanges: false, headOid: comparison.baseOid, squashMessage: "" };
   if (command === "prepare_task_worktree") { preparations.push(args); return { branch: args.startPoint.kind === "existing" ? args.startPoint.branch.replace(/^origin\//, "") : args.newBranchName, baseOid: comparison.baseOid, baseBranch: "main", created: true }; }

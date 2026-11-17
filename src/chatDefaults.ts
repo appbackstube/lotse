@@ -9,6 +9,18 @@ export const chatEfforts = ["low", "medium", "high", "xhigh"] as const;
 export type ChatEffort = typeof chatEfforts[number];
 export type ChatDefaults = Record<AiChatMode, { model: string; effort: ChatEffort }>;
 
+export function modelEfforts(model: string, models: ChatModel[]): readonly ChatEffort[] {
+  const supported = models.find((entry) => entry.model === model)?.supportedReasoningEfforts;
+  return supported?.length ? chatEfforts.filter((effort) => supported.some((entry) => entry.reasoningEffort === effort)) : chatEfforts;
+}
+
+export function chatConfigurationError(model: string, effort: ChatEffort, models: ChatModel[], loaded: boolean): string | null {
+  if (!loaded) return "Models are not available yet. Load the model list before starting.";
+  if (!models.some((entry) => entry.model === model)) return `Model ${model} is unavailable. Select an available model before starting.`;
+  if (!modelEfforts(model, models).includes(effort)) return `Effort ${effort} is not supported by ${model}. Select a supported effort before starting.`;
+  return null;
+}
+
 export const defaultChatDefaults: ChatDefaults = {
   default: { model: "gpt-5.6-terra", effort: "medium" },
   plan: { model: "gpt-5.6-terra", effort: "medium" },

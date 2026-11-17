@@ -47,7 +47,7 @@ mockIPC(async (command, args: any) => {
   if (command === "list_branch_refs") return { refs: ["main", "feature/monthly-report"], remoteRefs: ["origin/main"], defaultBase: "main", pullCount: 0, pushCount: 0 };
   if (command === "compare_working_copy") return comparison;
   if (command === "load_review" || command === "github_connection") return null;
-  if (command === "agent_models") return [];
+  if (command === "agent_models") return [{ model: "gpt-5.6-terra", displayName: "Default" }];
   if (command === "load_task_changes") return { comparison, pendingSnapshotId: "snapshot", pendingFiles: false, committedChanges: false, headOid: comparison.baseOid, squashMessage: "" };
   if (command === "task_git_status") return { repository: { ...repo, currentBranch: "feature/monthly-report" }, upstream: "origin/feature/monthly-report", pullCount: 0, pushCount: 0, dirty: false };
   if (command === "plugin:window|scale_factor") return 1;

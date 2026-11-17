@@ -1,4 +1,7 @@
-export type ChatAgent = { id: string; title: string; prompt: string };
+import { chatEfforts, validChatModel, type ChatEffort } from "./chatDefaults.ts";
+
+export type AgentModelConfig = { model: string; effort: ChatEffort };
+export type ChatAgent = { id: string; title: string; prompt: string; modelConfig?: AgentModelConfig };
 export const agentsStorageKey = "chaoticreview.agents";
 export const defaultAgentStorageKey = "chaoticreview.default-agent";
 
@@ -7,6 +10,13 @@ export function normalizeAgent(value: unknown): ChatAgent | null {
   const agent = value as Record<string, unknown>;
   if (typeof agent.id !== "string" || !agent.id || typeof agent.title !== "string" || !agent.title.trim() || agent.title.length > 200
     || typeof agent.prompt !== "string" || !agent.prompt.trim() || agent.prompt.length > 20_000) return null;
+  const modelConfig = agent.modelConfig;
+  if (modelConfig !== undefined && modelConfig !== null) {
+    if (typeof modelConfig !== "object" || Array.isArray(modelConfig)) return null;
+    const config = modelConfig as Record<string, unknown>;
+    if (!validChatModel(config.model) || !chatEfforts.some((effort) => effort === config.effort)) return null;
+    return { id: agent.id, title: agent.title, prompt: agent.prompt, modelConfig: { model: config.model, effort: config.effort as ChatEffort } };
+  }
   return { id: agent.id, title: agent.title, prompt: agent.prompt };
 }
 
@@ -26,5 +36,9 @@ export function newAgent(): ChatAgent {
 }
 
 export function switchChatAgent<T extends { chatMessages: unknown[]; agentThreadId: string | null }>(chat: T, agent: ChatAgent | null) {
-  return { ...chat, chatAgent: agent, chatMessages: [], agentThreadId: null };
+  return { ...chat, chatAgent: agent, chatMessages: [], agentThreadId: null, ...agentChatConfig(agent) };
+}
+
+export function agentChatConfig(agent: ChatAgent | null | undefined) {
+  return agent?.modelConfig ? { chatModel: agent.modelConfig.model, chatEffort: agent.modelConfig.effort } : {};
 }

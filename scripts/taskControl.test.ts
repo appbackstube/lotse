@@ -66,6 +66,14 @@ for (const args of [{ createdAt: 1000 }, { updatedAt: 2000 }]) assert.throws(() 
 assert.equal(taskSummary(task).url, `#task=${task.id}`);
 
 const role = { id: "owner", title: "Owner", prompt: "Clarify goals" };
+const roleWithModel = agentMetadata(role, { modelConfig: { model: "provider/model", effort: "low" } });
+assert.deepEqual(roleWithModel.modelConfig, { model: "provider/model", effort: "low" });
+assert.deepEqual(agentMetadata(roleWithModel, { title: "New name" }).modelConfig, roleWithModel.modelConfig);
+assert.equal(agentMetadata(roleWithModel, { modelConfig: null }).modelConfig, undefined);
+for (const modelConfig of [{ model: "bad model", effort: "low" }, { model: "model", effort: "invalid" }, { model: "model", effort: "low", extra: true }]) assert.throws(() => agentMetadata(role, { modelConfig }));
+const assignedModel = taskMetadata([task], task, { agentId: role.id }, [], [roleWithModel])[0];
+assert.equal(assignedModel.chatModel, "provider/model");
+assert.equal(assignedModel.chatEffort, "low");
 assert.deepEqual(agentMetadata(role, { title: " Product owner " }), { ...role, title: "Product owner" });
 for (const args of [{ title: null }, { title: " " }, { title: "x".repeat(201) }, { prompt: null }, { prompt: "" }, { prompt: "x".repeat(20_001) }]) assert.throws(() => agentMetadata(role, args));
 assert.throws(() => agentMetadata(newAgent(), { title: "Missing prompt" }));

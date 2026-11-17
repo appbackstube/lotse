@@ -103,7 +103,7 @@ mockIPC(async (command, args: any) => {
   if (spotlightOnly && command === "read_spotlight_chat") { await new Promise((resolve) => setTimeout(resolve, spotlightFixture.archiveReadDelay)); return { repoPath: repo.rootPath, baseOid: comparison.baseOid, mode: "workingCopy", baseRef: null, compareRef: null, approvedFiles: [], approvedFileSnapshots: {}, approvedSnapshotId: null, comments: [], agentThreadId: null, chatMessages: [{ ...task.chatMessages[0], id: "archived-message", body: "Archived discussion: we agreed on repository navigation." }] }; }
   if (spotlightOnly && command === "read_memory") { await new Promise((resolve) => setTimeout(resolve, spotlightFixture.memoryReadDelay)); return { path: args.path, content: spotlightFixture.memory, revision: "revision" }; }
   if (command === "list_memory") return spotlightOnly ? [{ path: "navigation.md", name: "navigation.md", folder: false }] : [];
-  if (command === "agent_models") return [];
+  if (command === "agent_models") return [{ model: "gpt-5.6-terra", displayName: "Original" }, { model: "synthetic-default", displayName: "Default" }, { model: "synthetic-plan", displayName: "Plan" }];
   if (command === "ai_chat_send") { agentSend = args; return { requestId: "plan-check", threadId: "plan-thread", turnId: "plan-turn" }; }
   if (command === "start_terminal") { startedTerminals.push(args); return; }
   if (command === "stop_terminal") { stoppedTerminals.push(args.sessionId); return; }

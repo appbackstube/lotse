@@ -2,7 +2,7 @@ import type { RepositoryTask, TaskCustomField } from "./types.ts";
 import { moveTask, reparentTask, taskBoardStatus, taskColors, taskSubtreeIds } from "./tasks.ts";
 import { laneStatuses } from "./laneAutomation.ts";
 import { normalizeTaskDate } from "./taskSchedule.ts";
-import { switchChatAgent, type ChatAgent } from "./agents.ts";
+import { normalizeAgent, switchChatAgent, type ChatAgent } from "./agents.ts";
 import type { Playbook } from "./playbooks.ts";
 
 export const metadataKeys = ["title", "description", "status", "parentId", "position", "color", "startDate", "deadline", "customFields", "agentId"];
@@ -17,7 +17,12 @@ export function requiredText(value: unknown, name: string, maximum = 20_000): st
 export function agentMetadata(original: ChatAgent, args: Record<string, unknown>): ChatAgent {
   const title = requiredText("title" in args ? args.title : original.title, "Title", 200);
   const prompt = requiredText("prompt" in args ? args.prompt : original.prompt, "Prompt");
-  return { id: original.id, title: "title" in args ? title : original.title, prompt: "prompt" in args ? prompt : original.prompt };
+  if (args.modelConfig !== undefined && args.modelConfig !== null) argumentsFor(args.modelConfig, ["model", "effort"]);
+  const candidate = { ...original, title: "title" in args ? title : original.title, prompt: "prompt" in args ? prompt : original.prompt,
+    ...("modelConfig" in args ? { modelConfig: args.modelConfig } : {}) };
+  const agent = normalizeAgent(candidate);
+  if (!agent) throw new Error("Model configuration must contain a valid model and effort, or be null to remove it.");
+  return agent;
 }
 export function playbookMetadata(original: Playbook, args: Record<string, unknown>): Playbook {
   const saved = { ...original, ...agentMetadata(original, args) };
