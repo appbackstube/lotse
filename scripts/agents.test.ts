@@ -27,6 +27,17 @@ assert.equal(switched.title, task.title);
 assert.equal(task.chatMessages.length, 1);
 assert.equal(switchChatAgent(switched, null).chatAgent, null);
 
+const configuredRole = { ...agent, modelConfig: { model: "provider/model-a", effort: "high" as const } };
+assert.deepEqual(normalizeAgent(JSON.parse(JSON.stringify(configuredRole))), configuredRole);
+assert.deepEqual(normalizeAgent({ ...configuredRole, modelConfig: null }), agent);
+assert.equal(normalizeAgent({ ...configuredRole, modelConfig: { model: "bad model", effort: "high" } }), null);
+assert.equal(normalizeAgent({ ...configuredRole, modelConfig: { model: "model-a", effort: "unsupported" } }), null);
+const configuredTask = switchChatAgent(task, configuredRole);
+assert.equal(configuredTask.chatModel, "provider/model-a");
+assert.equal(configuredTask.chatEffort, "high");
+assert.equal(switchChatAgent(configuredTask, null).chatModel, "provider/model-a");
+assert.equal(switchChatAgent(configuredTask, agent).chatEffort, "high");
+
 const review: ReviewSession = { repoPath: "/repo", baseOid: "old", mode: "workingCopy", baseRef: null, compareRef: null, compareCommitOid: null, comments: [], chatMessages: [], agentThreadId: "thread", chatAgent: agent, approvedFiles: [], approvedFileSnapshots: {}, approvedSnapshotId: null };
 assert.deepEqual(carryReviewChat(review, { ...review, baseOid: "new", chatAgent: null }).chatAgent, agent);
 assert.equal(switchChatAgent(review, null).agentThreadId, null);

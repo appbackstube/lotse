@@ -900,16 +900,26 @@ fn ensure_agent_auth(agent: &AgentRuntime, app: &AppHandle, repository: &Path) -
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ChatAgent {
     id: String,
     title: String,
     prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model_config: Option<AgentModelConfig>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct AgentModelConfig {
+    model: String,
+    effort: String,
 }
 
 impl ChatAgent {
     fn valid(&self) -> bool {
         !self.id.is_empty() && !self.title.trim().is_empty() && self.title.chars().count() <= 200
             && !self.prompt.trim().is_empty() && self.prompt.chars().count() <= 20_000
+            && self.model_config.as_ref().is_none_or(|config| valid_codex_config(&config.model, &config.effort))
     }
 }
 
@@ -939,6 +949,8 @@ struct ReviewSession {
     agent_thread_id: Option<String>,
     #[serde(default)]
     chat_agent: Option<ChatAgent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    chat_config: Option<AgentModelConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     chat_goal: Option<agent_runtime::ChatGoalSettings>,
 }
@@ -3830,6 +3842,7 @@ fn persist_mcp_comments(
         chat_messages: Vec::new(),
         agent_thread_id: None,
         chat_agent: None,
+        chat_config: None,
         chat_goal: None,
     });
     for comment in comments {
@@ -6302,6 +6315,9 @@ fn validate_review(session: &ReviewSession, root: &Path) -> Result<(), String> {
     if session.chat_agent.as_ref().is_some_and(|agent| !agent.valid()) {
         return Err("Review contains an invalid agent".to_owned());
     }
+    if session.chat_config.as_ref().is_some_and(|config| !valid_codex_config(&config.model, &config.effort)) {
+        return Err("Review contains an invalid chat configuration".to_owned());
+    }
     if Path::new(&session.repo_path) != root {
         return Err("Review does not belong to the open repository".to_owned());
     }
@@ -8312,10 +8328,11 @@ mod tests {
             "repoPath":"/tmp/repo", "baseOid":"a".repeat(40), "comments":[]
         })).unwrap();
         assert!(review.chat_agent.is_none());
-        review.chat_agent = Some(ChatAgent { id: "owner".into(), title: "Product Owner".into(), prompt: "Act as a Product Owner.".into() });
+        review.chat_agent = Some(ChatAgent { id: "owner".into(), title: "Product Owner".into(), prompt: "Act as a Product Owner.".into(), model_config: Some(AgentModelConfig { model: "model-a".into(), effort: "high".into() }) });
         assert!(validate_review(&review, Path::new("/tmp/repo")).is_ok());
         let saved = serde_json::to_value(&review).unwrap();
         assert_eq!(saved["chatAgent"]["prompt"], "Act as a Product Owner.");
+        assert_eq!(saved["chatAgent"]["modelConfig"]["model"], "model-a");
         let mut loaded: ReviewSession = serde_json::from_value(saved).unwrap();
         loaded.chat_agent.as_mut().unwrap().prompt = "x".repeat(20_001);
         assert!(validate_review(&loaded, Path::new("/tmp/repo")).is_err());
@@ -8499,6 +8516,7 @@ mod tests {
             chat_messages: Vec::new(),
             agent_thread_id: None,
             chat_agent: None,
+            chat_config: None,
             chat_goal: None,
         };
         let markdown = format_review(&session);

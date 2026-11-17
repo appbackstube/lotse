@@ -18,7 +18,7 @@ const failures: string[] = [];
 
 const storage: Record<string, string> = {
   "chaoticreview.auth-onboarding-v1": "complete",
-  "chaoticreview.agents": JSON.stringify([savedAgent]),
+  "chaoticreview.agents": JSON.stringify([savedAgent, { id: "unavailable", title: "Unavailable agent", prompt: "Inspect the change", modelConfig: { model: "missing-model", effort: "high" } }]),
   "chaoticreview.default-agent": savedAgent.id,
   "chaoticreview.chat-model-favorites": JSON.stringify(["custom-model"]),
   [taskStorageKey(repo.rootPath)]: JSON.stringify([first]),
@@ -39,7 +39,7 @@ mockIPC(async (command, args: any) => {
   if (command === "list_branch_refs") return { refs: ["main", "feature/monthly-report"], remoteRefs: ["origin/main"], defaultBase: "main", pullCount: 0, pushCount: 0 };
   if (command === "compare_working_copy") return comparison;
   if (command === "load_review" || command === "github_connection") return null;
-  if (command === "agent_models") return [{ model: "custom-model", displayName: "Custom model" }];
+  if (command === "agent_models") return [{ model: "gpt-5.6-terra", displayName: "Default" }, { model: "custom-model", displayName: "Custom model" }];
   if (command === "load_task_changes") return { comparison, pendingSnapshotId: "snapshot", pendingFiles: false, committedChanges: false, headOid: comparison.baseOid, squashMessage: "" };
   if (command === "task_git_status") return { repository: { ...repo, currentBranch: "feature/monthly-report" }, upstream: "origin/feature/monthly-report", pullCount: 0, pushCount: 0, dirty: false };
   if (command === "plugin:window|scale_factor") return 1;
@@ -49,7 +49,7 @@ mockIPC(async (command, args: any) => {
   if (command === "plugin:window|outer_size" || command === "plugin:window|inner_size") return { width: innerWidth, height: innerHeight };
   if (command === "save_review" || command === "set_mcp_context" || command.startsWith("plugin:window|")) return;
   if (command.startsWith("plugin:notification|")) return false;
-  if (command === "list_memory") return [];
+  if (command === "list_memory" || command === "load_mcp_servers") return [];
   if (command === "scheduler_list") return [];
   if (command === "cleanup_unstarted_task_worktree") return;
   if (command === "ai_chat_send") { sends.push(args); return { requestId: `run-${sends.length}`, threadId: `thread-${sends.length}`, turnId: `turn-${sends.length}` }; }
@@ -77,6 +77,37 @@ try {
   await initializeFileStore();
   await act(async () => root.render(<App />)); await settle();
   await click(button("Workspace"));
+  await click(button("Agent role"));
+  await click([...document.querySelectorAll<HTMLElement>('button')].find((item) => visible(item) && item.textContent?.includes("Unavailable agent") && item.textContent?.includes("Inspect the change"))!);
+  await typeValue(document.querySelector('.ios-chat-textarea')!, "Check unavailable model");
+  await click(button("Send Review Agent message"));
+  check(!sends.length && document.body.textContent?.includes("Model missing-model is unavailable"), "An unavailable role model must block the run with an actionable error");
+  await click(button("Agent role"));
+  await click(button("Manage agents"));
+  await click(button("Set model"));
+  await click(document.querySelector<HTMLElement>('#agent-form .model-picker-trigger')!);
+  await click([...document.querySelectorAll<HTMLElement>('[role="option"]')].find((item) => visible(item) && item.textContent?.includes("Custom model"))!);
+  await click(button("Agent effort"));
+  await click([...document.querySelectorAll<HTMLElement>('[role="option"]')].find((item) => visible(item) && item.textContent === "High")!);
+  await click(button("Save"));
+  await fileStore.flush();
+  check(JSON.parse(storage["chaoticreview.agents"])[0].modelConfig.model === "custom-model", "Agent model must be saved");
+  await click(button("Close agents"));
+  await click(button("Agent role"));
+  await click([...document.querySelectorAll<HTMLElement>('button')].find((item) => visible(item) && item.textContent?.includes("Product owner") && item.textContent?.includes("Clarify goals"))!);
+  check(button("Model and effort").textContent?.includes("Custom model") && button("Model and effort").textContent?.includes("High"), "Selecting an updated role must apply its model and effort");
+  await click(button("Add to chat"));
+  await click([...document.querySelectorAll<HTMLElement>('button[role="switch"]')].find((item) => visible(item) && item.textContent?.startsWith("Plan"))!);
+  check(button("Model and effort").textContent?.includes("Custom model") && button("Model and effort").textContent?.includes("High"), "Switching to Plan must preserve the role configuration");
+  await click(button("Disable Plan mode"));
+  check(button("Model and effort").textContent?.includes("Custom model") && button("Model and effort").textContent?.includes("High"), "Leaving Plan must preserve the role configuration");
+  await click(button("Settings")); await click(button("Agent preferences"));
+  await click(document.querySelector<HTMLElement>('[data-settings-page="agent"] .model-picker-trigger')!);
+  await click([...document.querySelectorAll<HTMLElement>('[role="option"]')].find((item) => visible(item) && item.textContent?.includes("Custom model"))!);
+  await click(document.querySelector<HTMLElement>('[data-settings-page="agent"] .model-picker-trigger')!);
+  await click([...document.querySelectorAll<HTMLElement>('[role="option"]')].find((item) => visible(item) && item.textContent?.includes("Default"))!);
+  await click(button("Close settings"));
+  check(button("Model and effort").textContent?.includes("Custom model") && button("Model and effort").textContent?.includes("High"), "Changing global defaults must not replace an existing review configuration");
   const enableGoal = async () => {
     await click(button("Add to chat"));
     const goal = [...document.querySelectorAll<HTMLElement>('button[role="switch"]')].find((b) => visible(b) && b.textContent?.startsWith("Goal"))!;
@@ -85,8 +116,8 @@ try {
     check(button("Goal settings"), "Enabling Goal must show the Goal On chip");
   };
   await click(button("Model and effort"));
-  await click(button("Custom model"));
-  await click(button("Model and effort"));
+  await click(button("Effort"));
+  await click([...document.querySelectorAll<HTMLElement>('[role="option"]')].find((item) => visible(item) && item.textContent === "Low")!);
   await click(button("Effort"));
   await click([...document.querySelectorAll<HTMLElement>('[role="option"]')].find((item) => visible(item) && item.textContent === "High")!);
   await act(async () => document.querySelector('.ios-chat-config-popover')!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));

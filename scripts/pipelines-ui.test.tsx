@@ -13,10 +13,10 @@ import App from "../src/App";
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const repo = { rootPath: "/synthetic-settings", name: "Settings preview", currentBranch: "main", hasOrigin: true };
 const agent = { id: "owner", title: "Product Owner", prompt: "Clarify goals." };
-const reviewer = { id: "reviewer", title: "Reviewer", prompt: "Review changes." };
+const reviewer = { id: "reviewer", title: "Reviewer", prompt: "Review changes.", modelConfig: { model: "review-model", effort: "high" as const } };
 const pipeline: Pipeline = { id: "build", title: "Build & review", description: "A clear plan, implementation, then review.", steps: [
   { id: "plan", title: "Plan & implement", agentId: agent.id, messages: ["Inspect the task.", "Implement the plan."] },
-  { id: "review", title: "Review", agentId: reviewer.id, messages: ["Review the result."] },
+  { id: "review", title: "Review", agentId: reviewer.id, messages: ["Review the result.", "Summarize the review."] },
 ] };
 const sends: any[] = [], cancelled: string[] = [];
 let failSend = false;
@@ -38,7 +38,8 @@ mockIPC(async (command, args: any) => {
   if (command === "list_branch_refs") return { refs: ["main"], remoteRefs: ["origin/main"], defaultBase: "main", pullCount: 0, pushCount: 0 };
   if (command === "compare_working_copy") return { mode: "workingCopy", baseRef: null, compareRef: null, baseOid: "a".repeat(40), baseCommitOid: "a".repeat(40), compareCommitOid: "a".repeat(40), snapshotId: "snapshot", files: [] };
   if (command === "load_review" || command === "github_connection") return null;
-  if (["scheduler_list", "list_memory", "agent_models", "load_mcp_servers", "list_website_credentials"].includes(command)) return [];
+  if (command === "agent_models") return [{ model: "gpt-5.6-terra", displayName: "Default" }, { model: "review-model", displayName: "Review model", supportedReasoningEfforts: [{ reasoningEffort: "high" }] }];
+  if (["scheduler_list", "list_memory", "load_mcp_servers", "list_website_credentials"].includes(command)) return [];
   if (command === "plugin:window|scale_factor") return 1;
   if (command === "plugin:window|theme") return "light";
   if (command === "plugin:window|is_maximized") return false;
@@ -88,18 +89,36 @@ try {
   await start();
   check(sends.length === 1 && sends[0].prompt === 'Inspect the task.', 'Plus menu must start the first message');
   check(sends[0].agentPrompt === agent.prompt && sends[0].agentThreadId === 'existing-thread', 'Same role must reuse the thread');
-  check(queue().length === 3, 'The in-flight message must stay durable until completion');
+  check(queue().length === 4, 'The in-flight message must stay durable until completion');
   await click(button('Pause')); await event(0, 'assistantMessageCompleted', { finalText: 'Plan ready.' }); await event(0, 'completed');
-  check(sends.length === 1 && queue().length === 2, 'Pausing waits for current response, then stops');
+  check(sends.length === 1 && queue().length === 3, 'Pausing waits for current response, then stops');
   await click(button('Resume')); check(sends.length === 2 && sends[1].prompt === 'Implement the plan.', 'Resume sends the next message');
   await event(1, 'failed', { message: 'Synthetic failure' });
-  check(sends.length === 2 && queue().length === 2 && document.querySelector('.pipeline-run-card')?.textContent?.includes('Paused'), 'Failed messages must stay queued and pause the pipeline');
+  check(sends.length === 2 && queue().length === 3 && document.querySelector('.pipeline-run-card')?.textContent?.includes('Paused'), 'Failed messages must stay queued and pause the pipeline');
   await click(button('Resume')); check(sends.length === 3 && sends[2].prompt === 'Implement the plan.', 'Retry must repeat the failed message');
   await event(2, 'assistantMessageCompleted', { finalText: 'Implementation verified.' }); await event(2, 'completed');
   check(sends.length === 4 && sends[3].agentPrompt === reviewer.prompt && sends[3].agentThreadId === null, 'Role switch must start a fresh reviewer thread');
+  check(sends[3].model === 'review-model' && sends[3].effort === 'high', 'A pipeline role switch must use the role model and effort');
+  check(storedTask().chatModel === 'review-model' && storedTask().chatEffort === 'high', 'A pipeline role switch must update the task chat configuration');
+  check(button('Model and effort')?.textContent?.includes('Review model') && button('Model and effort')?.textContent?.includes('High'), 'The task chat must display the selected pipeline role configuration');
   check(sends[3].prompt.includes('Implementation verified.') && sends[3].prompt.includes('Plan ready.'), 'Handoff must include previous results');
   check(storedTask().chatMessages.some((m: any) => m.body === 'Plan ready.'), 'Switching roles must preserve chat history');
-  await event(3, 'completed'); check(!queue().length && !document.querySelector('.pipeline-run-card'), 'Completion must clear the pipeline');
+  await click(button('Pause'));
+  await click(button('Model and effort'));
+  await click(document.querySelector<HTMLElement>('.ios-chat-config-popover .model-picker-trigger'));
+  await click([...document.querySelectorAll<HTMLElement>('[role="option"]')].find((element) => visible(element) && element.textContent?.includes('Default')));
+  await click(button('Effort'));
+  await click([...document.querySelectorAll<HTMLElement>('[role="option"]')].find((element) => visible(element) && element.textContent === 'Low'));
+  await act(async () => document.querySelector('.ios-chat-config-popover')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+  await settle();
+  await event(3, 'completed');
+  await click(button('Resume'));
+  check(sends[4].model === 'review-model' && sends[4].effort === 'high', 'Queued pipeline messages must keep their saved configuration');
+  check(storedTask().chatModel === 'gpt-5.6-terra' && storedTask().chatEffort === 'low', 'A repeated pipeline role must not overwrite manual chat settings');
+  await event(4, 'completed'); check(!queue().length && !document.querySelector('.pipeline-run-card'), 'Completion must clear the pipeline');
+  await edit('Review Agent message', 'Follow up manually.'); await click(button('Send Review Agent message'));
+  check(sends[5].model === 'gpt-5.6-terra' && sends[5].effort === 'low', 'A later manual message must use the edited chat settings');
+  await event(5, 'completed');
   check(storedTask().manualStatus === null && !storedTask().completed, 'Pipelines must not change task status');
   await start(); const stoppedIndex = sends.length - 1; await click(button('Stop'));
   check(cancelled.length === 1 && !queue().length, 'Stop must cancel the active agent and remove remaining steps');
@@ -111,7 +130,7 @@ try {
   check(pendingIndex === sends.length - 1, 'Stop must not start any following messages');
   // A rejected start must remain recoverable without silently skipping the first message.
   failSend = true; await start();
-  check(queue().length === 3 && document.querySelector('.pipeline-run-card')?.textContent?.includes('Paused'), 'Rejected start must preserve the whole pipeline');
+  check(queue().length === 4 && document.querySelector('.pipeline-run-card')?.textContent?.includes('Paused'), 'Rejected start must preserve the whole pipeline');
   failSend = false;
   const beforeReload = sends.length;
   await act(async () => root.render(null)); await act(async () => root.render(<App />)); await settle();

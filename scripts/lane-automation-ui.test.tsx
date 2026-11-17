@@ -20,6 +20,7 @@ const sends: any[] = [];
 const preparations: any[] = [];
 const failures: string[] = [];
 let failClaimWrite = false;
+let failModelLoad = true;
 const storage: Record<string, string> = {
   "chaoticreview.branch-prefix:/synthetic-repository": "fix/",
   "chaoticreview.auth-onboarding-v1": "complete",
@@ -41,7 +42,10 @@ mockIPC(async (command, args: any) => {
   if (command === "list_branch_refs") return { refs: ["main", "feature/monthly-report"], remoteRefs: ["origin/main"], defaultBase: "main", pullCount: 0, pushCount: 0 };
   if (command === "compare_working_copy") return comparison;
   if (command === "load_review" || command === "github_connection") return null;
-  if (command === "agent_models") return [];
+  if (command === "agent_models") {
+    if (failModelLoad) throw new Error("Synthetic model-list failure");
+    return [{ model: "gpt-5.6-terra", displayName: "Default" }];
+  }
   if (command === "task_browser_supported") return false;
   if (command === "task_sandbox_supported") return true;
   if (command === "load_task_changes") return { comparison, pendingSnapshotId: "snapshot", pendingFiles: false, committedChanges: false, headOid: comparison.baseOid, squashMessage: "" };
@@ -53,7 +57,7 @@ mockIPC(async (command, args: any) => {
   if (command === "plugin:window|outer_size" || command === "plugin:window|inner_size") return { width: innerWidth, height: innerHeight };
   if (command === "save_review" || command === "set_mcp_context" || command.startsWith("plugin:window|")) return;
   if (command.startsWith("plugin:notification|")) return false;
-  if (command === "list_memory") return [];
+  if (command === "list_memory" || command === "load_mcp_servers") return [];
   if (command === "scheduler_list") return [];
   if (command === "cleanup_unstarted_task_worktree") return;
   if (command === "prepare_task_worktree") { preparations.push(args); return { branch: args.newBranchName, baseOid: comparison.baseOid, baseBranch: "main", created: true }; }
@@ -99,6 +103,10 @@ try {
   await click(button("Automation base branch")); await click([...document.querySelectorAll<HTMLElement>('[role="option"]')].find((item) => item.textContent === "main")!);
   await click(button("Enable Inbox automation"));
   await save();
+  check(sends.length === 0 && !Object.keys(storedLanes().inbox.attempts).length, "A failed model-list request must not claim or fail lane work");
+  failModelLoad = false;
+  await click(button("Settings")); await click(button("Agent preferences"));
+  await click(button("Refresh")); await click(button("Settings"));
   check(sends.length === 2 && sends[0].taskId === first.id && sends[1].taskId === third.id, `Wrong queue order, worker cap, or manual queue priority: ${JSON.stringify(sends.map((s) => s.taskId))}`);
   check(preparations.every((args) => args.startPoint.kind === "branch" && args.startPoint.branch === "main"), "New worktrees ignored lane base");
   check(preparations.every((args) => args.newBranchName === (args.taskId === first.id ? "fix/polish-keyboard-navigation" : "fix/review-empty-states")), "Automatic starts must use the repository prefix and task title");
@@ -159,6 +167,9 @@ try {
   check(sends.length === 9 && sends[8].taskId === workspaceThree.id, "Lane task was blocked by the running workspace review");
   await event(8, { kind: "completed" });
   await event(7, { kind: "completed" });
+  const missingModelTask = { ...first, id: "92345678-1234-1234-1234-123456789abc", title: "Unavailable role model", chatAgent: { id: "role", title: "Role", prompt: "Work", modelConfig: { model: "missing-model", effort: "high" } }, chatModel: "missing-model", chatEffort: "high", attachments: [] };
+  await act(async () => emit("mcp-task-added", { repositoryRoot: repo.rootPath, task: missingModelTask })); await settle();
+  check(sends.length === 9 && storedLanes().inbox.attempts[missingModelTask.id]?.status === "failed" && storedLanes().inbox.attempts[missingModelTask.id]?.error.includes("missing-model"), "Automation must fail visibly instead of substituting an unavailable model");
   await click(button("Tasks")); await click(button("Gantt")); await openAutomation();
   check(!document.querySelector('[aria-label="Generate issue description"]'), "Legacy Generate action remains");
   const form = document.querySelector("[role=dialog] form")!;

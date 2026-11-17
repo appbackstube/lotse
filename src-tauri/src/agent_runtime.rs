@@ -781,6 +781,8 @@ struct ProviderModelEntry {
     id: String,
     #[serde(default)]
     name: Option<String>,
+    #[serde(default)]
+    reasoning: Option<Value>,
 }
 
 fn parse_provider_models(body: &str) -> Result<Vec<AgentModel>, String> {
@@ -796,7 +798,9 @@ fn parse_provider_models(body: &str) -> Result<Vec<AgentModel>, String> {
         .map(|entry| AgentModel {
             model: entry.id.clone(),
             display_name: entry.name.unwrap_or(entry.id),
-            supported_reasoning_efforts: Vec::new(),
+            supported_reasoning_efforts: entry.reasoning.as_ref().and_then(|reasoning| reasoning.get("supported_efforts"))
+                .and_then(Value::as_array).into_iter().flatten().filter_map(|effort| effort.as_str())
+                .map(|reasoning_effort| ReasoningEffortOption { reasoning_effort: reasoning_effort.to_owned() }).collect(),
         })
         .collect();
     if models.is_empty() {
@@ -2814,6 +2818,15 @@ for line in sys.stdin:
         assert_eq!(
             serde_json::to_value(parse_provider_models(r#"{"data":[{"id":"model-a","name":"Model A"}]}"#).unwrap()).unwrap(),
             json!([{"model":"model-a","displayName":"Model A","supportedReasoningEfforts":[]}])
+        );
+        assert_eq!(
+            serde_json::to_value(parse_provider_models(r#"{"data":[{"id":"model-a","reasoning":{"supported_efforts":null}}]}"#).unwrap()).unwrap(),
+            json!([{"model":"model-a","displayName":"model-a","supportedReasoningEfforts":[]}])
+        );
+        assert!(parse_provider_models(r#"{"data":[{"id":"model-a","reasoning":false}]}"#).is_ok());
+        assert_eq!(
+            serde_json::to_value(parse_provider_models(r#"{"data":[{"id":"model-a","reasoning":{"supported_efforts":["low","high"]}}]}"#).unwrap()).unwrap(),
+            json!([{"model":"model-a","displayName":"model-a","supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"high"}]}])
         );
     }
 

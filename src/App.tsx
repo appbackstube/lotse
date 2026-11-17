@@ -22,7 +22,7 @@ import { readTaskDrawing } from "./taskDrawing";
 import { applyTaskSandboxUpdate } from "./taskSandbox";
 import { WebsiteCredentialsSettings } from "./components/WebsiteCredentialsSettings";
 import { PipelineDesigner } from "./components/PipelineDesigner";
-import { loadPipelines, pipelineError, pipelineQueue, pipelinesStorageKey, pipelineTurn, type Pipeline } from "./pipelines";
+import { loadPipelines, pipelineChatConfig, pipelineError, pipelineQueue, pipelinesStorageKey, pipelineTurn, type Pipeline } from "./pipelines";
 import { SettingsLayout, type SettingsPage } from "./components/SettingsLayout";
 import { TaskBrowser, hideTaskBrowsers } from "./components/TaskBrowser";
 import { TaskDrawingPanel, TaskSandboxPanel } from "./components/TaskVisualPanel";
@@ -119,8 +119,9 @@ import "@xterm/xterm/css/xterm.css";
 import "@mdxeditor/editor/style.css";
 import "./App.css";
 import { fileStore } from "./fileStore";
-import { agentsStorageKey, defaultAgentStorageKey, newAgent, normalizeAgents, switchChatAgent, type ChatAgent } from "./agents";
+import { agentChatConfig, agentsStorageKey, defaultAgentStorageKey, newAgent, normalizeAgents, switchChatAgent, type ChatAgent } from "./agents";
 import { AgentsDialog } from "./components/AgentsDialog";
+import { ModelPicker } from "./components/ModelPicker";
 import { AgentAttentionStack, type AgentAttentionRequest } from "./components/AgentAttentionStack";
 import { useGitHubInbox } from "./useGitHubInbox";
 import { previewGitHubImage, type GitHubLink } from "./github";
@@ -140,7 +141,7 @@ import { finishSchedule, type PromptSchedule } from "./promptSchedules";
 import { chatQueueStorageKey, loadChatQueues, moveQueuedMessage, saveChatQueues, type ChatQueues, type QueuedChatMessage } from "./chatQueue";
 import { isLargeCodeDocument } from "./codeMirror";
 import { findCodeLanguage } from "./codeLanguage";
-import { chatEfforts, chatEffortsLabel, chatModelLabel, normalizeChatDefaults, normalizeChatModelFavorites, validChatModel, type ChatModel, type ChatDefaults, type ChatEffort } from "./chatDefaults";
+import { chatEfforts, chatConfigurationError, chatModelLabel, modelEfforts, normalizeChatDefaults, normalizeChatModelFavorites, validChatModel, type ChatModel, type ChatDefaults, type ChatEffort } from "./chatDefaults";
 import { applyChatEvent, carryReviewChat, finalizePlanOutput, persistedChatEntries } from "./chatTimeline";
 import { diffChangeBlocks, isVeryLargeChangedFile, isVeryLargeDiff, isVeryLargePatch, parseUnifiedDiff, unchangedLineCount, type DiffChangeBlock } from "./diff";
 import { defaultTaskColumnRatios, resizeTaskColumn, taskColumnPixels, type TaskColumnRatios, type TaskDivider } from "./taskColumns";
@@ -997,42 +998,6 @@ function TaskSurface({ board, target, children }: { board: boolean; target: HTML
   return board ? target ? createPortal(children, target) : null : children;
 }
 
-function ModelPicker({ value, models, onChange, className, ariaLabel, disabled }: { value: string; models: ChatModel[]; onChange: (model: string) => void; className?: string; ariaLabel: string; disabled?: boolean }) {
-  const filter = Combobox.useFilter();
-  const modelById = useMemo(() => new Map(models.map((entry) => [entry.model, entry])), [models]);
-  const modelIds = useMemo(() => [...modelById.keys()], [modelById]);
-  return (
-    <Combobox.Root
-      disabled={disabled}
-      items={modelIds}
-      value={value}
-      onValueChange={(model) => { if (model) onChange(model); }}
-      itemToStringLabel={(model) => modelById.get(model)?.displayName ?? model}
-      filter={(model, query) => filter.contains(`${model} ${modelById.get(model)?.displayName ?? ""}`, query)}
-    >
-      <Combobox.Label className="sr-only">{ariaLabel}</Combobox.Label>
-      <Combobox.Trigger className={`${className ?? ""} model-picker-trigger`}>
-        <span className="model-picker-value"><Combobox.Value placeholder="Select model" /></span>
-        <Combobox.Icon className="shrink-0"><ChevronDown size={14} /></Combobox.Icon>
-      </Combobox.Trigger>
-      <Combobox.Portal>
-        <Combobox.Positioner align="start" sideOffset={4} className="isolate z-[110]">
-          <Combobox.Popup className="ios-select-content model-picker-popup outline-none" aria-label={ariaLabel}>
-            <Combobox.Input placeholder="Filter models" aria-label={`Filter ${ariaLabel}`} spellCheck={false} autoCorrect="off" autoCapitalize="none" className="model-picker-input" />
-            <Combobox.Empty className="model-picker-empty">No models match.</Combobox.Empty>
-            <Combobox.List className="model-picker-list outline-none">
-              {(model: string) => {
-                const entry = modelById.get(model);
-                return <Combobox.Item key={model} value={model} className="model-picker-item grid w-full grid-cols-[14px_1fr] items-center gap-2 rounded px-2 py-1.5 text-left text-sm"><Combobox.ItemIndicator className="col-start-1"><Check size={14} /></Combobox.ItemIndicator><span className="col-start-2 truncate">{entry?.displayName ?? model}{entry ? chatEffortsLabel(entry) : ""}</span></Combobox.Item>;
-              }}
-            </Combobox.List>
-          </Combobox.Popup>
-        </Combobox.Positioner>
-      </Combobox.Portal>
-    </Combobox.Root>
-  );
-}
-
 function AiChatPanel({
   messages,
   draft,
@@ -1044,6 +1009,7 @@ function AiChatPanel({
   models,
   favoriteModels,
   modelsStatus,
+  modelsLoaded,
   serverModel,
   effort,
   mode,
@@ -1124,6 +1090,7 @@ function AiChatPanel({
   models: ChatModel[];
   favoriteModels: string[];
   modelsStatus: string;
+  modelsLoaded: boolean;
   serverModel: string | null;
   effort: ChatEffort;
   mode: AiChatMode;
@@ -1236,6 +1203,7 @@ function AiChatPanel({
   }, []);
   const canSend = !!comparison && !sendPending && (!!composerDraft.trim() || images.some(isChatUpload) || selectedAssetIds.length > 0) && !variablePrompt
     && (!taskMode || taskSelected);
+  const configurationError = chatConfigurationError(model, effort, models, modelsLoaded);
   const send = async () => {
     if (sendPendingRef.current) return;
     sendPendingRef.current = true;
@@ -1445,8 +1413,9 @@ function AiChatPanel({
             </Popover>
             <div className="ios-chat-controls">
               <Popover open={configOpen} onOpenChange={setConfigOpen}>
-                <PopoverTrigger className="ios-chat-config-trigger" aria-label="Model and effort">
+                <PopoverTrigger className="ios-chat-config-trigger" aria-label="Model and effort" title={modelsLoaded ? configurationError ?? undefined : undefined}>
                   <strong className="truncate font-medium">{chatModelLabel(model, models)}</strong> <span className="truncate">{effort[0].toUpperCase() + effort.slice(1)}</span><ChevronDown size={14} />
+                  {modelsLoaded && configurationError && <span className="text-[#FB7185]">!</span>}
                 </PopoverTrigger>
                 <PopoverContent side="top" align="start" className="ios-chat-config-popover">
                   <PopoverTitle className="sr-only">Model and effort</PopoverTitle>
@@ -1465,10 +1434,11 @@ function AiChatPanel({
                     <Select value={effort} onValueChange={(value) => { if (value) onEffortChange(value as ChatEffort); }}>
                       <SelectTrigger className="ios-chat-config-select" aria-label="Effort"><SelectValue /></SelectTrigger>
                       <SelectContent side="right" className="ios-select-content">
-                        {chatEfforts.map((value) => <SelectItem key={value} value={value}>{value[0].toUpperCase() + value.slice(1)}</SelectItem>)}
+                        {modelEfforts(model, models).map((value) => <SelectItem key={value} value={value}>{value[0].toUpperCase() + value.slice(1)}</SelectItem>)}
                       </SelectContent>
                     </Select>
                   </div>
+                  {configurationError && <p role="status" className="text-xs text-[#FB7185]">{configurationError}</p>}
                   <button type="button" onClick={() => { onResetConfig(); setConfigOpen(false); }} className="ios-chat-config-reset"><span>Reset to default</span><RotateCcw size={15} /></button>
                 </PopoverContent>
               </Popover>
@@ -1479,7 +1449,7 @@ function AiChatPanel({
                   <button type="button" onClick={() => { setAgentMenuOpen(false); onManageAgents(); }} className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs font-bold hover:bg-[#183522]"><Settings size={13} className="text-[#7C9B88]" /> Manage agents</button>
                   <div className="max-h-72 overflow-y-auto">
                     <button type="button" aria-pressed={!chatAgent} onClick={() => { setAgentMenuOpen(false); onAgentChange(null); }} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-xs font-bold text-[#E8FFF0] hover:bg-[#183522]"><X size={14} className="shrink-0 text-[#7C9B88]" /><span className="flex-1">None</span>{!chatAgent && <Check size={14} className="shrink-0" />}</button>
-                    {agents.map((agent) => <button key={agent.id} type="button" aria-pressed={chatAgent?.id === agent.id && chatAgent.prompt === agent.prompt} onClick={() => { setAgentMenuOpen(false); onAgentChange(agent); }} className="flex w-full items-start gap-2.5 rounded-md px-2.5 py-2 text-left hover:bg-[#183522]"><Bot size={14} className="mt-0.5 shrink-0 text-[#A3FF12]" /><span className="min-w-0 flex-1"><span className="block truncate text-xs font-bold text-[#E8FFF0]">{agent.title}</span><span className="mt-0.5 block truncate text-[10px] text-[#7C9B88]">{agent.prompt}</span></span>{chatAgent?.id === agent.id && chatAgent.prompt === agent.prompt && <Check size={14} className="mt-0.5 shrink-0" />}</button>)}
+                    {agents.map((agent) => <button key={agent.id} type="button" aria-pressed={JSON.stringify(chatAgent) === JSON.stringify(agent)} onClick={() => { setAgentMenuOpen(false); onAgentChange(agent); }} className="flex w-full items-start gap-2.5 rounded-md px-2.5 py-2 text-left hover:bg-[#183522]"><Bot size={14} className="mt-0.5 shrink-0 text-[#A3FF12]" /><span className="min-w-0 flex-1"><span className="block truncate text-xs font-bold text-[#E8FFF0]">{agent.title}</span><span className="mt-0.5 block truncate text-[10px] text-[#7C9B88]">{agent.prompt}</span></span>{JSON.stringify(chatAgent) === JSON.stringify(agent) && <Check size={14} className="mt-0.5 shrink-0" />}</button>)}
                   </div>
                   <p className="px-2.5 pb-1 text-[10px] text-[#7C9B88]">Switching starts a new chat.</p>
                 </PopoverContent>
@@ -2241,6 +2211,7 @@ function App() {
   const mcpLoginRef = useRef<string | null>(null);
   const [mcpLoginCancelling, setMcpLoginCancelling] = useState(false);
   const [chatModels, setChatModels] = useState<ChatModel[]>([]);
+  const [modelsLoaded, setModelsLoaded] = useState(false);
   const [modelsStatus, setModelsStatus] = useState("Loading models…");
   const [modelsRevision, setModelsRevision] = useState(0);
   const [aiSettingsError, setAiSettingsError] = useState("");
@@ -2356,7 +2327,7 @@ function App() {
   const githubInbox = useGitHubInbox({
     rootPath: repository?.rootPath, ready: !!repository && taskStorageRoot === repository.rootPath, tasks, setTasks,
     makeTask: (item) => normalizeTask({ id: crypto.randomUUID(), title: item.title, ...taskLocationFields(taskLocationDefault),
-      chatMode: "default", chatAgent: defaultAgent }, chatDefaults)!,
+      chatMode: "default", chatAgent: defaultAgent, ...agentChatConfig(defaultAgent) }, chatDefaults)!,
   });
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
 
@@ -2633,8 +2604,8 @@ function App() {
 
   const persistAiChatTimeline = async () => {
     const entries = persistedChatEntries(aiChatTimelineRef.current);
-    const current = reviewRunSessionRef.current ?? reviewRef.current;
     if (reviewSteerSaveRef.current) await reviewSteerSaveRef.current.catch(() => {});
+    const current = reviewRunSessionRef.current ?? reviewRef.current;
     let saved = true;
     if (entries.length && current) {
       const next = { ...current, chatMessages: [...current.chatMessages, ...entries].slice(-100) };
@@ -3074,10 +3045,12 @@ function App() {
   useEffect(() => {
     let cancelled = false;
     setChatModels([]);
+    setModelsLoaded(false);
     setModelsStatus("Loading models…");
     void invoke<ChatModel[]>("agent_models").then((models) => {
       if (cancelled) return;
       setChatModels(models);
+      setModelsLoaded(true);
       setModelsStatus(models.length ? "" : "No models available.");
     }).catch((reason) => {
       if (!cancelled) setModelsStatus(`Could not load models: ${message(reason)}`);
@@ -3224,7 +3197,7 @@ function App() {
       if (event.payload.repositoryRoot !== repository?.rootPath) return;
       const task = normalizeTask(event.payload.task, chatDefaults);
       if (task) {
-        setTasks((current) => current.some((currentTask) => currentTask.id === task.id) ? current : [...current, { ...task, chatAgent: task.chatAgent ?? defaultAgent, ...taskLocationFields(taskLocationDefault) }]);
+        setTasks((current) => current.some((currentTask) => currentTask.id === task.id) ? current : [...current, { ...task, chatAgent: task.chatAgent ?? defaultAgent, ...(!task.chatAgent ? agentChatConfig(defaultAgent) : {}), ...taskLocationFields(taskLocationDefault) }]);
       }
     });
     const updated = listen<{ repositoryRoot: string; tasks: Pick<RepositoryTask, "id" | "createdAt" | "updatedAt" | "title" | "parentId" | "color" | "manualStatus" | "completed" | "planReady">[]; fieldChanges?: { taskId: string; values: Record<string, string | null> }; descriptionChange?: { taskId: string; description: string } }>("mcp-tasks-updated", (event) => {
@@ -3494,6 +3467,12 @@ function App() {
         carriedChat = carried !== nextReview;
         nextReview = carried;
       }
+      if (!sameReview) {
+        const config = nextReview.chatConfig ?? nextReview.chatAgent?.modelConfig ?? chatDefaults.default;
+        nextReview.chatConfig = config;
+        setAiChatModel(config.model);
+        setAiChatEffort(config.effort);
+      }
       const resetApprovals = nextReview.approvedSnapshotId === result.snapshotId;
       if (nextReview.approvedSnapshotId === result.snapshotId) {
         nextReview.approvedFileSnapshots = Object.fromEntries(result.files
@@ -3590,6 +3569,8 @@ function App() {
       if (cached) {
         setComparison(cached.comparison);
         setReview(cached.review);
+        const config = cached.review?.chatConfig ?? cached.review?.chatAgent?.modelConfig ?? chatDefaults.default;
+        setAiChatModel(config.model); setAiChatEffort(config.effort);
         setSelectedFile(cached.selectedFile);
         setDiff(null);
         setFileViewMode(cached.viewMode);
@@ -4109,6 +4090,8 @@ function App() {
     const prompt = (promptOverride ?? aiChatDraft).trim();
     const currentReview = reviewRef.current;
     if (!comparison || !currentReview || aiChatRunningRef.current || (!prompt && !requestContext.attachments.some(isChatUpload))) return false;
+    const configError = chatConfigurationError(configurationOverride?.model ?? aiChatModel, configurationOverride?.effort ?? aiChatEffort, chatModels, modelsLoaded);
+    if (configError) { setError(configError); return false; }
     const currentSelection = queuedItem ? queuedItem.selection : selection;
     const previous = currentReview.chatMessages ?? [];
     const userMessage: ChatMessage = {
@@ -4158,7 +4141,7 @@ function App() {
       }, (event) => { if (runReady) handleTurnEvent(event); else earlyEvents.push(event); });
       aiChatTurnRef.current = result;
       reviewRunSessionRef.current = {
-        ...pendingReview,
+        ...(reviewRunSessionRef.current ?? pendingReview),
         agentThreadId: result.threadId,
       };
       if (reviewRef.current && reviewQueueKey(reviewRef.current) === reviewRunQueueKeyRef.current) await persistReview(reviewRunSessionRef.current);
@@ -4256,8 +4239,6 @@ function App() {
   const taskWithChatMode = (task: RepositoryTask, mode: AiChatMode): RepositoryTask => task.chatMode === mode ? task : {
     ...task,
     chatMode: mode,
-    chatModel: chatDefaults[mode].model,
-    chatEffort: chatDefaults[mode].effort,
   };
 
   const selectTaskChatMode = (taskId: string, mode: AiChatMode) => updateTask(taskId, (task) => ({ ...taskWithChatMode(task, mode), ...(mode === "plan" ? { chatGoal: { ...normalizeChatGoal(task.chatGoal), enabled: false } } : {}) }));
@@ -4278,7 +4259,7 @@ function App() {
     const title = draft.title.trim();
     const chatMode = "default";
     const now = Date.now();
-    const task: RepositoryTask = { id: crypto.randomUUID(), createdAt: now, updatedAt: now, title, description: draft?.description ?? "", customFields: {}, startDate: null, deadline: null, parentId, color: "clear", ...taskStatusFields(resolveTaskStatus(taskStatuses, boardStatus)), attachments: [], assets: [], comments: [], chatMessages: [], agentThreadId: null, chatAgent: defaultAgent, planReady: false, unreadAgentResult: false, chatMode, chatModel: chatDefaults[chatMode].model, chatEffort: chatDefaults[chatMode].effort, ...taskLocationFields(taskLocationDefault), worktree: null, started: false };
+    const task: RepositoryTask = { id: crypto.randomUUID(), createdAt: now, updatedAt: now, title, description: draft?.description ?? "", customFields: {}, startDate: null, deadline: null, parentId, color: "clear", ...taskStatusFields(resolveTaskStatus(taskStatuses, boardStatus)), attachments: [], assets: [], comments: [], chatMessages: [], agentThreadId: null, chatAgent: defaultAgent, planReady: false, unreadAgentResult: false, chatMode, chatModel: chatDefaults[chatMode].model, chatEffort: chatDefaults[chatMode].effort, ...agentChatConfig(defaultAgent), ...taskLocationFields(taskLocationDefault), worktree: null, started: false };
     return task;
   };
 
@@ -4378,6 +4359,12 @@ function App() {
     const selectedAssets = taskAssetAttachments(task, taskAssetSelections[task.id] ?? []);
     const attachments = queuedItem?.context.attachments ?? [...task.attachments, ...selectedAssets];
     if (!comparison || !review || (!prompt && !attachments.length) || taskRunsRef.current[task.id] || taskStartingRef.current.has(task.id)) return false;
+    const configError = chatConfigurationError(queuedItem?.model ?? task.chatModel, queuedItem?.effort ?? task.chatEffort, chatModels, modelsLoaded);
+    if (configError) {
+      if (schedule || automation) throw new Error(configError);
+      setError(configError);
+      return false;
+    }
     if (attachments.length > 12) { setError("Attach up to 12 items per message."); return false; }
     if (task.location === "worktree" && !task.worktree && !taskStartSelected(task.worktreeStart)) {
       selectTask(task);
@@ -4451,12 +4438,11 @@ function App() {
       acceptedRequestId = accepted.requestId;
       updateTaskAtRoot(root, task.id, (current) => ({
         ...(automation ? current : taskWithChatMode(current, mode)),
-        ...(queuedItem && !automation ? { chatMode: mode, chatModel: queuedItem.model, chatEffort: queuedItem.effort } : {}),
         location: task.location,
         worktreeStart: task.worktreeStart,
         ...(worktree && task.worktreeStart?.kind !== "existing" ? { newBranchName: worktree.branch } : {}),
         agentThreadId: accepted.threadId,
-        ...(pipelineRequest ? { chatAgent: pipelineRequest.agent } : {}),
+        ...(pipelineRequest && queuedItem ? { chatAgent: pipelineRequest.agent, ...pipelineChatConfig(task, current, queuedItem) } : {}),
         started: true,
         worktree,
         unreadAgentResult: false,
@@ -4514,6 +4500,7 @@ function App() {
 
   queueDispatchRef.current = (key) => {
     if (pausedQueueKeysRef.current.has(key) || queueBusyRef.current.has(key)) return;
+    if (!modelsLoaded) return;
     const item = chatQueuesRef.current[key]?.[0];
     if (!item || !repositoryRef.current) return;
     const task = tasksRef.current.find((entry) => taskQueueKey(repositoryRef.current!.rootPath, entry.id) === key);
@@ -4533,6 +4520,10 @@ function App() {
       if (chatQueuesRef.current[key]?.length && !pausedQueueKeysRef.current.has(key)) queueMicrotask(() => queueDispatchRef.current(key));
     });
   };
+
+  useEffect(() => {
+    if (modelsLoaded) for (const key of Object.keys(chatQueuesRef.current)) queueDispatchRef.current(key);
+  }, [modelsStatus, modelsLoaded]);
 
   const startPipeline = (pipeline: Pipeline) => {
     const root = repositoryRef.current?.rootPath;
@@ -4567,9 +4558,9 @@ function App() {
     ready: !!repository && taskStorageRoot === repository.rootPath,
     statuses: boardStatusColumns.map((status) => status.id),
     tasks,
-    activity: JSON.stringify([Object.keys(taskRuns), [...taskStartingIds], chatQueues, workspaceOperationBusy, !!comparison, !!review]),
+    activity: JSON.stringify([Object.keys(taskRuns), [...taskStartingIds], chatQueues, workspaceOperationBusy, !!comparison, !!review, modelsStatus, modelsLoaded]),
     busy: (task) => {
-      if (!comparison || !review || taskDeletionBusyRef.current || taskGitAction || taskRunsRef.current[task.id] || taskStartingRef.current.has(task.id)) return true;
+      if (!comparison || !review || !modelsLoaded || taskDeletionBusyRef.current || taskGitAction || taskRunsRef.current[task.id] || taskStartingRef.current.has(task.id)) return true;
       if (repository && chatQueuesRef.current[taskQueueKey(repository.rootPath, task.id)]?.length) return true;
       return automationDirectory(task) === "workspace" && workspaceOperationBusy;
     },
@@ -4592,8 +4583,8 @@ function App() {
     rootPath: repository?.rootPath,
     ready: !!repository && taskStorageRoot === repository.rootPath,
     tasks,
-    activity: JSON.stringify([Object.keys(taskRuns), [...taskStartingIds], Object.entries(chatQueues).map(([key, items]) => [key, items.length]), workspaceOperationBusy, !!comparison, !!review, taskDeletionBusyRef.current]),
-    busy: (task) => !comparison || !review || taskDeletionBusyRef.current || !!taskGitAction || !!taskRunsRef.current[task.id] || taskStartingRef.current.has(task.id) || (automationDirectory(task) === "workspace" && workspaceOperationBusy),
+    activity: JSON.stringify([Object.keys(taskRuns), [...taskStartingIds], Object.entries(chatQueues).map(([key, items]) => [key, items.length]), workspaceOperationBusy, !!comparison, !!review, taskDeletionBusyRef.current, modelsStatus, modelsLoaded]),
+    busy: (task) => !comparison || !review || !modelsLoaded || taskDeletionBusyRef.current || !!taskGitAction || !!taskRunsRef.current[task.id] || taskStartingRef.current.has(task.id) || (automationDirectory(task) === "workspace" && workspaceOperationBusy),
     queued: (task) => !!repository && !!chatQueuesRef.current[taskQueueKey(repository.rootPath, task.id)]?.length,
     send: (task, item, schedule) => sendTaskMessage(task, item.mode, item.body, item, schedule),
   });
@@ -4756,7 +4747,8 @@ function App() {
       setTaskDrafts((current) => ({ ...current, [task.id]: "" }));
       setTaskAssetSelections((current) => ({ ...current, [task.id]: [] }));
     } else {
-      void persistReview(switchChatAgent(reviewRef.current!, agent));
+      void persistReview({ ...switchChatAgent(reviewRef.current!, agent), chatConfig: agent?.modelConfig ?? { model: aiChatModel, effort: aiChatEffort } });
+      if (agent?.modelConfig) { setAiChatModel(agent.modelConfig.model); setAiChatEffort(agent.modelConfig.effort); }
       setAiChatDraft("");
       setAiChatPlan(null);
       setAiChatServerModel(null);
@@ -4768,15 +4760,18 @@ function App() {
 
   const selectAiChatMode = (mode: AiChatMode) => {
     setAiChatMode(mode);
-    setAiChatModel(chatDefaults[mode].model);
-    setAiChatEffort(chatDefaults[mode].effort);
   };
 
   const updateChatDefault = (mode: AiChatMode, value: Partial<ChatDefaults[AiChatMode]>) => {
     setChatDefaults((current) => ({ ...current, [mode]: { ...current[mode], ...value } }));
-    if (mode !== aiChatMode) return;
-    if (value.model) setAiChatModel(value.model);
-    if (value.effort) setAiChatEffort(value.effort);
+  };
+
+  const updateReviewChatConfig = (config: ChatDefaults[AiChatMode]) => {
+    setAiChatModel(config.model); setAiChatEffort(config.effort);
+    if (reviewRunSessionRef.current && reviewRef.current && reviewQueueKey(reviewRunSessionRef.current) === reviewQueueKey(reviewRef.current)) {
+      reviewRunSessionRef.current = { ...reviewRunSessionRef.current, chatConfig: config };
+    }
+    if (reviewRef.current) void persistReview({ ...reviewRef.current, chatConfig: config });
   };
 
   const refreshMcpAuthStatuses = async () => {
@@ -5240,7 +5235,7 @@ function App() {
     cancelConfirmation: () => { if (taskControlConfirmationRef.current) { taskControlConfirmationRef.current(); taskControlConfirmationRef.current = null; setConfirmation(null); } },
     execute: async (request, active) => {
       const toolKeys: Record<string, string[]> = {
-        get_agents: ["query"], get_agent: ["agentId"], create_agent: ["title", "prompt"], update_agent: ["agentId", "title", "prompt"],
+        get_agents: ["query"], get_agent: ["agentId"], create_agent: ["title", "prompt", "modelConfig"], update_agent: ["agentId", "title", "prompt", "modelConfig"],
         create_playbook: ["title", "description", "prompt", "variables"], update_playbook: ["playbookId", "title", "description", "prompt", "variables"],
         get_playbooks: ["query"], get_playbook: ["playbookId"], run_task_playbook: ["taskId", "playbookId", "values"], get_tasks: ["query", "status"], add_task: metadataKeys, update_task_comment: ["taskId", "commentId", "body"], get_github_notifications: [], get_task: ["taskId"], get_task_execution: ["taskId"], create_task: metadataKeys, update_task: ["taskId", ...metadataKeys], add_task_comment: ["taskId", "body"], delete_task: ["taskId"], start_task_run: ["taskId", "prompt", "startPoint", "mode"], stop_task_run: ["taskId"], update_task_queue: ["taskId", "paused", "removeMessageIds"], get_lanes: [], update_lane: ["status", "enabled", "prompt", "baseBranch", "baseKind", "workers"], retry_lane_task: ["status", "taskId"], get_task_start_context: [] };
       if (!Object.prototype.hasOwnProperty.call(toolKeys, request.name)) throw new Error("Unknown task control tool.");
@@ -5289,6 +5284,10 @@ function App() {
         if (!original) throw new Error("Agent not found. Read agents again.");
         if (request.name === "update_agent" && Object.keys(args).length < 2) throw new Error("Provide at least one agent change.");
         const saved = agentMetadata(original, args);
+        if ("modelConfig" in args && saved.modelConfig) {
+          const configError = chatConfigurationError(saved.modelConfig.model, saved.modelConfig.effort, chatModels, modelsLoaded);
+          if (configError) throw new Error(configError);
+        }
         const next = request.name === "create_agent" ? [...current, saved] : current.map((agent) => agent.id === saved.id ? saved : agent);
         fileStore.setItem(agentsStorageKey, JSON.stringify(next)); setAgents(next);
         try { await fileStore.flush(); } catch (error) { throw new Error(`Operation outcome uncertain: ${message(error)}`); }
@@ -5319,7 +5318,8 @@ function App() {
       if (request.name === "get_task_start_context") { const branches = await invoke<BranchRefs>("list_branch_refs"); return { branches: branches.refs, remoteBranches: branches.remoteRefs, customFields, statuses: boardStatusColumns, defaultStatus: taskStatuses.defaultStatus, defaultLocation: taskLocationDefault, newBranchPrefix: loadBranchPrefix(repositoryRef.current!.rootPath), defaultPlanMode: false, locations: ["workspace", "worktree", "existing"], startKinds: ["workspace", "branch", "remote", "existing"] }; }
       if (request.name === "create_task" || request.name === "add_task") {
         const title = requiredText(args.title, "Title", 500);
-        const task = newRepositoryTask(null, (args.status as TaskBoardStatus) ?? taskStatuses.defaultStatus, { title, description: "" });
+        const initial = newRepositoryTask(null, (args.status as TaskBoardStatus) ?? taskStatuses.defaultStatus, { title, description: "" });
+        const task = "agentId" in args ? { ...initial, chatAgent: null, chatModel: chatDefaults[initial.chatMode].model, chatEffort: chatDefaults[initial.chatMode].effort } : initial;
         const next = await commit((current) => taskMetadata([...current, task], task, args, customFields, storedAgents(), taskStatuses)); return taskSummary(getTask(next, task.id));
       }
       if (request.name === "update_task") {
@@ -5861,7 +5861,7 @@ function App() {
                     </Select>
                   </div>
                   <h3 className="font-semibold text-[#E8FFF0]">Mode defaults</h3>
-                  <p className="mt-1 text-sm text-[#7C9B88]">Applied whenever you switch modes.</p>
+                  <p className="mt-1 text-sm text-[#7C9B88]">Used for new chats without an agent model.</p>
                   {modelsStatus && <p role="status" className="mt-2 text-sm text-[#7C9B88]">{modelsStatus} <button type="button" className="underline" onClick={() => setModelsRevision((value) => value + 1)}>Refresh</button></p>}
                   <div className="mt-4 divide-y divide-[var(--ios-separator)] border-y border-[#294536]">
                     <div className="grid gap-2 py-4 sm:grid-cols-[140px_minmax(0,1fr)] sm:items-center"><p className="text-sm font-semibold text-[#E8FFF0]">New task location</p><Select value={taskLocationDefault} onValueChange={(value) => value && setTaskLocationDefault(value as TaskLocation)}><SelectTrigger className="h-9 w-full border-[#294536] bg-[#050807] text-[#E8FFF0]" aria-label="Default task location"><SelectValue>{(value) => value === "workspace" ? "Workspace" : value === "existing" ? "Work on existing" : "New Branch"}</SelectValue></SelectTrigger><SelectContent><SelectItem value="workspace">Workspace</SelectItem><SelectItem value="worktree">New Branch</SelectItem><SelectItem value="existing">Work on existing</SelectItem></SelectContent></Select></div>
@@ -6474,6 +6474,7 @@ function App() {
             models={chatModels}
             favoriteModels={favoriteModels}
             modelsStatus={modelsStatus}
+            modelsLoaded={modelsLoaded}
             serverModel={taskMode ? null : aiChatServerModel}
             model={taskMode ? selectedTask?.chatModel ?? chatDefaults.default.model : aiChatModel}
             effort={taskMode ? selectedTask?.chatEffort ?? chatDefaults.default.effort : aiChatEffort}
@@ -6491,10 +6492,10 @@ function App() {
             selectedAssetIds={taskMode && selectedTask ? taskAssetSelections[selectedTask.id] ?? [] : []}
             onToggleTaskAsset={(id) => { if (selectedTask) setTaskAssetSelections((current) => ({ ...current, [selectedTask.id]: (current[selectedTask.id] ?? []).includes(id) ? (current[selectedTask.id] ?? []).filter((value) => value !== id) : [...(current[selectedTask.id] ?? []), id] })); }}
             onDraftChange={(value) => taskMode && selectedTask ? setTaskDrafts((current) => ({ ...current, [selectedTask.id]: value })) : setAiChatDraft(value)}
-            onModelChange={(value) => taskMode && selectedTask ? updateTask(selectedTask.id, (task) => ({ ...task, chatModel: value })) : setAiChatModel(value)}
-            onEffortChange={(value) => taskMode && selectedTask ? updateTask(selectedTask.id, (task) => ({ ...task, chatEffort: value })) : setAiChatEffort(value)}
+            onModelChange={(value) => taskMode && selectedTask ? updateTask(selectedTask.id, (task) => ({ ...task, chatModel: value })) : updateReviewChatConfig({ model: value, effort: aiChatEffort })}
+            onEffortChange={(value) => taskMode && selectedTask ? updateTask(selectedTask.id, (task) => ({ ...task, chatEffort: value })) : updateReviewChatConfig({ model: aiChatModel, effort: value })}
             onModeChange={(mode) => { if (taskMode && selectedTask) selectTaskChatMode(selectedTask.id, mode); else { selectAiChatMode(mode); if (mode === "plan" && reviewRef.current) void persistReview({ ...reviewRef.current, chatGoal: { ...normalizeChatGoal(reviewRef.current.chatGoal), enabled: false } }); } }}
-            onResetConfig={() => taskMode && selectedTask ? updateTask(selectedTask.id, (task) => ({ ...task, chatModel: chatDefaults[task.chatMode].model, chatEffort: chatDefaults[task.chatMode].effort })) : (setAiChatModel(chatDefaults[aiChatMode].model), setAiChatEffort(chatDefaults[aiChatMode].effort))}
+            onResetConfig={() => taskMode && selectedTask ? updateTask(selectedTask.id, (task) => ({ ...task, chatModel: chatDefaults[task.chatMode].model, chatEffort: chatDefaults[task.chatMode].effort })) : updateReviewChatConfig(chatDefaults[aiChatMode])}
             onDismissError={() => setError("")}
             onZenModeChange={setZenMode}
             onApprovalReviewerChange={(value) => setApprovalReviewerOverrides((current) => ({ ...current, [taskMode ? selectedTask?.id ?? "" : "review"]: value }))}
@@ -6513,7 +6514,7 @@ function App() {
             onPauseQueue={() => { if (activeQueueKey) setQueuePaused(activeQueueKey, true); }}
             onStopPipeline={() => { void stopPipeline(); }}
             onResumeQueue={() => { if (activeQueueKey) { setQueuePaused(activeQueueKey, false); queueDispatchRef.current(activeQueueKey); } }}
-            onImplementPlan={() => { if (taskMode && selectedTask) void implementTask(selectedTask); else { selectAiChatMode("default"); void sendAiChat(implementPlanPrompt, chatRequestContext, "default", chatDefaults.default); } }}
+            onImplementPlan={() => { if (taskMode && selectedTask) void implementTask(selectedTask); else { selectAiChatMode("default"); void sendAiChat(implementPlanPrompt, chatRequestContext, "default"); } }}
             onCancel={() => { if (taskMode && selectedTask) void cancelTaskPlan(selectedTask.id); else void cancelAiChat(); }}
             onClear={taskMode && selectedTask ? () => clearTaskChat(selectedTask) : clearAiChat}
             onAddFiles={(paths) => void addChatFiles(paths, taskMode ? selectedTask?.id : undefined)}
@@ -6581,7 +6582,7 @@ function App() {
       </aside>}
       </div>
 
-      {agentsOpen && <AgentsDialog agents={agents} onChange={setAgents} onClose={() => setAgentsOpen(false)} onConfirm={setConfirmation} />}
+      {agentsOpen && <AgentsDialog agents={agents} models={chatModels} modelsLoaded={modelsLoaded} modelsStatus={modelsStatus} onChange={setAgents} onClose={() => setAgentsOpen(false)} onConfirm={setConfirmation} />}
       {playbooksOpen && (
         <Dialog open onOpenChange={(open) => !open && setPlaybooksOpen(false)}>
           <DialogContent showCloseButton={false} className="ios-sheet flex h-[min(630px,88vh)] w-[min(980px,94vw)] !max-w-none flex-col overflow-hidden rounded-xl border border-[#294536] bg-[#0B110E] p-0 shadow-2xl shadow-black/60">

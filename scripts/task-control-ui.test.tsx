@@ -76,7 +76,7 @@ mockIPC(async (command, args: any) => {
   if (command === "list_branch_refs") return { refs: ["main", "feature/monthly-report"], remoteRefs: ["origin/main"], defaultBase: "main", pullCount: 0, pushCount: 0 };
   if (command === "compare_working_copy") return comparison;
   if (command === "load_review" || command === "github_connection") return null;
-  if (command === "agent_models") return [];
+  if (command === "agent_models") return [{ model: "gpt-5.6-terra", displayName: "Default" }, { model: "model-a", displayName: "Model A", supportedReasoningEfforts: [{ reasoningEffort: "high" }] }];
   if (command === "load_task_changes") return { comparison, pendingSnapshotId: "snapshot", pendingFiles: false, committedChanges: false, headOid: comparison.baseOid, squashMessage: "" };
   if (command === "task_git_status") return { repository: { ...repo, currentBranch: "feature/monthly-report" }, upstream: "origin/feature/monthly-report", pullCount: 0, pushCount: 0, dirty: false };
   if (command === "plugin:window|scale_factor") return 1;
@@ -173,7 +173,7 @@ try {
   check(!roles.error && roles.result.length === 1 && roles.result[0].id === savedAgent.id && !("prompt" in roles.result[0]), "Workspace cannot search saved agents");
   const readRole = await request(null, "get_agent", { agentId: savedAgent.id });
   check(!readRole.error && readRole.result.prompt === savedAgent.prompt, "Workspace cannot read saved agent prompts");
-  const createdRole = await request(null, "create_agent", { title: "Reviewer", prompt: "Review changes" });
+  const createdRole = await request(null, "create_agent", { title: "Reviewer", prompt: "Review changes", modelConfig: { model: "model-a", effort: "high" } });
   check(!createdRole.error && JSON.parse(storage["chaoticreview.agents"]).some((agent: any) => agent.id === createdRole.result.id), "Workspace agent creation not persisted");
   const createdTemplate = await request(null, "create_playbook", { title: "Audit", prompt: "Audit {{AREA}}", variables: [{ name: "AREA", label: "Which area?", type: "singleLine" }] });
   check(!createdTemplate.error && JSON.parse(storage["chaoticreview.review-playbooks"]).some((playbook: any) => playbook.id === createdTemplate.result.id), "Workspace playbook creation not persisted");
@@ -206,16 +206,21 @@ try {
   const created = await request(null, "create_task", { title: "Shared coordination", description: "From workspace", agentId: createdRole.result.id, startDate: "2026-11-06", deadline: "2026-11-07" });
   check(!created.error && storedTasks().some((task: any) => task.id === created.result.id), "Task creation not persisted");
   check(created.result.agent.id === createdRole.result.id && storedTasks().find((task: any) => task.id === created.result.id).chatAgent.prompt === "Review changes", "Task creation did not select and persist the canonical agent role");
+  check(storedTasks().find((task: any) => task.id === created.result.id).chatModel === "model-a" && storedTasks().find((task: any) => task.id === created.result.id).chatEffort === "high", "Task creation did not apply the agent model and effort");
   const beforeBadRole = storage[taskStorageKey(repo.rootPath)];
   for (const agentId of ["missing", "", 42, {}]) {
     check((await request(null, "create_task", { title: "Invalid role", agentId })).error, "Task creation accepted an invalid agent role");
     check((await request(null, "update_task", { taskId: created.result.id, title: "Must not change", agentId })).error, "Task update accepted an invalid agent role");
   }
   check(storage[taskStorageKey(repo.rootPath)] === beforeBadRole, "Invalid role selection changed tasks");
+  const configuredDefault = await request(null, "update_agent", { agentId: savedAgent.id, modelConfig: { model: "model-a", effort: "high" } });
+  check(!configuredDefault.error, "Cannot configure default agent model");
   const defaultRoleTask = await request(null, "add_task", { title: "Use default role" });
   check(!defaultRoleTask.error && defaultRoleTask.result.agent.id === savedAgent.id, "Omitting agentId lost the default role");
+  check(storedTasks().find((task: any) => task.id === defaultRoleTask.result.id).chatModel === "model-a", "New task did not apply its default agent model");
   const noRoleTask = await request(null, "create_task", { title: "Use no role", agentId: null });
   check(!noRoleTask.error && noRoleTask.result.agent === null && storedTasks().find((task: any) => task.id === noRoleTask.result.id).chatAgent === null, "Explicit null fell back to the default role");
+  check(storedTasks().find((task: any) => task.id === noRoleTask.result.id).chatModel === "gpt-5.6-terra", "Explicit null inherited the default agent model");
   const clearedRole = await request(null, "update_task", { taskId: created.result.id, agentId: null });
   check(!clearedRole.error && clearedRole.result.agent === null, "Cannot clear a task role");
   const id = created.result.id;
@@ -291,7 +296,7 @@ try {
   const next = await request(first.id, "start_task_run", { taskId: second.id, prompt: "Implement the delegated change" });
   check(!next.error && sends.length === 3 && sends[2].taskId === second.id && preparations.length === 1, "Task cannot start another task agent");
   check(sends[2].agentPrompt === "Review changes", "Delegation ignored the selected agent template");
-  check(sends[2].model === second.chatModel && sends[2].effort === second.chatEffort, "Delegation changed the target model or effort");
+  check(sends[2].model === "model-a" && sends[2].effort === "high", "Delegation ignored the target role's model or effort");
   check(storedTasks().find((task: any) => task.id === first.id).attachments.length === 1, "Delegation consumed existing draft attachments");
   const cycle = await request(second.id, "start_task_run", { taskId: first.id, prompt: "Start the parent again" });
   check(cycle.error?.includes("cycle") && sends.length === 3, "Reciprocal delegation cycle was allowed");

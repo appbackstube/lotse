@@ -9,10 +9,11 @@ pub(super) fn tools() -> Vec<Value> {
     let text = json!({"type":"string","maxLength":20000});
     let status = json!({"type":"string","minLength":1,"description":"Repository status ID from get_task_start_context or get_tasks. Use the returned ID, not its display name."});
     let mut fields = json!({"title":{"type":"string","minLength":1,"maxLength":500},"description":text,"status":status,"parentId":{"type":["string","null"]},"position":{"type":"integer","minimum":0},"color":{"type":"string","enum":["clear","red","orange","yellow","green","blue","purple"]},"startDate":{"type":["string","null"]},"deadline":{"type":["string","null"]},"customFields":{"type":"object","additionalProperties":{"type":["string","null"]}},"agentId":{"type":["string","null"],"minLength":1}});
-    let agent = json!({"title":{"type":"string","minLength":1,"maxLength":200},"prompt":{"type":"string","minLength":1,"maxLength":20000}});
+    let mut agent = json!({"title":{"type":"string","minLength":1,"maxLength":200},"prompt":{"type":"string","minLength":1,"maxLength":20000}});
+    let mut playbook = agent.clone();
+    agent["modelConfig"] = json!({"type":["object","null"],"additionalProperties":false,"required":["model","effort"],"properties":{"model":{"type":"string","minLength":1,"maxLength":100},"effort":{"type":"string","enum":["low","medium","high","xhigh"]}}});
     let mut agent_update = agent.clone();
     agent_update["agentId"] = id.clone();
-    let mut playbook = agent.clone();
     playbook["description"] = text.clone();
     playbook["variables"] = json!({"type":"array","maxItems":100,"items":{"type":"object","additionalProperties":false,"required":["name","label","type"],"properties":{"id":{"type":"string","minLength":1,"maxLength":200},"name":{"type":"string","minLength":1,"maxLength":200,"pattern":"^[A-Za-z][A-Za-z0-9_]*$"},"label":{"type":"string","minLength":1,"maxLength":500},"type":{"type":"string","enum":["singleLine","multiLine"]}}}});
     let mut playbook_update = playbook.clone();

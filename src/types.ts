@@ -104,6 +104,7 @@ export type ReviewSession = {
   chatMessages: ChatMessage[];
   agentThreadId: string | null;
   chatAgent?: import("./agents").ChatAgent | null;
+  chatConfig?: import("./agents").AgentModelConfig;
   chatGoal?: ChatGoalSettings;
   comments: ReviewComment[];
 };

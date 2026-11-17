@@ -24,7 +24,8 @@ mockIPC(async (command, args: any) => {
   if (command === "load_review" || command === "github_connection") return null;
   if (command === "list_branch_refs") return { refs: ["main"], remoteRefs: [], defaultBase: "main", pullCount: 0, pushCount: 0 };
   if (command === "compare_working_copy") return comparison;
-  if (["scheduler_list", "list_memory", "agent_models", "load_mcp_servers"].includes(command)) return [];
+  if (command === "agent_models") return [{ model: "gpt-5.6-terra", displayName: "Default" }];
+  if (["scheduler_list", "list_memory", "load_mcp_servers"].includes(command)) return [];
   if (command === "task_sandbox_supported" || command === "task_browser_supported") return false;
   if (command === "load_task_changes") return { comparison, pendingSnapshotId: "snapshot", pendingFiles: false, committedChanges: false, headOid: comparison.baseOid, squashMessage: "" };
   if (command === "task_git_status") return { repository: repo, upstream: null, pullCount: 0, pushCount: 0, dirty: false };

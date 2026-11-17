@@ -74,7 +74,7 @@ mockIPC(async (command, args: any) => {
   if (command === "load_review") return agentsCheck ? savedReview : null;
   if (command === "github_connection") return null;
   if (command === "scheduler_list" || command === "list_memory") return [];
-  if (command === "agent_models") return [];
+  if (command === "agent_models") return [{ model: "gpt-5.6-terra", displayName: "Original" }, { model: "synthetic-default", displayName: "Default" }, { model: "synthetic-plan", displayName: "Plan" }];
   if (command === "ai_chat_send") { agentSend = args; return { requestId: "plan-check", threadId: "plan-thread", turnId: "plan-turn" }; }
   if (command === "load_task_changes") { changeReads.push(args); return { comparison: { ...taskComparison, baseRef: effectiveBaseRef ?? args.baseRef ?? "main" }, pendingSnapshotId: "snapshot", pendingFiles: true, committedChanges: true, headOid: comparison.baseOid, squashMessage: "Squash task" }; }
   if (command === "load_task_file_diff") { diffReads.push(args); return { path: args.path, oldPath: null, hunks: [{ header: "@@ -1 +1 @@", rows: [{ kind: "changed", old: { lineNumber: 1, text: "before" }, new: { lineNumber: 1, text: "after" } }] }] }; }
@@ -484,6 +484,7 @@ try {
   scrollForm.scrollTop = 0;
   const planButton = () => chat().querySelector<HTMLButtonElement>('[aria-label="Disable Plan mode"]');
   const savedTask = () => JSON.parse(storage[taskStorageKey(repo.rootPath)])[0];
+  const initialConfig = { model: savedTask().chatModel, effort: savedTask().chatEffort };
   check(!planButton() && savedTask().chatMode === "default", "Inbox tasks without an explicit mode must start with Plan Off, even with the legacy default enabled");
   const checkStatusChanges = async () => {
     const { chatMode, chatModel, chatEffort } = savedTask();
@@ -501,11 +502,11 @@ try {
   await checkStatusChanges();
   await click(planButton()!);
   check(!planButton() && savedTask().chatMode === "default", "Clicking Plan On must disable Plan mode and hide the button");
-  check(savedTask().chatModel === "synthetic-default" && savedTask().chatEffort === "low", "Disabling Plan mode must apply the normal mode model and effort defaults");
+  check(savedTask().chatModel === initialConfig.model && savedTask().chatEffort === initialConfig.effort, "Disabling Plan mode must preserve model and effort");
   await click(chat().querySelector<HTMLElement>('[aria-label="Add to chat"]')!);
   await click(document.querySelector<HTMLElement>('[role="switch"][aria-checked="false"]')!);
   check(planButton() && savedTask().chatMode === "plan", "The plus menu must reactivate Plan mode and restore its button");
-  check(savedTask().chatModel === "synthetic-plan" && savedTask().chatEffort === "high", "Reactivating Plan mode must apply its model and effort defaults");
+  check(savedTask().chatModel === initialConfig.model && savedTask().chatEffort === initialConfig.effort, "Reactivating Plan mode must preserve model and effort");
   await act(async () => {
     Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(composer(), "Check the active Plan mode button");
     composer().dispatchEvent(new Event("input", { bubbles: true }));
@@ -763,16 +764,21 @@ try {
   await click(dialog().querySelector<HTMLElement>('[aria-label="Close task modal"]')!);
   await click(button("List"));
   check(!document.querySelector('[aria-label="Task orchestrator"]'), "The separate orchestrator sidebar must be removed");
-  check(![...document.querySelectorAll('[aria-label="Review Agent message"]')].some(visible), "List must open code chat in the task dialog");
-  await click(button(task.title)); assertSplit();
-  check(composer().value.includes("Keep this draft"), "List must share the task chat draft");
-  await click(tab("Changes")); assertSplit();
-  await click(tab("Detail"));
-  await click(dialog().querySelector<HTMLElement>('[aria-label="Task actions"]')!);
+  const listWorkspace = () => document.querySelector<HTMLElement>('[aria-label="Task workspace"]')!;
+  const listTab = (name: string) => [...listWorkspace().querySelectorAll<HTMLButtonElement>('[role="tab"]')].find((element) => element.textContent?.startsWith(name))!;
+  const listComposer = () => listWorkspace().querySelector<HTMLTextAreaElement>('[aria-label="Review Agent message"]')!;
+  check(visible(listWorkspace()) && listComposer().value.includes("Keep this draft"), "List must show the selected task and preserve its chat draft inline");
+  await click(listTab("Changes"));
+  check(listTab("Changes").getAttribute("aria-selected") === "true", "List must show task changes inline");
+  await click(listTab("Detail"));
+  await click(listWorkspace().querySelector<HTMLElement>('[aria-label="Task actions"]')!);
   const listActions = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')];
   check(listActions.some((item) => item.textContent?.includes("Clear conversation")), "List chat actions must stay reachable");
   await click(listActions.find((item) => item.textContent?.includes("Enter Zen Mode"))!);
-  await click(document.querySelector<HTMLElement>('[aria-label="Exit Zen Mode"]')!); assertSplit();
+  await click(document.querySelector<HTMLElement>('[aria-label="Exit Zen Mode"]')!);
+  check(listComposer().value.includes("Keep this draft"), "Leaving Zen mode must preserve the List chat draft");
+  await click(button("Kanban"));
+  await click(document.querySelector<HTMLElement>(`[aria-label="Drag ${task.title}"]`)!); assertSplit();
   await click(tab("Changes"));
   await click(button("Merge…"));
   const mergeButton = [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].filter((item) => item.textContent?.trim() === "Squash & merge").at(-1)!;
@@ -791,7 +797,7 @@ try {
   await settle();
   check(storedDescription().endsWith(" saved in original repository"), "Repository switching must save a pending description in its original repository");
   check(JSON.parse(storage[taskStorageKey(currentRepository.rootPath)] ?? "[]")?.length === 0, "Pending edits must not leak into the next repository");
-  document.getElementById("result")!.textContent = "PASS: initial Draw fits distant elements and subsequent tab switches preserve its viewport; drawing follows initial and live Lotse light/dark theme without remounting or content changes; panning avoids scene serialization and task/context writes during movement; Excalidraw tab, live agent drawing additions/edits/deletions, validation, scoped writes, drawing persistence and on-demand access without automatic attachments; description drafts stay local until explicit save or leaving, survive concurrent agent/window changes with their cursor, flush on native close and repository changes; preserved detail scroll, Plan mode, shared List/Kanban/Gantt task dialog, compact headers, responsive width, tabs, Git toolbar, chat drafts, secondary actions, Zen mode and merging with pending task changes.";
+  document.getElementById("result")!.textContent = "PASS: initial Draw fits distant elements and subsequent tab switches preserve its viewport; drawing follows initial and live Lotse light/dark theme without remounting or content changes; panning avoids scene serialization and task/context writes during movement; Excalidraw tab, live agent drawing additions/edits/deletions, validation, scoped writes, drawing persistence and on-demand access without automatic attachments; description drafts stay local until explicit save or leaving, survive concurrent agent/window changes with their cursor, flush on native close and repository changes; preserved detail scroll, Plan mode, inline List and Kanban/Gantt task dialog, compact headers, responsive width, tabs, Git toolbar, chat drafts, secondary actions, Zen mode and merging with pending task changes.";
   }
 } catch (error) {
   document.getElementById("result")!.textContent = `FAIL: ${error instanceof Error ? error.stack : String(error)}`;

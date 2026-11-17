@@ -4,11 +4,17 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "./ui/dial
 import { Input } from "./ui/input";
 import { Textarea } from "./ui/textarea";
 import { newAgent, normalizeAgent, type ChatAgent } from "../agents";
+import { chatConfigurationError, modelEfforts, type ChatEffort, type ChatModel } from "../chatDefaults";
+import { ModelPicker } from "./ModelPicker";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 
 type Confirmation = { title: string; description: string; actionLabel: string; action: () => void };
 
-export function AgentsDialog({ agents, onChange, onClose, onConfirm }: {
+export function AgentsDialog({ agents, models, modelsLoaded, modelsStatus, onChange, onClose, onConfirm }: {
   agents: ChatAgent[];
+  models: ChatModel[];
+  modelsLoaded: boolean;
+  modelsStatus: string;
   onChange: (agents: ChatAgent[]) => void;
   onClose: () => void;
   onConfirm: (confirmation: Confirmation) => void;
@@ -26,6 +32,7 @@ export function AgentsDialog({ agents, onChange, onClose, onConfirm }: {
   const save = () => {
     const agent = normalizeAgent({ ...draft, title: draft.title.trim(), prompt: draft.prompt.trim() });
     if (!agent) { setError("Add a title of at most 200 characters and a prompt of at most 20,000 characters."); return; }
+    if (agent.modelConfig && models.some((model) => model.model === agent.modelConfig?.model) && !modelEfforts(agent.modelConfig.model, models).includes(agent.modelConfig.effort)) { setError("Select an effort supported by this model."); return; }
     onChange(existing ? agents.map((item) => item.id === agent.id ? agent : item) : [...agents, agent]);
     setDraft(agent); setError(""); setSaved(true);
   };
@@ -55,6 +62,21 @@ export function AgentsDialog({ agents, onChange, onClose, onConfirm }: {
           <form id="agent-form" onSubmit={(event) => { event.preventDefault(); save(); }} className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
             <label className="block text-xs font-bold text-[#7C9B88]">Title<Input value={draft.title} maxLength={200} onChange={(event) => { setDraft({ ...draft, title: event.currentTarget.value }); setSaved(false); }} placeholder="Agile Product Owner" className="mt-2" /></label>
             <label className="block text-xs font-bold text-[#7C9B88]">Prompt<Textarea value={draft.prompt} maxLength={20_000} onChange={(event) => { setDraft({ ...draft, prompt: event.currentTarget.value }); setSaved(false); }} placeholder="Act as an Agile Product Owner. Help clarify goals, prioritize the backlog, and write clear acceptance criteria." className="mt-2 min-h-64 resize-y font-normal" /></label>
+            <div className="space-y-3">
+              <div className="flex items-center justify-between"><span className="text-xs font-bold text-[#7C9B88]">Model and effort</span>
+                {draft.modelConfig ? <button type="button" className="quiet-button h-8" onClick={() => { setDraft(({ modelConfig: _config, ...agent }) => agent); setSaved(false); }}>Remove</button> :
+                  <button type="button" className="quiet-button h-8" disabled={!models.length} onClick={() => { const model = models[0].model; setDraft({ ...draft, modelConfig: { model, effort: modelEfforts(model, models)[0] ?? "medium" } }); setSaved(false); }}>Set model</button>}
+              </div>
+              {draft.modelConfig && <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_160px]">
+                <ModelPicker value={draft.modelConfig.model} models={models} ariaLabel="Agent model" className="h-9 w-full rounded-md border border-[#294536] bg-[#050807] px-3 text-[#E8FFF0]" onChange={(model) => { const efforts = modelEfforts(model, models); setDraft({ ...draft, modelConfig: { model, effort: efforts.includes(draft.modelConfig!.effort) ? draft.modelConfig!.effort : efforts[0] ?? draft.modelConfig!.effort } }); setSaved(false); }} />
+                <Select value={draft.modelConfig.effort} onValueChange={(value) => { if (value && draft.modelConfig) { setDraft({ ...draft, modelConfig: { ...draft.modelConfig, effort: value as ChatEffort } }); setSaved(false); } }}>
+                  <SelectTrigger className="h-9 w-full border-[#294536] bg-[#050807] text-[#E8FFF0]" aria-label="Agent effort"><SelectValue /></SelectTrigger>
+                  <SelectContent className="ios-select-content">{modelEfforts(draft.modelConfig.model, models).map((effort) => <SelectItem key={effort} value={effort}>{effort[0].toUpperCase() + effort.slice(1)}</SelectItem>)}</SelectContent>
+                </Select>
+              </div>}
+              {draft.modelConfig && chatConfigurationError(draft.modelConfig.model, draft.modelConfig.effort, models, modelsLoaded) && <p role="status" className="text-xs text-[#FB7185]">{modelsLoaded ? chatConfigurationError(draft.modelConfig.model, draft.modelConfig.effort, models, true) : modelsStatus}</p>}
+              {!draft.modelConfig && modelsStatus && <p className="text-xs text-[#7C9B88]">{modelsStatus}</p>}
+            </div>
             {error && <p role="alert" className="text-xs text-[#FB7185]">{error}</p>}
             {saved && <p role="status" className="text-xs font-bold text-[#39FF88]">Saved</p>}
           </form>

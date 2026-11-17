@@ -65,12 +65,16 @@ export function pipelineQueue(pipeline: Pipeline, agents: ChatAgent[], task: Rep
   const runId = crypto.randomUUID();
   const total = pipeline.steps.reduce((count, step) => count + step.messages.length, 0);
   let position = 0;
+  let currentAgent = task.chatAgent ?? null;
+  let configuration = { model: task.chatModel, effort: task.chatEffort };
   return pipeline.steps.flatMap((step, stepIndex) => {
     const agent = step.agentId === null ? null : agents.find((agent) => agent.id === step.agentId);
     if (agent === undefined) throw new Error(`The role for “${step.title}” no longer exists. Edit the pipeline first.`);
+    if (JSON.stringify(agent) !== JSON.stringify(currentAgent) && agent?.modelConfig) configuration = { ...agent.modelConfig };
+    currentAgent = agent;
     return step.messages.map((body) => ({
       id: crypto.randomUUID(), body: body.trim(), context: { mode: "auto" as const, attachments: [] }, selection: null,
-      mode: "default" as const, model: task.chatModel, effort: task.chatEffort,
+      mode: "default" as const, ...configuration,
       pipeline: { runId, title: pipeline.title, stepTitle: step.title, stepIndex, stepCount: pipeline.steps.length, position: position++, total, agent: agent ? { ...agent } : null },
     }));
   });
@@ -82,6 +86,15 @@ export function pipelineTurn(task: RepositoryTask, item: QueuedChatMessage): { a
   const changed = !!item.pipeline && JSON.stringify(agent) !== JSON.stringify(task.chatAgent ?? null);
   const history = changed ? pipelineHandoff(task.chatMessages) : "";
   return { agent, threadId: changed ? null : task.agentThreadId, prompt: history ? `${item.body}\n\nPrevious task conversation (handoff context):\n${history}` : item.body };
+}
+
+export function pipelineChatConfig(task: RepositoryTask, current: RepositoryTask, item: QueuedChatMessage): Partial<Pick<RepositoryTask, "chatModel" | "chatEffort">> {
+  const agent = item.pipeline?.agent;
+  if (!agent?.modelConfig || JSON.stringify(agent) === JSON.stringify(task.chatAgent ?? null)) return {};
+  return {
+    ...(current.chatModel === task.chatModel ? { chatModel: item.model } : {}),
+    ...(current.chatEffort === task.chatEffort ? { chatEffort: item.effort } : {}),
+  };
 }
 
 function pipelineHandoff(messages: ChatMessage[]): string {
