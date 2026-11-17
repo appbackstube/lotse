@@ -84,6 +84,8 @@ Add local or remote MCP servers to give agents access to the tools and documenta
 
 Repository memory keeps reusable project knowledge available for future conversations. Saved roles and playbooks are shared across repositories in the app.
 
+Use **⌘K** to search the current repository's tasks, comments, chats, and memory. Search runs locally and supports partial words and small typing errors; filters narrow the results by type.
+
 ## Before you start
 
 **Do I need to move my code?** No. Lotse opens existing local Git repositories. Use separate worktrees when running agents that should edit independently; agents sharing a checkout can make overlapping changes.

@@ -1,6 +1,6 @@
 import { act } from "react";
 import type { SearchDocument, SearchResponse } from "../src/spotlight";
-import { searchDocuments } from "../src/spotlight";
+import { searchWords } from "../src/spotlight";
 
 export const spotlightFixture = {
   fail: false,
@@ -9,16 +9,20 @@ export const spotlightFixture = {
   memoryReadDelay: 0,
   archiveReadDelay: 0,
   memory: "# Navigation\n\nUse the keyboard to open Spotlight and find your source.",
-  async search(query: string): Promise<SearchResponse> {
+  async search(query: string, liveDocuments: SearchDocument[], currentContext: string | null): Promise<SearchResponse> {
     this.reads++;
     const delay = this.delay;
     if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
-    if (this.fail) throw new Error("Synthetic read failure");
-    const docs: SearchDocument[] = [
+    const docs: SearchDocument[] = [...liveDocuments, ...(this.fail ? [] : [
       { id: "memory:navigation.md", kind: "Memory", title: "navigation.md", body: this.memory, breadcrumb: "Memory / navigation.md", target: { type: "memory", path: "navigation.md" } },
       { id: "archive:message", kind: "Chat", title: "Archived discussion", body: "Archived discussion: we agreed on repository navigation.", breadcrumb: "Workspace / Working copy / Chat", target: { type: "workspace", messageId: "archived-message", context: "archived", archiveId: "archive" } },
-    ];
-    return { documents: searchDocuments(docs, query), errors: [] };
+    ] satisfies SearchDocument[])];
+    const words = searchWords(query).map((word) => word === "mnthly" ? "monthly" : word);
+    return { documents: docs.filter((document) => {
+      if (document.target.type === "workspace" && document.target.archiveId && document.target.context === currentContext) return false;
+      const text = `${document.title}\n${document.body}\n${document.searchContext ?? ""}`.toLowerCase();
+      return words.every((word) => text.includes(word)) && (document.kind !== "Comment" || words.some((word) => document.body.toLowerCase().includes(word)));
+    }).map((document) => ({ ...document, titleMatched: document.kind === "Task" && words.every((word) => document.title.toLowerCase().includes(word)), titleMatches: words.filter((word) => document.title.toLowerCase().includes(word)), bodyMatches: words.filter((word) => document.body.toLowerCase().includes(word)) })).sort((left, right) => Number(right.kind === "Task") - Number(left.kind === "Task") || left.id.localeCompare(right.id)), errors: this.fail ? ["Memory and saved workspace chats could not be searched."] : [] };
   },
 };
 
@@ -54,12 +58,25 @@ export async function checkSpotlight(taskId: string, taskTitle: string, otherTas
   check(getComputedStyle(get('.spotlight-popup')).animationName === (matchMedia('(prefers-reduced-motion: reduce)').matches ? 'none' : 'spotlight-appear'), "Opening must use the approved motion setting");
   await query("monthly REPORT");
   check(result(taskTitle, "Task"), "Case-insensitive multiword search must find task titles");
+  check(get('.spotlight-result small').textContent === "Task", "Task results must rank first");
+  await click(get('.spotlight-filters button:nth-child(3)'));
+  check(get('.spotlight-filters button:nth-child(3)').getAttribute('aria-pressed') === 'true', "The active filter must be announced");
+  check(result(taskTitle, "Comment"), "A comment matching part of the query must remain visible when the task title matches the rest");
+  await query("Keep the comment visible");
+  check(result(taskTitle, "Comment") && [...document.querySelectorAll('.spotlight-result small')].every(el => el.textContent === "Comment"), "The comment filter must retain matching comments and exclude other result types");
+  await query("monthly REPORT");
+  await click(get('.spotlight-filters button:nth-child(5)'));
+  check(get('.spotlight-empty p').textContent?.includes('filter'), "An empty filter must suggest changing it");
+  await click(get('.spotlight-filters button:first-child'));
+  check(document.activeElement === input(), "Changing filters must return focus to search");
   await key(input(), "ArrowDown");
   check(input().getAttribute("aria-activedescendant") === "spotlight-result-1", "Arrow keys must move the active selection");
   await key(input(), "Escape");
   check(!document.querySelector('.spotlight-popup'), "Escape must close search");
   check(document.activeElement === comment, "Escape must restore the previous focus");
   check(get<HTMLTextAreaElement>('[aria-label="Write a task comment"]').value === "Keep my unsent comment", "Closing must preserve the comment draft");
+  await launch(); await query("mnthly"); await click(result(taskTitle, "Task")); await settle(300);
+  check(get<HTMLInputElement>('.task-details-title-input').value === taskTitle, "A fuzzy result must open without exact query matching");
   await launch(); await query(otherTaskTitle); await click(result(otherTaskTitle, "Task")); await settle(300);
   check(get<HTMLInputElement>('.task-details-title-input').value === otherTaskTitle, "Enter/click navigation must open the correct task");
   await launch(); await query(taskTitle); await key(input(), "Enter"); await settle(300);
@@ -123,6 +140,19 @@ export async function checkSpotlight(taskId: string, taskTitle: string, otherTas
   await click(visibleButton('Tasks')); await click(visibleButton(taskTitle));
   check(get<HTMLTextAreaElement>('[aria-label="Write a task comment"]').value === 'Keep my unsent comment', "Memory and archive navigation must preserve comment drafts");
   check(get(`[data-search-task="${taskId}"]`), "Search must return to the original task");
+  const memoryBeforeFuzzy = spotlightFixture.memory;
+  spotlightFixture.memory = `# Notes\n\n${"Earlier context. ".repeat(200)}monthly result`;
+  await launch(); await query("mnthly");
+  check(result("navigation.md", "Memory").querySelector(".spotlight-snippet mark")?.textContent === "monthly", "A fuzzy result must show and highlight the matched passage");
+  await click(result("navigation.md", "Memory")); await settle(300);
+  const fuzzyHighlight = (CSS as unknown as { highlights?: Map<string, Set<Range>> }).highlights?.get("spotlight-source");
+  if (fuzzyHighlight) {
+    check(fuzzyHighlight.size > 0, "A fuzzy result must highlight its source");
+    const match = [...fuzzyHighlight][0].getBoundingClientRect();
+    const panel = get('.memory-editor-panel').getBoundingClientRect();
+    check(match.top >= panel.top && match.bottom <= panel.bottom, "A fuzzy result must scroll to a match within a long paragraph");
+  }
+  spotlightFixture.memory = memoryBeforeFuzzy;
   await launch(); spotlightFixture.delay = 600; await query("navigation");
   await switchRepository(); await settle(900); spotlightFixture.delay = 0;
   check(!document.querySelector('.spotlight-popup'), "Changing repository must close the old search");
