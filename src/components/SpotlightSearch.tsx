@@ -81,7 +81,8 @@ export function SpotlightSearch({ repositoryRoot, repositoryName, tasks, review,
     const active = () => mounted.current && !controller.signal.aborted && navigation.current === controller;
     setOpening(true); setNavigationError("");
     try {
-      const opened = await onNavigate(document, query, controller.signal);
+      const matches = document.titleMatched ? document.titleMatches : document.bodyMatches?.length ? document.bodyMatches : document.titleMatches;
+      const opened = await onNavigate(document, matches?.join(" ") || query, controller.signal);
       if (!active()) return;
       if (opened) changeOpen(false);
       else { setNavigationError("This result could not be opened. Your drafts are preserved. Search again or retry."); setRevision((value) => value + 1); }
@@ -106,7 +107,9 @@ export function SpotlightSearch({ repositoryRoot, repositoryName, tasks, review,
         <div ref={list} id="spotlight-results" role="listbox" aria-label="Search results" aria-busy={loading} className="spotlight-results">
           {documents.map((document, resultIndex) => {
             const Icon = document.kind === "Task" ? ListTodo : document.kind === "Memory" ? FileText : MessageCircle;
-            return <div key={document.id} id={`spotlight-result-${resultIndex}`} role="option" aria-selected={resultIndex === index} aria-disabled={opening} className="spotlight-result" onMouseDown={(event) => event.preventDefault()} onClick={() => { void navigate(document); }}><span className="spotlight-result-icon"><Icon size={19} /></span><div className="spotlight-result-body"><div className="spotlight-result-heading"><span><SearchHighlight text={document.title} query={query} /></span><small>{document.kind}</small></div><div className="spotlight-breadcrumb">{document.breadcrumb}</div><div className="spotlight-snippet"><SearchHighlight text={searchSnippet(document.body, query)} query={query} /></div></div><span className="spotlight-enter" aria-hidden="true">↵</span></div>;
+            const titleQuery = document.titleMatches?.join(" ") || query;
+            const bodyQuery = document.bodyMatches?.join(" ") || query;
+            return <div key={document.id} id={`spotlight-result-${resultIndex}`} role="option" aria-selected={resultIndex === index} aria-disabled={opening} className="spotlight-result" onMouseDown={(event) => event.preventDefault()} onClick={() => { void navigate(document); }}><span className="spotlight-result-icon"><Icon size={19} /></span><div className="spotlight-result-body"><div className="spotlight-result-heading"><span><SearchHighlight text={document.title} query={titleQuery} /></span><small>{document.kind}</small></div><div className="spotlight-breadcrumb">{document.breadcrumb}</div><div className="spotlight-snippet"><SearchHighlight text={searchSnippet(document.body, bodyQuery)} query={bodyQuery} /></div></div><span className="spotlight-enter" aria-hidden="true">↵</span></div>;
           })}
         </div>
         {!documents.length && <div className="spotlight-empty"><Search size={25} aria-hidden="true" /><h2>{!hasQuery ? "Find your place." : loading ? "Searching…" : "No results found"}</h2><p>{!hasQuery ? "Search tasks, conversations and memory." : loading ? "Searching this repository." : filter !== "All" && results.length ? "Try another filter or search term." : "Try another word or a shorter phrase."}</p></div>}

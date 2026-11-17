@@ -4,7 +4,7 @@ export type SearchTarget =
   | { type: "task"; taskId: string; commentId?: string; messageId?: string }
   | { type: "memory"; path: string }
   | { type: "workspace"; messageId: string; context: string; archiveId?: string };
-export type SearchDocument = { id: string; kind: "Task" | "Comment" | "Chat" | "Memory"; title: string; body: string; breadcrumb: string; target: SearchTarget; searchContext?: string; titleMatched?: boolean };
+export type SearchDocument = { id: string; kind: "Task" | "Comment" | "Chat" | "Memory"; title: string; body: string; breadcrumb: string; target: SearchTarget; searchContext?: string; titleMatched?: boolean; titleMatches?: string[]; bodyMatches?: string[] };
 export type SearchResponse = { documents: SearchDocument[]; errors: string[] };
 export const searchWords = (query: string) => [...new Set(query.toLowerCase().trim().split(/\s+/).filter(Boolean))];
 export const workspaceSearchContext = (review: ReviewSession) => JSON.stringify([review.mode, review.baseRef, review.compareRef, review.mode === "workingCopy" ? review.baseOid : null]);
@@ -64,6 +64,14 @@ export function revealSearchSource(find: () => HTMLElement | null, query: string
     if (highlights && HighlightClass) highlights.set("spotlight-source", new HighlightClass(...ranges));
     const first = ranges[0]?.startContainer.parentElement ?? source;
     first.scrollIntoView({ block: "center", behavior: "instant" });
+    if (ranges[0]) {
+      for (let parent = first.parentElement; parent; parent = parent.parentElement) {
+        if (parent.scrollHeight <= parent.clientHeight || !/(auto|scroll|overlay)/.test(getComputedStyle(parent).overflowY)) continue;
+        const match = ranges[0].getBoundingClientRect();
+        const bounds = parent.getBoundingClientRect();
+        parent.scrollBy({ top: match.top + match.height / 2 - bounds.top - parent.clientHeight / 2, behavior: "instant" });
+      }
+    }
     return true;
   };
   const observer = new MutationObserver(() => { cancelAnimationFrame(frame); frame = requestAnimationFrame(() => { if (reveal()) observer.disconnect(); }); });

@@ -3,9 +3,11 @@ use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::sync::{LazyLock, Mutex};
 use tantivy::collector::TopDocs;
-use tantivy::query::{BooleanQuery, BoostQuery, FuzzyTermQuery, Occur, Query, TermQuery};
+use tantivy::query::{BooleanQuery, BoostQuery, DfaWrapper, FuzzyTermQuery, Occur, Query, RegexQuery, TermQuery};
 use tantivy::schema::{Field, IndexRecordOption, Schema, Value as TantivyValue, STORED, TEXT};
+use tantivy::tokenizer::{LowerCaser, RemoveLongFilter, SimpleTokenizer, TextAnalyzer, MAX_TOKEN_LEN};
 use tantivy::{doc, Index, IndexReader, TantivyDocument, Term};
+use tantivy_fst::Automaton;
 
 struct SearchIndex {
     fingerprint: [u8; 32],
@@ -32,6 +34,10 @@ impl SearchIndex {
         let context = schema.add_text_field("context", TEXT);
         let position = schema.add_u64_field("position", STORED);
         let index = Index::create_in_ram(schema.build());
+        index.tokenizers().register("default", TextAnalyzer::builder(SimpleTokenizer::default())
+            .filter(RemoveLongFilter::limit(MAX_TOKEN_LEN))
+            .filter(LowerCaser)
+            .build());
         let mut writer = index.writer_with_num_threads::<TantivyDocument>(1, 15_000_000).map_err(|error| error.to_string())?;
         for (number, document) in documents.iter().enumerate() {
             let is_comment = string(document, "kind") == "Comment";
@@ -48,16 +54,35 @@ impl SearchIndex {
         Ok(Self { fingerprint, index, reader, documents, title, body, context, position })
     }
 
-    fn word_query(&self, word: &str, fields: &[(Field, f32)]) -> Box<dyn Query> {
+    fn word_query(&self, word: &str, fields: &[(Field, f32)]) -> Result<Box<dyn Query>, String> {
         let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::new();
         for (field, boost) in fields {
             let term = Term::from_field_text(*field, word);
             let prefix = FuzzyTermQuery::new_prefix(term.clone(), if word.chars().count() >= 4 { 1 } else { 0 }, true);
             clauses.push((Occur::Should, Box::new(BoostQuery::new(Box::new(prefix), *boost))));
+            let infix = RegexQuery::from_pattern(&format!(".*{word}.*"), *field).map_err(|error| error.to_string())?;
+            clauses.push((Occur::Should, Box::new(BoostQuery::new(Box::new(infix), *boost))));
             let exact = TermQuery::new(term, IndexRecordOption::WithFreqs);
             clauses.push((Occur::Should, Box::new(BoostQuery::new(Box::new(exact), boost * 2.0))));
         }
-        Box::new(BooleanQuery::new(clauses))
+        Ok(Box::new(BooleanQuery::new(clauses)))
+    }
+
+    fn matched_terms(&self, text: &str, words: &[String], automata: &[DfaWrapper]) -> Result<Vec<String>, String> {
+        let mut tokenizer = self.index.tokenizers().get("default").ok_or("Missing search tokenizer")?;
+        let mut stream = tokenizer.token_stream(text);
+        let mut matches = Vec::new();
+        while stream.advance() && matches.len() < 64 {
+            let token = stream.token();
+            if words.iter().zip(automata).any(|(word, automaton)| {
+                let state = token.text.bytes().fold(automaton.start(), |state, byte| automaton.accept(&state, byte));
+                token.text.contains(word) || automaton.is_match(&state)
+            }) {
+                let original = &text[token.offset_from..token.offset_to];
+                if !matches.iter().any(|value| value == original) { matches.push(original.to_owned()); }
+            }
+        }
+        Ok(matches)
     }
 
     fn search(&self, query: &str) -> Result<Vec<Value>, String> {
@@ -70,9 +95,13 @@ impl SearchIndex {
         }
         if words.is_empty() || self.documents.is_empty() { return Ok(Vec::new()); }
         let fields = [(self.title, 3.0), (self.body, 1.0), (self.context, 0.5)];
-        let query = BooleanQuery::new(words.iter().map(|word| (Occur::Must, self.word_query(word, &fields))).collect());
-        let body_query = BooleanQuery::new(words.iter().map(|word| (Occur::Should, self.word_query(word, &[(self.body, 1.0)]))).collect());
-        let title_query = BooleanQuery::new(words.iter().map(|word| (Occur::Must, self.word_query(word, &[(self.title, 1.0)]))).collect());
+        let clauses = |fields: &[(Field, f32)], occur| words.iter().map(|word| self.word_query(word, fields).map(|query| (occur, query))).collect::<Result<Vec<_>, _>>();
+        let query = BooleanQuery::new(clauses(&fields, Occur::Must)?);
+        let body_query = BooleanQuery::new(clauses(&[(self.body, 1.0)], Occur::Should)?);
+        let title_query = BooleanQuery::new(clauses(&[(self.title, 1.0)], Occur::Must)?);
+        let automata = words.iter().map(|word| FuzzyTermQuery::new_prefix(
+            Term::from_field_text(self.body, word), if word.chars().count() >= 4 { 1 } else { 0 }, true
+        ).automaton().map_err(|error| error.to_string())).collect::<Result<Vec<_>, _>>()?;
         let searcher = self.reader.searcher();
         let limit = self.documents.len();
         let body_matches: HashSet<_> = searcher.search(&body_query, &TopDocs::with_limit(limit).order_by_score()).map_err(|error| error.to_string())?.into_iter().map(|(_, address)| address).collect();
@@ -86,6 +115,8 @@ impl SearchIndex {
             let task_boost = if string(document, "kind") == "Task" { 1.15 } else { 1.0 };
             let mut result = document.clone();
             if string(document, "kind") == "Task" { result["titleMatched"] = Value::Bool(title_matches.contains(&address)); }
+            result["titleMatches"] = serde_json::to_value(self.matched_terms(string(document, "title"), &words, &automata)?).map_err(|error| error.to_string())?;
+            result["bodyMatches"] = serde_json::to_value(self.matched_terms(string(document, "body"), &words, &automata)?).map_err(|error| error.to_string())?;
             matches.push((score * task_boost, result));
         }
         matches.sort_by(|(left_score, left), (right_score, right)| right_score.total_cmp(left_score).then_with(|| string(left, "id").cmp(string(right, "id"))));
@@ -129,6 +160,27 @@ mod tests {
         assert_eq!(ids(documents.clone(), "keyb"), ["memory"]);
         assert!(ids(documents.clone(), "release nonexistent").is_empty());
         assert!(ids(documents, "  ").is_empty());
+    }
+
+    #[test]
+    fn finds_long_identifiers_and_infixes() {
+        let hash = "8713d7c020acd997d9ea712c754ca207e47dffdf";
+        let documents = vec![
+            document("hash", "Chat", "Commit", &format!("Fix in commit {hash}"), ""),
+            document("code", "Chat", "Code", "Find SpotlightSearch component", ""),
+        ];
+        assert_eq!(ids(documents.clone(), hash), ["hash"]);
+        assert_eq!(ids(documents.clone(), "8713d7c"), ["hash"]);
+        assert_eq!(ids(documents, "Search"), ["code"]);
+    }
+
+    #[test]
+    fn returns_original_terms_for_fuzzy_and_infix_highlighting() {
+        let documents = vec![document("memory", "Memory", "notes.md", "Before monthly SpotlightSearch after", "")];
+        let fuzzy = search(documents.clone(), "mnthly").unwrap();
+        assert_eq!(fuzzy[0]["bodyMatches"], json!(["monthly"]));
+        let infix = search(documents, "Search").unwrap();
+        assert_eq!(infix[0]["bodyMatches"], json!(["SpotlightSearch"]));
     }
 
     #[test]

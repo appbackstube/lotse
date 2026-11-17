@@ -659,6 +659,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tantivy",
+ "tantivy-fst",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

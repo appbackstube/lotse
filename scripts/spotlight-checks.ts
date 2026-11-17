@@ -22,7 +22,7 @@ export const spotlightFixture = {
       if (document.target.type === "workspace" && document.target.archiveId && document.target.context === currentContext) return false;
       const text = `${document.title}\n${document.body}\n${document.searchContext ?? ""}`.toLowerCase();
       return words.every((word) => text.includes(word)) && (document.kind !== "Comment" || words.some((word) => document.body.toLowerCase().includes(word)));
-    }).map((document) => document.kind === "Task" ? { ...document, titleMatched: words.every((word) => document.title.toLowerCase().includes(word)) } : document).sort((left, right) => Number(right.kind === "Task") - Number(left.kind === "Task") || left.id.localeCompare(right.id)), errors: this.fail ? ["Memory and saved workspace chats could not be searched."] : [] };
+    }).map((document) => ({ ...document, titleMatched: document.kind === "Task" && words.every((word) => document.title.toLowerCase().includes(word)), titleMatches: words.filter((word) => document.title.toLowerCase().includes(word)), bodyMatches: words.filter((word) => document.body.toLowerCase().includes(word)) })).sort((left, right) => Number(right.kind === "Task") - Number(left.kind === "Task") || left.id.localeCompare(right.id)), errors: this.fail ? ["Memory and saved workspace chats could not be searched."] : [] };
   },
 };
 
@@ -140,6 +140,19 @@ export async function checkSpotlight(taskId: string, taskTitle: string, otherTas
   await click(visibleButton('Tasks')); await click(visibleButton(taskTitle));
   check(get<HTMLTextAreaElement>('[aria-label="Write a task comment"]').value === 'Keep my unsent comment', "Memory and archive navigation must preserve comment drafts");
   check(get(`[data-search-task="${taskId}"]`), "Search must return to the original task");
+  const memoryBeforeFuzzy = spotlightFixture.memory;
+  spotlightFixture.memory = `# Notes\n\n${"Earlier context. ".repeat(200)}monthly result`;
+  await launch(); await query("mnthly");
+  check(result("navigation.md", "Memory").querySelector(".spotlight-snippet mark")?.textContent === "monthly", "A fuzzy result must show and highlight the matched passage");
+  await click(result("navigation.md", "Memory")); await settle(300);
+  const fuzzyHighlight = (CSS as unknown as { highlights?: Map<string, Set<Range>> }).highlights?.get("spotlight-source");
+  if (fuzzyHighlight) {
+    check(fuzzyHighlight.size > 0, "A fuzzy result must highlight its source");
+    const match = [...fuzzyHighlight][0].getBoundingClientRect();
+    const panel = get('.memory-editor-panel').getBoundingClientRect();
+    check(match.top >= panel.top && match.bottom <= panel.bottom, "A fuzzy result must scroll to a match within a long paragraph");
+  }
+  spotlightFixture.memory = memoryBeforeFuzzy;
   await launch(); spotlightFixture.delay = 600; await query("navigation");
   await switchRepository(); await settle(900); spotlightFixture.delay = 0;
   check(!document.querySelector('.spotlight-popup'), "Changing repository must close the old search");
