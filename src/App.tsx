@@ -21,6 +21,8 @@ import { useTaskFieldDraft } from "./useTaskFieldDraft";
 import { readTaskDrawing } from "./taskDrawing";
 import { applyTaskSandboxUpdate } from "./taskSandbox";
 import { WebsiteCredentialsSettings } from "./components/WebsiteCredentialsSettings";
+import { PipelineDesigner } from "./components/PipelineDesigner";
+import { loadPipelines, pipelineError, pipelineQueue, pipelinesStorageKey, pipelineTurn, type Pipeline } from "./pipelines";
 import { SettingsLayout, type SettingsPage } from "./components/SettingsLayout";
 import { TaskBrowser, hideTaskBrowsers } from "./components/TaskBrowser";
 import { TaskDrawingPanel, TaskSandboxPanel } from "./components/TaskVisualPanel";
@@ -71,6 +73,8 @@ import {
   ArrowUp,
   ArrowDown,
   Blocks,
+  Route,
+  Pause,
   Bot,
   Check,
   CircleAlert,
@@ -258,6 +262,7 @@ const isSlackMcp = (url: string) => {
 };
 const openRouterProvider: ProviderSettingsEntry = { id: "openrouter", name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", envKey: "OPENROUTER_API_KEY" };
 type TaskRun = {
+  pipeline?: QueuedChatMessage["pipeline"];
   messageId: string;
   coordinationPath?: string[];
   automation?: LaneRun;
@@ -1071,6 +1076,12 @@ function AiChatPanel({
   onEditQueued,
   onMoveQueued,
   onResumeQueue,
+  onPauseQueue,
+  onStopPipeline,
+  pipelines,
+  canRunPipeline,
+  onRunPipeline,
+  onManagePipelines,
   onImplementPlan,
   onCancel,
   onClear,
@@ -1145,6 +1156,12 @@ function AiChatPanel({
   onEditQueued: (id: string, body: string) => void;
   onMoveQueued: (id: string, offset: -1 | 1) => void;
   onResumeQueue: () => void;
+  onPauseQueue: () => void;
+  onStopPipeline: () => void;
+  pipelines: Pipeline[];
+  canRunPipeline: boolean;
+  onRunPipeline: (pipeline: Pipeline) => void;
+  onManagePipelines: () => void;
   onImplementPlan: () => void;
   onCancel: () => void;
   onClear: () => void;
@@ -1189,7 +1206,7 @@ function AiChatPanel({
   const [configOpen, setConfigOpen] = useState(false);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [agentMenuOpen, setAgentMenuOpen] = useState(false);
-  const [addMenuPage, setAddMenuPage] = useState<"main" | "playbooks" | "assets">("main");
+  const [addMenuPage, setAddMenuPage] = useState<"main" | "playbooks" | "assets" | "pipelines">("main");
   const [showDebug, setShowDebug] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [composerDraft, setComposerDraft] = useState(draft);
@@ -1251,6 +1268,8 @@ function AiChatPanel({
     return () => { disposed = true; unlisten?.(); };
   }, []);
 
+  const pipeline = queuedMessages.find((item) => item.pipeline)?.pipeline;
+  const manualMessages = queuedMessages.filter((item) => !item.pipeline);
   const emptyCenteredChat = centered && !messages.length && !running && !queuedMessages.length && !variablePrompt && !agentInput && !agentApproval;
   const availableFavoriteModels = favoriteModels.filter((id) => models.some((entry) => entry.model === id));
 
@@ -1350,18 +1369,23 @@ function AiChatPanel({
         {emptyCenteredChat && <><h1 className="mb-1 text-center text-[28px] font-bold tracking-tight text-[#E8FFF0]">What's next?</h1><p className="mb-4 text-center text-sm text-[#7C9B88]">Tip: Use Plan mode first for better results, or start iterating on your idea right away.</p></>}
         {taskMode && error && <div role="alert" className="ios-error-callout mx-auto mb-3 flex w-full max-w-[960px] items-start gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium"><CircleAlert size={17} className="mt-0.5 shrink-0" /><span className="min-w-0 flex-1 break-words">{error}</span><button type="button" onClick={onDismissError} aria-label="Dismiss error" className="grid size-6 shrink-0 place-items-center rounded hover:bg-black/5"><X size={15} /></button></div>}
         {taskMode && taskSelected && taskLocation === "worktree" && !taskLocationLocked && !taskStartSelected(taskWorktreeStart) && <p className="mx-auto mb-2 w-full max-w-[960px] px-3 text-xs text-[#7C9B88]">Choose a start branch or the current workspace in Details before sending.</p>}
-        {!!queuedMessages.length && <div className="ios-chat-stack mx-auto mb-1 max-h-[35vh] w-full max-w-[960px] space-y-1 overflow-y-auto px-4 pb-1" aria-label="Queued messages">
-          {queuedMessages.map((item, index) => <div key={item.id} className="ios-chat-stack-item flex items-center gap-2 rounded-[18px] border px-4 py-3 text-sm">
+        {pipeline && <div className="pipeline-run-card mx-auto mb-2 w-full max-w-[960px]" aria-label="Running pipeline">
+          <Route size={17} /><div className="min-w-0 flex-1"><strong>{pipeline.title}</strong><p>Step {pipeline.stepIndex + 1} of {pipeline.stepCount} · {pipeline.stepTitle}</p><p>{queuePaused ? (running ? "Pausing after this response" : "Paused · resume to retry or continue") : running ? "Running" : "Starting…"} · Message {pipeline.position + 1} of {pipeline.total}</p></div>
+          <Button variant="ghost" size="sm" onClick={onStopPipeline}><Square size={13} /> Stop</Button>
+          <Button variant="ghost" size="sm" onClick={queuePaused ? onResumeQueue : onPauseQueue}>{queuePaused ? <Play size={13} /> : <Pause size={13} />}{queuePaused ? "Resume" : "Pause"}</Button>
+        </div>}
+        {!!manualMessages.length && <div className="ios-chat-stack mx-auto mb-1 max-h-[35vh] w-full max-w-[960px] space-y-1 overflow-y-auto px-4 pb-1" aria-label="Queued messages">
+          {manualMessages.map((item, index) => <div key={item.id} className="ios-chat-stack-item flex items-center gap-2 rounded-[18px] border px-4 py-3 text-sm">
             <ListTodo size={15} className="shrink-0 opacity-60" />
             <span className="min-w-0 flex-1 truncate" title={item.body}>{item.body || `${item.context.attachments.length} attachment${item.context.attachments.length === 1 ? "" : "s"}`}</span>
             {item.context.attachments.length > 0 && <span className="shrink-0 text-xs opacity-60">+{item.context.attachments.length}</span>}
             {running ? canSteerQueued && <button type="button" onClick={() => onSteerQueued(item.id)} className="ios-chat-stack-action" title="Send into the current response"><CornerDownRight size={15} /> Steer</button>
-              : index === 0 && <button type="button" onClick={onResumeQueue} className="ios-chat-stack-action">{queuePaused ? "Resume" : "Send now"}</button>}
+              : index === 0 && !pipeline && <button type="button" onClick={onResumeQueue} className="ios-chat-stack-action">{queuePaused ? "Resume" : "Send now"}</button>}
             <button type="button" onClick={() => onDeleteQueued(item.id)} className="ios-chat-stack-icon" aria-label="Delete queued message" title="Delete queued message"><Trash2 size={15} /></button>
             <DropdownMenu><DropdownMenuTrigger className="ios-chat-stack-icon" aria-label="More queued message actions"><Ellipsis size={16} /></DropdownMenuTrigger>
               <DropdownMenuContent align="end"><DropdownMenuItem onClick={() => { setEditingQueued(item); setQueuedEditDraft(item.body); }}><Pencil size={14} /> Edit</DropdownMenuItem>
-                <DropdownMenuItem disabled={index === 0} onClick={() => onMoveQueued(item.id, -1)}><ArrowUp size={14} /> Move up</DropdownMenuItem>
-                <DropdownMenuItem disabled={index === queuedMessages.length - 1} onClick={() => onMoveQueued(item.id, 1)}><ArrowDown size={14} /> Move down</DropdownMenuItem>
+                <DropdownMenuItem disabled={index === 0 || !!pipeline} onClick={() => onMoveQueued(item.id, -1)}><ArrowUp size={14} /> Move up</DropdownMenuItem>
+                <DropdownMenuItem disabled={index === manualMessages.length - 1} onClick={() => onMoveQueued(item.id, 1)}><ArrowDown size={14} /> Move down</DropdownMenuItem>
               </DropdownMenuContent></DropdownMenu>
           </div>)}
         </div>}
@@ -1397,12 +1421,17 @@ function AiChatPanel({
                 {addMenuPage === "main" ? <>
                   <button type="button" disabled={!comparison || sendPending || (taskMode && !taskSelected)} onClick={() => { setAddMenuOpen(false); void open({ multiple: true }).then((paths) => { if (Array.isArray(paths)) onAddFiles(paths); else if (paths) onAddFiles([paths]); }); }} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[#183522] disabled:opacity-40"><FileText size={15} className="text-[#7C9B88]" /><span className="flex-1">File</span></button>
                   <button type="button" onClick={() => setAddMenuPage("playbooks")} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[#183522]"><Blocks size={15} className="text-[#7C9B88]" /><span className="flex-1">Playbook</span><ChevronRight size={14} className="text-[#7C9B88]" /></button>
+                  {taskMode && <button type="button" onClick={() => setAddMenuPage("pipelines")} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[#183522]"><Route size={15} className="text-[#7C9B88]" /><span className="flex-1">Pipeline</span><ChevronRight size={14} className="text-[#7C9B88]" /></button>}
                   {taskMode && <button type="button" disabled={!taskSelected || !taskAssets.length} onClick={() => setAddMenuPage("assets")} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[#183522] disabled:opacity-40"><Folder size={15} className="text-[#7C9B88]" /><span className="flex-1">Assets</span>{selectedAssetIds.length > 0 && <span className="text-xs text-[#7C9B88]">{selectedAssetIds.length}</span>}<ChevronRight size={14} className="text-[#7C9B88]" /></button>}
                   <button type="button" role="switch" aria-checked={mode === "plan"} disabled={running || (taskMode && !taskSelected)} onClick={() => { onModeChange(mode === "plan" ? "default" : "plan"); setAddMenuOpen(false); }} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[#183522] disabled:opacity-40"><ListTodo size={15} className="text-[#7C9B88]" /><span className="flex-1">Plan</span><span className="text-xs text-[#7C9B88]">{mode === "plan" ? "On" : "Off"}</span></button>
                   <button type="button" role="switch" aria-checked={goalSettings.enabled} disabled={running || (taskMode && !taskSelected)} onClick={() => { onGoalSettingsChange({ ...goalSettings, enabled: !goalSettings.enabled }); setAddMenuOpen(false); }} className="flex w-full items-center justify-between gap-2.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[#183522] disabled:opacity-40"><span>Goal</span><span className="text-xs text-[#7C9B88]">{goalSettings.enabled ? "On" : "Off"}</span></button>
                 </> : <>
-                  <button type="button" onClick={() => setAddMenuPage("main")} className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs text-[#7C9B88] hover:bg-[#183522]"><ChevronLeft size={14} /> {addMenuPage === "playbooks" ? "Playbooks" : "Assets"}</button>
-                  {addMenuPage === "playbooks" ? <>
+                  <button type="button" onClick={() => setAddMenuPage("main")} className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs text-[#7C9B88] hover:bg-[#183522]"><ChevronLeft size={14} /> {addMenuPage === "playbooks" ? "Playbooks" : addMenuPage === "pipelines" ? "Pipelines" : "Assets"}</button>
+                  {addMenuPage === "pipelines" ? <>
+                    <button type="button" onClick={() => { setAddMenuOpen(false); onManagePipelines(); }} className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs font-medium hover:bg-[#183522]"><Settings size={13} /> Manage pipelines</button>
+                    <div className="max-h-72 overflow-y-auto">{pipelines.map((p) => <button key={p.id} type="button" aria-label={`Start pipeline ${p.title || "Untitled pipeline"}`} title={pipelineError(p, agents) ?? `Start ${p.title}`} disabled={!canRunPipeline || !!pipelineError(p, agents)} onClick={() => { setAddMenuOpen(false); onRunPipeline(p); }} className="flex w-full items-start gap-2.5 rounded-md px-2.5 py-2 text-left hover:bg-[#183522] disabled:opacity-40"><Route size={14} className="mt-0.5 shrink-0" /><span className="min-w-0"><span className="block truncate text-xs font-medium">{p.title || "Untitled pipeline"}</span><span className="mt-0.5 block text-[10px] text-[#7C9B88]">{pipelineError(p, agents) ? "Draft · finish in Settings" : `${p.steps.length} steps · ${p.description || "Run in this task"}`}</span></span></button>)}{!pipelines.length && <p className="px-3 py-5 text-center text-xs text-[#7C9B88]">Create your first pipeline in Settings.</p>}</div>
+                    {!canRunPipeline && <p className="px-3 py-2 text-[10px] text-[#7C9B88]">Choose an idle task with an empty queue to start a pipeline.</p>}
+                  </> : addMenuPage === "playbooks" ? <>
                     <button type="button" onClick={() => { setAddMenuOpen(false); onManagePlaybooks(); }} className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs font-bold hover:bg-[#183522]"><Settings size={13} className="text-[#7C9B88]" /> Manage playbooks</button>
                     <div className="max-h-72 overflow-y-auto">
                       {playbooks.map((playbook) => <button key={playbook.id} type="button" disabled={!canRunPlaybooks || !!variablePrompt || (taskMode && !taskSelected)} onClick={() => { setAddMenuOpen(false); onRunPlaybook(playbook); }} className="flex w-full items-start gap-2.5 rounded-md px-2.5 py-2 text-left hover:bg-[#183522] disabled:opacity-40"><Blocks size={14} className="mt-0.5 shrink-0 text-[#A3FF12]" /><span className="min-w-0"><span className="block truncate text-xs font-bold text-[#E8FFF0]">{playbook.title}</span><span className="mt-0.5 block truncate text-[10px] text-[#7C9B88]">{playbook.description || "Custom Agent Chat prompt"}</span></span></button>)}
@@ -1444,7 +1473,7 @@ function AiChatPanel({
                 </PopoverContent>
               </Popover>
               <Popover open={agentMenuOpen} onOpenChange={setAgentMenuOpen}>
-                <PopoverTrigger className="ios-chat-config-trigger max-w-[200px]" aria-label="Agent role" disabled={running || sendPending || !comparison || (taskMode && !taskSelected)}><span className="truncate">{chatAgent?.title ?? "None"}</span><ChevronDown size={14} className="shrink-0" /></PopoverTrigger>
+                <PopoverTrigger className="ios-chat-config-trigger max-w-[200px]" aria-label="Agent role" disabled={!!pipeline || running || sendPending || !comparison || (taskMode && !taskSelected)}><span className="truncate">{chatAgent?.title ?? "None"}</span><ChevronDown size={14} className="shrink-0" /></PopoverTrigger>
                 <PopoverContent side="top" align="start" className="w-72 overflow-hidden border border-[#294536] bg-[#111A15] p-1.5 shadow-2xl shadow-black/60">
                   <PopoverTitle className="px-2 py-2 text-xs font-bold text-[#7C9B88]">Agents</PopoverTitle>
                   <button type="button" onClick={() => { setAgentMenuOpen(false); onManageAgents(); }} className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs font-bold hover:bg-[#183522]"><Settings size={13} className="text-[#7C9B88]" /> Manage agents</button>
@@ -2234,6 +2263,7 @@ function App() {
   const [runExitCode, setRunExitCode] = useState<number | null>(null);
   const [chatDefaults, setChatDefaults] = useState(storedChatDefaults);
   const [agents, setAgents] = useState<ChatAgent[]>(storedAgents);
+  const [pipelines, setPipelines] = useState<Pipeline[]>(loadPipelines);
   const [defaultAgentId, setDefaultAgentId] = useState(() => fileStore.getItem(defaultAgentStorageKey) ?? "");
   const defaultAgent = agents.find((agent) => agent.id === defaultAgentId) ?? null;
   const [favoriteModels, setFavoriteModels] = useState(storedChatModelFavorites);
@@ -2741,6 +2771,7 @@ function App() {
 
   useEffect(() => {
     const sync = (event: StorageEvent) => {
+      if (event.key === pipelinesStorageKey) setPipelines(loadPipelines());
       if (event.key === agentsStorageKey) setAgents(storedAgents());
       if (event.key === defaultAgentStorageKey) setDefaultAgentId(fileStore.getItem(defaultAgentStorageKey) ?? "");
       if (event.key === playbookStorageKey) setPlaybooks(storedPlaybooks());
@@ -2895,11 +2926,16 @@ function App() {
         planReady: run.automation ? task.planReady : plan?.isPlan ?? false,
         unreadAgentResult: update.kind !== "cancelled",
       } : task);
-      setTasks(updateTasks);
+      if (run.pipeline) {
+        const next = updateTasks(tasksRef.current);
+        tasksRef.current = next; setTasks(next);
+        if (repositoryRef.current) saveTasks(repositoryRef.current.rootPath, next);
+      } else setTasks(updateTasks);
       if (run.automation) void laneAutomation.finish(run.automation, update.kind, update.kind === "failed" ? update.message ?? "Agent failed" : null);
       if (run.schedule) void finishSchedule(run.schedule, update.kind, update.kind === "failed" ? update.message ?? "Agent failed" : null).catch((reason) => setError(message(reason)));
       const nextRuns = { ...taskRunsRef.current }; delete nextRuns[taskId]; taskRunsRef.current = nextRuns; setTaskRuns(nextRuns);
       const key = repositoryRef.current ? taskQueueKey(repositoryRef.current.rootPath, taskId) : null;
+      if (key && run.pipeline && update.kind === "completed") removeQueued(key, run.messageId);
       if (key && update.kind === "completed") window.setTimeout(() => queueDispatchRef.current(key), 0);
       else if (key) setQueuePaused(key, true);
       if (run.mode === "default") void refreshRef.current();
@@ -4361,6 +4397,7 @@ function App() {
     taskStartingRef.current.add(task.id);
     setTaskStartingIds((current) => new Set(current).add(task.id));
     const configuredTask = automation ? task : taskWithChatMode(task, mode);
+    const pipelineRequest = queuedItem?.pipeline ? pipelineTurn(task, queuedItem) : null;
     const userMessage: ChatMessage = { id: queuedItem?.id ?? crypto.randomUUID(), role: "user", runStatus: "running", body: prompt, createdAt: new Date().toISOString(), selection: queuedItem ? queuedItem.selection : selection, snapshotId: comparison.snapshotId, suggestions: [], contexts: [], attachments };
     setError("");
     const earlyEvents: AgentTurnEvent[] = [];
@@ -4390,14 +4427,15 @@ function App() {
       if (repositoryRef.current?.rootPath !== runRepositoryRoot || !tasksRef.current.some((current) => current.id === task.id && (!schedule || !current.completed))) {
         throw new Error("Task or repository changed before the prompt could start.");
       }
+      if (queuedItem?.pipeline && !chatQueuesRef.current[taskQueueKey(root, task.id)]?.some((item) => item.id === queuedItem.id)) throw new Error("Pipeline stopped before the agent started.");
       const accepted = await startChatTurn({
-        threadId: task.agentThreadId,
-        goalSettings: !schedule && !automation ? normalizeChatGoal(task.chatGoal) : defaultChatGoal,
-        chatAgent: task.chatAgent,
+        threadId: pipelineRequest ? pipelineRequest.threadId : task.agentThreadId,
+        goalSettings: !schedule && !automation && !queuedItem?.pipeline ? normalizeChatGoal(task.chatGoal) : defaultChatGoal,
+        chatAgent: pipelineRequest ? pipelineRequest.agent : task.chatAgent,
         model: queuedItem?.model ?? configuredTask.chatModel,
         effort: queuedItem?.effort ?? configuredTask.chatEffort,
         mode,
-        prompt,
+        prompt: pipelineRequest?.prompt ?? prompt,
         context: { mode: "auto", attachments },
         allowLongPrompt: true,
         taskId: task.id,
@@ -4405,29 +4443,30 @@ function App() {
         taskTitle: task.title,
         taskDescription: task.description,
       }, onTaskEvent);
-      if (repositoryRef.current?.rootPath !== runRepositoryRoot) {
-        await invoke("ai_chat_cancel", { requestId: accepted.requestId });
-        throw new Error("Repository changed before the agent started.");
-      }
       createdWorktree = false;
+      if (repositoryRef.current?.rootPath !== runRepositoryRoot || (queuedItem?.pipeline && !chatQueuesRef.current[taskQueueKey(root, task.id)]?.some((item) => item.id === queuedItem.id))) {
+        await invoke("ai_chat_cancel", { requestId: accepted.requestId });
+        throw new Error(repositoryRef.current?.rootPath !== runRepositoryRoot ? "Repository changed before the agent started." : "Pipeline stopped before the agent started.");
+      }
       acceptedRequestId = accepted.requestId;
-      updateTask(task.id, (current) => ({
+      updateTaskAtRoot(root, task.id, (current) => ({
         ...(automation ? current : taskWithChatMode(current, mode)),
         ...(queuedItem && !automation ? { chatMode: mode, chatModel: queuedItem.model, chatEffort: queuedItem.effort } : {}),
         location: task.location,
         worktreeStart: task.worktreeStart,
         ...(worktree && task.worktreeStart?.kind !== "existing" ? { newBranchName: worktree.branch } : {}),
         agentThreadId: accepted.threadId,
+        ...(pipelineRequest ? { chatAgent: pipelineRequest.agent } : {}),
         started: true,
         worktree,
         unreadAgentResult: false,
         attachments: queuedItem ? current.attachments : [],
-        chatMessages: [...current.chatMessages.map((message) => message.plan ? { ...message, canImplementPlan: false } : message), userMessage].slice(-100),
+        chatMessages: [...current.chatMessages.filter((message) => !queuedItem?.pipeline || message.id !== userMessage.id).map((message) => message.plan ? { ...message, canImplementPlan: false } : message), userMessage].slice(-100),
         planReady: automation ? current.planReady : false,
       }));
       if (!queuedItem) { setTaskDrafts((current) => ({ ...current, [task.id]: "" })); setTaskAssetSelections((current) => ({ ...current, [task.id]: [] })); }
       setTaskChangesRevision((value) => value + 1);
-      const run: TaskRun = { messageId: userMessage.id, coordinationPath: queuedItem?.coordinationPath ?? [task.id], schedule, automation, accepted, mode, status: mode === "plan" ? "Planning…" : "Implementing…", timeline: [], plan: null, input: null, approval: null };
+      const run: TaskRun = { pipeline: queuedItem?.pipeline, messageId: userMessage.id, coordinationPath: queuedItem?.coordinationPath ?? [task.id], schedule, automation, accepted, mode, status: mode === "plan" ? "Planning…" : "Implementing…", timeline: [], plan: null, input: null, approval: null };
       taskRunsRef.current = { ...taskRunsRef.current, [task.id]: run };
       setTaskRuns(taskRunsRef.current);
       runReady = true;
@@ -4465,7 +4504,7 @@ function App() {
       catch (reason) { setError(message(reason)); return false; }
     }
     changeQueue(key, (items) => [...items, item]);
-    if (running) setQueuePaused(key, false);
+    if (running && !chatQueuesRef.current[key]?.some((entry) => entry.pipeline)) setQueuePaused(key, false);
     if (task) {
       updateTask(task.id, (current) => ({ ...current, attachments: [] }));
       setTaskAssetSelections((current) => ({ ...current, [task.id]: [] }));
@@ -4484,7 +4523,7 @@ function App() {
       const accepted = task ? await sendTaskMessage(task, item.mode, item.body, item)
         : await sendAiChat(item.body, item.context, item.mode, { model: item.model, effort: item.effort }, item);
       if (accepted) {
-        removeQueued(key, item.id);
+        if (!item.pipeline) removeQueued(key, item.id);
         if (!task) for (const attachment of item.context.attachments) if (isChatUpload(attachment)) void invoke("release_chat_image_reference", { path: attachment.path }).catch((reason) => setError(message(reason)));
       } else {
         setQueuePaused(key, true);
@@ -4493,6 +4532,30 @@ function App() {
       queueBusyRef.current.delete(key);
       if (chatQueuesRef.current[key]?.length && !pausedQueueKeysRef.current.has(key)) queueMicrotask(() => queueDispatchRef.current(key));
     });
+  };
+
+  const startPipeline = (pipeline: Pipeline) => {
+    const root = repositoryRef.current?.rootPath;
+    const task = tasksRef.current.find((t) => t.id === selectedTaskId);
+    if (!root || !task || !comparison || !review || taskDeletionBusyRef.current || taskGitAction) return;
+    const key = taskQueueKey(root, task.id);
+    if (taskRunsRef.current[task.id] || taskStartingRef.current.has(task.id) || queueBusyRef.current.has(key) || chatQueuesRef.current[key]?.length) { setError("Finish the current task run and queue before starting a pipeline."); return; }
+    if (task.location === "worktree" && !task.worktree && !taskStartSelected(task.worktreeStart)) { setError("Choose the Worktree start point before starting this task."); return; }
+    try {
+      const items = pipelineQueue(pipeline, agents, task);
+      changeQueue(key, () => items);
+      setQueuePaused(key, false);
+      queueDispatchRef.current(key);
+    } catch (reason) { setError(message(reason)); }
+  };
+  const stopPipeline = async () => {
+    const root = repositoryRef.current?.rootPath;
+    if (!root || !selectedTaskId) return;
+    const key = taskQueueKey(root, selectedTaskId);
+    const run = taskRunsRef.current[selectedTaskId];
+    setQueuePaused(key, true);
+    changeQueue(key, (items) => items.filter((item) => !item.pipeline));
+    if (run?.pipeline) { try { await invoke("ai_chat_cancel", { requestId: run.accepted.requestId }); } catch (reason) { setError(message(reason)); } }
   };
 
   const automationDirectory = (task: RepositoryTask) => {
@@ -4683,7 +4746,7 @@ function App() {
     if (!current || (taskMode && !task) || JSON.stringify(current.chatAgent ?? null) === JSON.stringify(agent)) return;
     if (task ? !!taskRunsRef.current[task.id] || taskStartingRef.current.has(task.id) : aiChatRunningRef.current) return;
     const key = task && repository ? taskQueueKey(repository.rootPath, task.id) : reviewQueueKey(reviewRef.current!);
-    if (queueBusyRef.current.has(key)) return;
+    if (queueBusyRef.current.has(key) || chatQueuesRef.current[key]?.some((item) => item.pipeline)) return;
     for (const item of chatQueuesRef.current[key] ?? []) removeQueued(key, item.id, true);
     setVariablePrompt(null);
     setError("");
@@ -5722,6 +5785,9 @@ function App() {
               </div>)}</div>
             </section>
           </div>
+          <div hidden={settingsPage !== "pipelines"} data-settings-page="pipelines">
+            <PipelineDesigner pipelines={pipelines} agents={agents} onChange={(next) => { setPipelines(next); fileStore.setJSON(pipelinesStorageKey, next); }} onConfirm={setConfirmation} />
+          </div>
           <div hidden={settingsPage !== "pomodoro"} data-settings-page="pomodoro">
             <PomodoroSettings settings={pomodoroSettings} onSave={(settings) => { setPomodoroSettings(settings); setPomodoroRevision((revision) => revision + 1); }} />
           </div>
@@ -6433,6 +6499,12 @@ function App() {
             onDeleteQueued={(id) => { if (activeQueueKey && !queueBusyRef.current.has(activeQueueKey)) removeQueued(activeQueueKey, id, true); }}
             onEditQueued={(id, body) => { if (activeQueueKey && !queueBusyRef.current.has(activeQueueKey)) changeQueue(activeQueueKey, (items) => items.map((item) => item.id === id ? { ...item, body: body.trim() } : item)); }}
             onMoveQueued={(id, offset) => { if (activeQueueKey && !queueBusyRef.current.has(activeQueueKey)) changeQueue(activeQueueKey, (items) => moveQueuedMessage(items, id, offset)); }}
+            pipelines={pipelines}
+            canRunPipeline={taskMode && !!selectedTask && !!comparison && !!review && !selectedTaskRun && !taskStartingIds.has(selectedTask.id) && !taskGitAction && (!activeQueueKey || !chatQueues[activeQueueKey]?.length)}
+            onRunPipeline={startPipeline}
+            onManagePipelines={() => { void openSettings("pipelines"); }}
+            onPauseQueue={() => { if (activeQueueKey) setQueuePaused(activeQueueKey, true); }}
+            onStopPipeline={() => { void stopPipeline(); }}
             onResumeQueue={() => { if (activeQueueKey) { setQueuePaused(activeQueueKey, false); queueDispatchRef.current(activeQueueKey); } }}
             onImplementPlan={() => { if (taskMode && selectedTask) void implementTask(selectedTask); else { selectAiChatMode("default"); void sendAiChat(implementPlanPrompt, chatRequestContext, "default", chatDefaults.default); } }}
             onCancel={() => { if (taskMode && selectedTask) void cancelTaskPlan(selectedTask.id); else void cancelAiChat(); }}

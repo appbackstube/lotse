@@ -1,0 +1,42 @@
+import assert from "node:assert/strict";
+import { normalizePipelines, pipelineError, pipelineQueue, pipelineTurn, validPipelineMessage, type Pipeline } from "../src/pipelines.ts";
+import { normalizeTask } from "../src/tasks.ts";
+import { loadChatQueues, moveQueuedMessage } from "../src/chatQueue.ts";
+import { fileStore } from "../src/fileStore.ts";
+const owner = { id: "owner", title: "Owner", prompt: "Plan." };
+const reviewer = { id: "reviewer", title: "Reviewer", prompt: "Review." };
+const pipeline: Pipeline = { id: "build", title: "Build & review", description: "Small changes", steps: [
+  { id: "plan", title: "Plan", agentId: owner.id, messages: ["Read the task.", "Implement it."] },
+  { id: "review", title: "Review", agentId: reviewer.id, messages: ["Review the changes."] },
+] };
+const task = normalizeTask({ id: "task", title: "Task", chatAgent: owner, agentThreadId: "existing" })!;
+const queue = pipelineQueue(pipeline, [owner, reviewer], task);
+assert.equal(queue.length, 3);
+assert.deepEqual(queue.map((q) => q.pipeline!.position), [0, 1, 2]);
+assert.deepEqual(queue.map((q) => q.pipeline!.stepIndex), [0, 0, 1]);
+assert.equal(new Set(queue.map((q) => q.pipeline!.runId)).size, 1);
+assert.equal(new Set(queue.map((q) => q.id)).size, 3);
+assert.equal(pipelineTurn(task, queue[0]).threadId, "existing");
+const completed = { ...task, chatMessages: [{ id: "result", role: "assistant" as const, body: "Implemented and verified the summary.", createdAt: "now", selection: null, snapshotId: null, suggestions: [] }] };
+const handoff = pipelineTurn(completed, queue[2]);
+assert.equal(handoff.threadId, null);
+assert.equal(handoff.agent!.id, reviewer.id);
+assert.ok(handoff.prompt.startsWith("Review the changes."));
+assert.ok(handoff.prompt.includes("Implemented and verified the summary."));
+assert.equal(completed.chatMessages.length, 1, "Role change must preserve visible history");
+reviewer.prompt = "Changed later";
+assert.equal(queue[2].pipeline!.agent!.prompt, "Review.", "Running workflows keep their role snapshot");
+assert.equal(moveQueuedMessage(queue, queue[1].id, -1), queue, "Individual pipeline messages cannot be reordered");
+assert.throws(() => pipelineQueue(pipeline, [owner], task), /role no longer exists/);
+const draft = { ...pipeline, title: "", steps: [{ ...pipeline.steps[0], messages: [""] }] };
+assert.equal(normalizePipelines([draft]).length, 1, "Incomplete editor drafts survive reload");
+assert.ok(pipelineError(draft, [owner]));
+assert.throws(() => pipelineQueue(draft, [owner], task));
+assert.deepEqual(normalizePipelines([{ ...pipeline, steps: [null] }]), []);
+assert.equal(validPipelineMessage({ ...queue[0].pipeline, agent: { id: "malformed" } }), false);
+const oldGet = fileStore.getItem;
+try {
+  fileStore.getItem = () => JSON.stringify({ task: [...queue, { ...queue[0], pipeline: { bad: true } }] });
+  assert.equal(loadChatQueues().task.length, 3, "Reload must validate role snapshots, preserving legitimate queue items");
+} finally { fileStore.getItem = oldGet; }
+console.log("PASS pipeline validation, drafts, immutable execution snapshots, sequential messages, role handoff and persisted queue");
