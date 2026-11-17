@@ -50,7 +50,7 @@ export function AgentAttentionStack({ requests, onOpen }: {
           <span className="agent-attention-kind">{active.kind === "question" ? "Answer needed" : "Approval needed"}</span>
           <h2 title={active.title}>{active.title}</h2>
           <footer>
-            <Button size="sm" onClick={() => { setMinimizedIds(requests.map((request) => request.id)); onOpen(active); }}>{active.kind === "question" ? "Answer" : "Review approval"}<ArrowUpRight /></Button>
+            <Button size="sm" onClick={() => onOpen(active)}>{active.kind === "question" ? "Answer" : "Review approval"}<ArrowUpRight /></Button>
             <span className="agent-attention-count" role="status">{requests.length} {requests.length === 1 ? "request" : "requests"}</span>
             {requests.length > 1 && <Button variant="ghost" size="icon-sm" aria-label="Next request" title="Next request" onClick={() => setActiveId(requests[(requests.findIndex((request) => request.id === active.id) + 1) % requests.length].id)}><ChevronRight /></Button>}
           </footer>
