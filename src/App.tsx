@@ -134,9 +134,6 @@ import { useTaskControl } from "./useTaskControl";
 import { agentMetadata, argumentsFor, getTask, metadataKeys, playbookMetadata, requiredText, taskMetadata, taskObservation, taskStartPoint, taskSummary } from "./taskControl";
 import { loadTaskStatuses, reconcileTaskStatuses, resolveTaskStatus, saveTaskStatuses, taskStatusFields, taskStatusStorageKey, type TaskStatusSettings as StatusSettings, type TaskStatus } from "./taskStatuses";
 import { TaskStatusSettings } from "./components/TaskStatusSettings";
-import { useLaneAutomation } from "./useLaneAutomation";
-import { LaneAutomation } from "./components/LaneAutomation";
-import type { LaneRun } from "./laneAutomation";
 import { finishSchedule, type PromptSchedule } from "./promptSchedules";
 import { chatQueueStorageKey, loadChatQueues, moveQueuedMessage, saveChatQueues, type ChatQueues, type QueuedChatMessage } from "./chatQueue";
 import { isLargeCodeDocument } from "./codeMirror";
@@ -266,7 +263,6 @@ type TaskRun = {
   pipeline?: QueuedChatMessage["pipeline"];
   messageId: string;
   coordinationPath?: string[];
-  automation?: LaneRun;
   schedule?: Pick<PromptSchedule, "id" | "latestRun">;
   accepted: AiChatAccepted;
   mode: AiChatMode;
@@ -2256,7 +2252,6 @@ function App() {
   const chatQueuesRef = useRef(chatQueues);
   const [pausedQueueKeys, setPausedQueueKeys] = useState<Set<string>>(() => new Set(Object.keys(loadChatQueues())));
   const pausedQueueKeysRef = useRef(pausedQueueKeys);
-  const [automationStatus, setAutomationStatus] = useState<TaskBoardStatus | null>(null);
   const queueDispatchRef = useRef<(key: string) => void>(() => {});
   const queueBusyRef = useRef(new Set<string>());
   const aiChatRunningRef = useRef(false);
@@ -2694,7 +2689,6 @@ function App() {
 
   const resetRepositoryTasks = useEffectEvent((root: string | null) => {
     setTaskStorageRoot(null);
-    setAutomationStatus(null);
     setTaskStatusSettings(loadTaskStatuses(root));
     setApprovalReviewerOverrides({});
     setTaskView(root ? loadTaskView(root) : "list");
@@ -2894,7 +2888,7 @@ function App() {
       const updateTasks = (current: RepositoryTask[]) => current.map((task) => task.id === taskId ? {
         ...task,
         chatMessages: [...task.chatMessages.map((entry) => entry.id === run.messageId ? { ...entry, runStatus, runError: update.kind === "failed" ? update.message : undefined } : entry), ...messages].slice(-100),
-        planReady: run.automation ? task.planReady : plan?.isPlan ?? false,
+        planReady: plan?.isPlan ?? false,
         unreadAgentResult: update.kind !== "cancelled",
       } : task);
       if (run.pipeline) {
@@ -2902,7 +2896,6 @@ function App() {
         tasksRef.current = next; setTasks(next);
         if (repositoryRef.current) saveTasks(repositoryRef.current.rootPath, next);
       } else setTasks(updateTasks);
-      if (run.automation) void laneAutomation.finish(run.automation, update.kind, update.kind === "failed" ? update.message ?? "Agent failed" : null);
       if (run.schedule) void finishSchedule(run.schedule, update.kind, update.kind === "failed" ? update.message ?? "Agent failed" : null).catch((reason) => setError(message(reason)));
       const nextRuns = { ...taskRunsRef.current }; delete nextRuns[taskId]; taskRunsRef.current = nextRuns; setTaskRuns(nextRuns);
       const key = repositoryRef.current ? taskQueueKey(repositoryRef.current.rootPath, taskId) : null;
@@ -4353,7 +4346,7 @@ function App() {
     updateTask(task.id, (current) => ({ ...current, attachments: [], chatMessages: [], planReady: false, agentThreadId: null }));
   };
 
-  const sendTaskMessage = async (task: RepositoryTask, mode = task.chatMode, promptOverride?: string, queuedItem?: QueuedChatMessage, schedule?: PromptSchedule, automation?: LaneRun): Promise<boolean> => {
+  const sendTaskMessage = async (task: RepositoryTask, mode = task.chatMode, promptOverride?: string, queuedItem?: QueuedChatMessage, schedule?: PromptSchedule): Promise<boolean> => {
     if (taskGitAction) { setError("Wait for the task Git operation to finish before starting an agent."); return false; }
     const prompt = (promptOverride ?? taskDrafts[task.id] ?? "").trim();
     const selectedAssets = taskAssetAttachments(task, taskAssetSelections[task.id] ?? []);
@@ -4361,7 +4354,7 @@ function App() {
     if (!comparison || !review || (!prompt && !attachments.length) || taskRunsRef.current[task.id] || taskStartingRef.current.has(task.id)) return false;
     const configError = chatConfigurationError(queuedItem?.model ?? task.chatModel, queuedItem?.effort ?? task.chatEffort, chatModels, modelsLoaded);
     if (configError) {
-      if (schedule || automation) throw new Error(configError);
+      if (schedule) throw new Error(configError);
       setError(configError);
       return false;
     }
@@ -4374,7 +4367,7 @@ function App() {
     const root = repositoryRef.current?.rootPath;
     if (!root) return false;
     const prefix = loadBranchPrefix(root);
-    const newBranchName = taskNewBranchName(task, prefix, !!automation || !!schedule);
+    const newBranchName = taskNewBranchName(task, prefix, !!schedule);
     if (task.location === "worktree" && !task.worktree && task.worktreeStart?.kind !== "existing"
       && (!newBranchName.trim() || newBranchName === prefix || newBranchName.endsWith("/"))) {
       selectTask(task);
@@ -4383,7 +4376,7 @@ function App() {
     }
     taskStartingRef.current.add(task.id);
     setTaskStartingIds((current) => new Set(current).add(task.id));
-    const configuredTask = automation ? task : taskWithChatMode(task, mode);
+    const configuredTask = taskWithChatMode(task, mode);
     const pipelineRequest = queuedItem?.pipeline ? pipelineTurn(task, queuedItem) : null;
     const userMessage: ChatMessage = { id: queuedItem?.id ?? crypto.randomUUID(), role: "user", runStatus: "running", body: prompt, createdAt: new Date().toISOString(), selection: queuedItem ? queuedItem.selection : selection, snapshotId: comparison.snapshotId, suggestions: [], contexts: [], attachments };
     setError("");
@@ -4395,9 +4388,6 @@ function App() {
     const onTaskEvent = (event: AgentTurnEvent) => {
       if (!runReady) earlyEvents.push(event);
       else if (repositoryRef.current?.rootPath === runRepositoryRoot && taskRunsRef.current[task.id]?.accepted.requestId === acceptedRequestId) handleTurnEvent(event, task.id);
-      else if (automation && event.type === "chat" && ["completed", "failed", "cancelled"].includes(event.payload.kind)) {
-        void laneAutomation.finish(automation, event.payload.kind as "completed" | "failed" | "cancelled", event.payload.message ?? null);
-      }
     };
     try {
       if (!schedule) await fileStore.flush();
@@ -4417,7 +4407,7 @@ function App() {
       if (queuedItem?.pipeline && !chatQueuesRef.current[taskQueueKey(root, task.id)]?.some((item) => item.id === queuedItem.id)) throw new Error("Pipeline stopped before the agent started.");
       const accepted = await startChatTurn({
         threadId: pipelineRequest ? pipelineRequest.threadId : task.agentThreadId,
-        goalSettings: !schedule && !automation && !queuedItem?.pipeline ? normalizeChatGoal(task.chatGoal) : defaultChatGoal,
+        goalSettings: !schedule && !queuedItem?.pipeline ? normalizeChatGoal(task.chatGoal) : defaultChatGoal,
         chatAgent: pipelineRequest ? pipelineRequest.agent : task.chatAgent,
         model: queuedItem?.model ?? configuredTask.chatModel,
         effort: queuedItem?.effort ?? configuredTask.chatEffort,
@@ -4437,7 +4427,7 @@ function App() {
       }
       acceptedRequestId = accepted.requestId;
       updateTaskAtRoot(root, task.id, (current) => ({
-        ...(automation ? current : taskWithChatMode(current, mode)),
+        ...taskWithChatMode(current, mode),
         location: task.location,
         worktreeStart: task.worktreeStart,
         ...(worktree && task.worktreeStart?.kind !== "existing" ? { newBranchName: worktree.branch } : {}),
@@ -4448,11 +4438,11 @@ function App() {
         unreadAgentResult: false,
         attachments: queuedItem ? current.attachments : [],
         chatMessages: [...current.chatMessages.filter((message) => !queuedItem?.pipeline || message.id !== userMessage.id).map((message) => message.plan ? { ...message, canImplementPlan: false } : message), userMessage].slice(-100),
-        planReady: automation ? current.planReady : false,
+        planReady: false,
       }));
       if (!queuedItem) { setTaskDrafts((current) => ({ ...current, [task.id]: "" })); setTaskAssetSelections((current) => ({ ...current, [task.id]: [] })); }
       setTaskChangesRevision((value) => value + 1);
-      const run: TaskRun = { pipeline: queuedItem?.pipeline, messageId: userMessage.id, coordinationPath: queuedItem?.coordinationPath ?? [task.id], schedule, automation, accepted, mode, status: mode === "plan" ? "Planning…" : "Implementing…", timeline: [], plan: null, input: null, approval: null };
+      const run: TaskRun = { pipeline: queuedItem?.pipeline, messageId: userMessage.id, coordinationPath: queuedItem?.coordinationPath ?? [task.id], schedule, accepted, mode, status: mode === "plan" ? "Planning…" : "Implementing…", timeline: [], plan: null, input: null, approval: null };
       taskRunsRef.current = { ...taskRunsRef.current, [task.id]: run };
       setTaskRuns(taskRunsRef.current);
       runReady = true;
@@ -4549,28 +4539,13 @@ function App() {
     if (run?.pipeline) { try { await invoke("ai_chat_cancel", { requestId: run.accepted.requestId }); } catch (reason) { setError(message(reason)); } }
   };
 
-  const automationDirectory = (task: RepositoryTask) => {
+  const taskWorkingDirectory = (task: RepositoryTask) => {
     const branch = task.worktree?.branch ?? (task.worktreeStart?.kind === "existing" ? task.worktreeStart.remote ? task.worktreeStart.branch.replace(/^origin\//, "") : task.worktreeStart.branch : null);
     return task.location === "workspace" || branch === repository?.currentBranch ? "workspace" : branch ? `branch:${branch}` : `task:${task.id}`;
   };
-  const laneAutomation = useLaneAutomation({
-    root: repository?.rootPath,
-    ready: !!repository && taskStorageRoot === repository.rootPath,
-    statuses: boardStatusColumns.map((status) => status.id),
-    tasks,
-    activity: JSON.stringify([Object.keys(taskRuns), [...taskStartingIds], chatQueues, workspaceOperationBusy, !!comparison, !!review, modelsStatus, modelsLoaded]),
-    busy: (task) => {
-      if (!comparison || !review || !modelsLoaded || taskDeletionBusyRef.current || taskGitAction || taskRunsRef.current[task.id] || taskStartingRef.current.has(task.id)) return true;
-      if (repository && chatQueuesRef.current[taskQueueKey(repository.rootPath, task.id)]?.length) return true;
-      return automationDirectory(task) === "workspace" && workspaceOperationBusy;
-    },
-    send: (task, item, run) => sendTaskMessage(task, "default", item.body, item, undefined, run),
-  });
 
   const changeTaskStatusSettings = (next: StatusSettings) => {
     if (!repository || taskStorageRoot !== repository.rootPath) throw new Error("Wait for the repository to finish loading.");
-    const removed = taskStatuses.statuses.filter((status) => !next.statuses.some((item) => item.id === status.id));
-    if (removed.some((status) => laneAutomation.lanes[status.id]?.enabled || Object.values(laneAutomation.lanes[status.id]?.attempts ?? {}).some((attempt) => attempt.status === "running"))) throw new Error("Pause automation and wait for active runs before deleting this status.");
     saveTaskStatuses(repository.rootPath, next);
     const updated = timestampTaskUpdates(tasksRef.current, reconcileTaskStatuses(tasksRef.current, next));
     tasksRef.current = updated;
@@ -4584,7 +4559,7 @@ function App() {
     ready: !!repository && taskStorageRoot === repository.rootPath,
     tasks,
     activity: JSON.stringify([Object.keys(taskRuns), [...taskStartingIds], Object.entries(chatQueues).map(([key, items]) => [key, items.length]), workspaceOperationBusy, !!comparison, !!review, taskDeletionBusyRef.current, modelsStatus, modelsLoaded]),
-    busy: (task) => !comparison || !review || !modelsLoaded || taskDeletionBusyRef.current || !!taskGitAction || !!taskRunsRef.current[task.id] || taskStartingRef.current.has(task.id) || (automationDirectory(task) === "workspace" && workspaceOperationBusy),
+    busy: (task) => !comparison || !review || !modelsLoaded || taskDeletionBusyRef.current || !!taskGitAction || !!taskRunsRef.current[task.id] || taskStartingRef.current.has(task.id) || (taskWorkingDirectory(task) === "workspace" && workspaceOperationBusy),
     queued: (task) => !!repository && !!chatQueuesRef.current[taskQueueKey(repository.rootPath, task.id)]?.length,
     send: (task, item, schedule) => sendTaskMessage(task, item.mode, item.body, item, schedule),
   });
@@ -5164,10 +5139,8 @@ function App() {
     const ids = statusDeletionIds.get(status)!;
     const deletionLocked = !ids.size || [...ids].some((id) => protectedTaskIds.has(id));
     return <DropdownMenu>
-      <DropdownMenuTrigger aria-label={`Options for ${label} column`} className="flex h-7 items-center gap-1 px-1 text-[#7C9B88]">{laneAutomation.lanes[status]?.enabled && <span className="size-1.5 rounded-full bg-[#A3FF12]" aria-label="Automation enabled" />}<Ellipsis size={15} /></DropdownMenuTrigger>
+      <DropdownMenuTrigger aria-label={`Options for ${label} column`} className="flex h-7 items-center gap-1 px-1 text-[#7C9B88]"><Ellipsis size={15} /></DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="min-w-44 whitespace-nowrap">
-        <DropdownMenuItem onClick={() => { setAutomationStatus(status); void invoke<BranchRefs>("list_branch_refs").then(setBranchRefs).catch((reason) => setError(message(reason))); }}><Play size={14} /> Automation…</DropdownMenuItem>
-        <DropdownMenuSeparator />
         <DropdownMenuItem variant="destructive" disabled={deletionLocked} onClick={() => confirmDeleteTasks(ids)}><Trash2 size={14} /> Delete all cards</DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>;
@@ -5237,19 +5210,13 @@ function App() {
       const toolKeys: Record<string, string[]> = {
         get_agents: ["query"], get_agent: ["agentId"], create_agent: ["title", "prompt", "modelConfig"], update_agent: ["agentId", "title", "prompt", "modelConfig"],
         create_playbook: ["title", "description", "prompt", "variables"], update_playbook: ["playbookId", "title", "description", "prompt", "variables"],
-        get_playbooks: ["query"], get_playbook: ["playbookId"], run_task_playbook: ["taskId", "playbookId", "values"], get_tasks: ["query", "status"], add_task: metadataKeys, update_task_comment: ["taskId", "commentId", "body"], get_github_notifications: [], get_task: ["taskId"], get_task_execution: ["taskId"], create_task: metadataKeys, update_task: ["taskId", ...metadataKeys], add_task_comment: ["taskId", "body"], delete_task: ["taskId"], start_task_run: ["taskId", "prompt", "startPoint", "mode"], stop_task_run: ["taskId"], update_task_queue: ["taskId", "paused", "removeMessageIds"], get_lanes: [], update_lane: ["status", "enabled", "prompt", "baseBranch", "baseKind", "workers"], retry_lane_task: ["status", "taskId"], get_task_start_context: [] };
+        get_playbooks: ["query"], get_playbook: ["playbookId"], run_task_playbook: ["taskId", "playbookId", "values"], get_tasks: ["query", "status"], add_task: metadataKeys, update_task_comment: ["taskId", "commentId", "body"], get_github_notifications: [], get_task: ["taskId"], get_task_execution: ["taskId"], create_task: metadataKeys, update_task: ["taskId", ...metadataKeys], add_task_comment: ["taskId", "body"], delete_task: ["taskId"], start_task_run: ["taskId", "prompt", "startPoint", "mode"], stop_task_run: ["taskId"], update_task_queue: ["taskId", "paused", "removeMessageIds"], get_task_start_context: [] };
       if (!Object.prototype.hasOwnProperty.call(toolKeys, request.name)) throw new Error("Unknown task control tool.");
       const args = argumentsFor(request.arguments, toolKeys[request.name]);
       const ensureActive = async () => { if (!await active()) throw new Error("Task control stopped or repository changed."); };
       const commit = async (update: (current: RepositoryTask[]) => RepositoryTask[]) => {
         await ensureActive();
-        let next = update(tasksRef.current);
-        for (const task of next) {
-          const previous = tasksRef.current.find((entry) => entry.id === task.id);
-          const status = taskBoardStatus(task);
-          if ((!previous || taskBoardStatus(previous) !== status) && !await laneAutomation.hold(status, task.id, request.operationId)) throw new Error("Could not save lane start hold. No task change was applied.");
-        }
-        await ensureActive(); next = timestampTaskUpdates(tasksRef.current, update(tasksRef.current));
+        const next = timestampTaskUpdates(tasksRef.current, update(tasksRef.current));
         tasksRef.current = next; setTasks(next); saveTasks(request.repositoryRoot, next);
         try { await fileStore.flush(); } catch (error) { throw new Error(`Operation outcome uncertain: ${message(error)}`); }
         return next;
@@ -5419,21 +5386,6 @@ function App() {
         await fileStore.flush();
         return { taskId: task.id, cancellationRequested: !!run, queuePaused: true };
       }
-      if (request.name === "get_lanes") return boardStatusColumns.map(({ id: status, label }) => ({ status, label, ...laneAutomation.lanes[status], taskIds: tasksRef.current.filter((task) => taskBoardStatus(task) === status).map((task) => task.id) }));
-      const status = args.status as TaskBoardStatus;
-      if (!boardStatusColumns.some((item) => item.id === status)) throw new Error("Invalid lane status.");
-      if (request.name === "retry_lane_task") { const task = getTask(tasksRef.current, args.taskId); const attempt = laneAutomation.lanes[status].attempts[task.id]; if (!attempt || !["failed", "interrupted", "held"].includes(attempt.status)) throw new Error("Only failed, interrupted or held attempts can be released."); await ensureActive(); if (!await laneAutomation.retry(status, task.id)) throw new Error("Could not save the lane retry."); return { taskIds: [task.id] }; }
-      if (request.name === "update_lane") {
-        const current = laneAutomation.lanes[status];
-        for (const field of ["prompt", "baseBranch"] as const) if (field in args && typeof args[field] !== "string") throw new Error(`${field} must be text.`);
-        if ("enabled" in args && typeof args.enabled !== "boolean") throw new Error("Enabled must be a boolean.");
-        if ("workers" in args && (typeof args.workers !== "number" || !Number.isSafeInteger(args.workers) || args.workers < 1)) throw new Error("Workers must be a positive whole number.");
-        const config = { ...current, ...args } as typeof current;
-        if (config.baseKind !== "branch" && config.baseKind !== "remote") throw new Error("Invalid base branch kind.");
-        if (config.enabled) { const branches = await invoke<BranchRefs>("list_branch_refs"); if (!(config.baseKind === "remote" ? branches.remoteRefs : branches.refs).includes(config.baseBranch)) throw new Error("Choose an available base branch."); }
-        await ensureActive(); if (!await laneAutomation.save(status, config)) throw new Error("Could not save lane configuration.");
-        return { status, taskIds: tasksRef.current.filter((task) => taskBoardStatus(task) === status && (current.attempts[task.id]?.status === "running" || (config.enabled && !current.attempts[task.id]))).map((task) => task.id) };
-      }
       throw new Error("Unknown task control tool.");
     },
   });
@@ -5518,7 +5470,7 @@ function App() {
     if (isSortable(source) && isSortable(target) && source.group !== target.group) event.preventDefault();
     previewBoardDrag(event);
   };
-  // Commit only on drop; hover updates remount cards, persist intermediate statuses and trigger lane automation.
+  // Commit only on drop; hover updates remount cards and persist intermediate statuses.
   const endBoardDrag = (event: DragEndEvent) => {
     const { source, target } = event.operation;
     setBoardDropTarget(null);
@@ -5771,7 +5723,7 @@ function App() {
               </div>
             </section>}
 
-            {repository && taskStorageRoot === repository.rootPath && <TaskStatusSettings key={repository.rootPath} settings={taskStatuses} onChange={changeTaskStatusSettings} canDelete={(id) => !laneAutomation.lanes[id]?.enabled && !Object.values(laneAutomation.lanes[id]?.attempts ?? {}).some((attempt) => attempt.status === "running")} />}
+            {repository && taskStorageRoot === repository.rootPath && <TaskStatusSettings key={repository.rootPath} settings={taskStatuses} onChange={changeTaskStatusSettings} />}
 
             <section className="mt-10" aria-labelledby="custom-fields-title">
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h2 id="custom-fields-title" className="text-[17px] font-semibold text-[#E8FFF0]">Task custom fields</h2><p className="mt-1 text-sm text-[#7C9B88]">Available in every repository. Values belong to individual tasks.</p></div><div className="flex gap-2">{(["text", "select"] as const).map((type) => <button key={type} type="button" className="quiet-button" onClick={() => { const name = `New ${type === "text" ? "text" : "selection"} field`; const names = new Set(customFields.map((field) => field.name.toLowerCase())); let candidate = name; for (let number = 2; names.has(candidate.toLowerCase()); number++) candidate = `${name} ${number}`; updateCustomFields([...customFields, { id: crypto.randomUUID(), name: candidate, type, options: [], showOnCards: false, multiline: type === "text", hyperlink: false }]); }}><Plus size={14} /> {type === "text" ? "Text field" : "Selection field"}</button>)}</div></div>
@@ -6750,7 +6702,6 @@ function App() {
         }
       })} />
 
-      {automationStatus && repository && <LaneAutomation key={`${repository.rootPath}:${automationStatus}`} status={automationStatus} label={boardStatusColumns.find((column) => column.id === automationStatus)?.label ?? automationStatus} controller={laneAutomation} branches={branchRefs} tasks={tasks} onClose={() => setAutomationStatus(null)} onOpenTask={(task) => { setAutomationStatus(null); setWorkspaceMode("tasks"); if (taskView === "list") selectTask(task); else openBoardTask(task); }} />}
       {confirmation && (
         <AlertDialog open onOpenChange={(open) => { if (!open) { confirmation.cancel?.(); setConfirmation(null); } }}>
           <AlertDialogContent className="ios-alert-dialog border-0 bg-[var(--ios-elevated-background)]">

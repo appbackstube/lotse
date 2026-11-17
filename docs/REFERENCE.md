@@ -20,7 +20,7 @@ Rebuild/restart the native app after this cleanup: several Tauri commands now ac
 
 Use **Settings → Tasks → Task statuses** to add or rename statuses, reorder them by dragging or using the arrow buttons, and choose the default for new tasks. Settings belong to the current repository. The same names and order appear in List, Kanban, Gantt and task status menus; changing the default does not move existing tasks.
 
-Deleting a status requires a replacement for its tasks. Pause its automation and wait for active runs before deleting it. The completion status can be renamed or reordered, but remains available for completed tasks. Keep at least one other status. Agents discover the configured status IDs with `get_task_start_context` or `get_tasks`; custom lanes support the same automation as built-in lanes.
+Deleting a status requires a replacement for its tasks. The completion status can be renamed or reordered, but remains available for completed tasks. Keep at least one other status. Agents discover the configured status IDs with `get_task_start_context` or `get_tasks`.
 
 ## Task browser (macOS 11+)
 
@@ -87,25 +87,19 @@ Agents can list/search tasks; read details, saved chat history, results and outs
 
 `get_task` reads current state; `wait_task_runs` waits up to 60 seconds for any of 1–8 tasks to complete or need attention. Pass the returned message ID to follow an exact queued run, including failure/cancellation results when a newer run has started. Waiting is read-only and makes no extra model calls. The coordinating agent can continue its authorized work after the tool returns. No automatic task-to-task “report back” prompts are generated. Delegated queues retain their task ancestry to reject self-dispatch and reciprocal delegation cycles.
 
-Both chats can inspect/configure/pause lanes, release held or failed attempts, inspect start branches/defaults, use playbooks and prompt schedules, and read/update any task's drawing, sandbox or browser and import assets by passing `taskId`. Task-local calls may omit `taskId` for visual tools and comments. Sandbox revisions, drawing validation, file-copy checks, task-agent permissions and human questions/approvals still apply. Metadata changes hold a task from implicit lane dispatch until explicitly started/released.
+Both chats can inspect start branches/defaults, use playbooks and prompt schedules, and read/update any task's drawing, sandbox or browser and import assets by passing `taskId`. Task-local calls may omit `taskId` for visual tools and comments. Sandbox revisions, drawing validation, file-copy checks, task-agent permissions and human questions/approvals still apply.
 
 Both chats can search/read app-wide saved agent roles with `get_agents`/`get_agent` and playbooks with `get_playbooks`/`get_playbook`. Use `create_agent`/`update_agent` and `create_playbook`/`update_playbook` to save changes within the requested scope. Updates preserve omitted fields; a supplied `variables` array replaces that playbook's variable list, reusing IDs by name when IDs are omitted. Saved-role edits apply when the role is selected again; existing chats retain their current role and history. Agents select a saved role by passing `agentId` from `get_agents` to `create_task`/`add_task` or `update_task`; `null` selects no role, omission preserves the default or current role. Task summaries include the selected role ID/title, and `get_task` includes its saved prompt snapshot. Role changes require an idle task without chat history or queued prompts; existing chats must be switched or cleared by the human. Drafts, attachments, model, effort and worktree are preserved. These tools do not delete templates or start chats. Rebuild and restart the app to load the new tools.
 
 Frontend task operations use unique request IDs and return results after execution and persistence. Mutations are serialized; repository/window changes interrupt pending requests, and uncertain writes are never automatically replayed. Old orchestrator histories remain on disk but are no longer used. Separate tasks and Workspace chats can edit the same working directory concurrently; their file changes may overlap.
 
-Run `npm test`, `cargo test --manifest-path src-tauri/Cargo.toml --lib`, and `npm run build`. Open `/scripts/task-control-ui.html`, `/scripts/task-modal-ui.html` and `/scripts/lane-automation-ui.html` through Vite for real-App browser scenarios with synthetic IPC and no live agents. Restart the desktop app after updating its backend.
+Run `npm test`, `cargo test --manifest-path src-tauri/Cargo.toml --lib`, and `npm run build`. Open `/scripts/task-control-ui.html`, `/scripts/task-modal-ui.html` and `/scripts/scheduler-ui.html` through Vite for real-App browser scenarios with synthetic IPC and no live agents. Restart the desktop app after updating its backend.
 
-## Lane automation
+## Task assets and concurrent work
 
-In List, Kanban, or Gantt, open a status menu and choose **Automation…**. Set a prompt, local or remote base branch, and a positive worker limit, then enable it. Each repository and lane keeps its own configuration and processing history. New tasks join automatically in display order; each task runs successfully once per lane, including Done. Changing the prompt or moving a processed task back does not rerun it.
+Agents can read task assets through `get_current_task`, attach local files to their own task with `import_task_assets` (`paths`: absolute file paths, without file count or size limits), and change the description through `update_task`. Imported files are copied into task storage and appear in the Assets list; originals are preserved.
 
-Automation uses the task's existing chat, model, effort, approvals, and working location in action mode. A new worktree without a selected start point starts from the lane's base branch. Existing worktrees, workspace tasks, and configured start points are reused. Agents can read task assets through `get_current_task`, attach local files to their own task with `import_task_assets` (`paths`: absolute file paths, without file count or size limits), and change the description through `update_task`. Imported files are copied into task storage and appear in the Assets list; originals are preserved. Automation preserves drafts and attachments; only explicit agent edits move a task between statuses.
-
-Each lane limits its own running agents, including those waiting for approval or answers. Tasks with active turns or queued user messages wait. Separate task chats and the workspace review can run concurrently in the same working directory; their file edits can overlap. Pausing stops new dispatches and lets running agents finish. Failed, cancelled, and interrupted attempts require **Retry** after inspecting any partial changes. Other tasks continue. Closing the repository stops processing; unfinished attempts become Interrupted on reopening and are never replayed automatically.
-
-Open `/scripts/lane-automation-ui.html` through Vite to run synthetic integration checks against the real App without live agents.
-
-The old task-description Generate button and its settings have been replaced by lane prompts. Commit-message generation is unchanged. Restart the desktop app after updating the backend.
+Separate task chats and the workspace review can run concurrently in the same working directory; their file edits can overlap. Only explicit user or agent edits move a task between statuses. Creating a task or changing its status does not start an agent.
 
 ## Scheduled task prompts
 
