@@ -1758,3 +1758,59 @@ button.task-asset-thumbnail:hover, button.task-asset-thumbnail:focus-visible { b
 .task-inline-toolbar .task-modal-title { flex: 1 1 160px; max-width: none; }
 .task-inline-toolbar .task-modal-tabs { flex-wrap: wrap; min-width: 0; flex-shrink: 1; }
 .task-inline-toolbar .task-modal-actions { flex-wrap: wrap; }
+
+/* Task pipelines use the same quiet surfaces as Settings and Agent Chat. */
+.pipeline-intro { margin: -20px 0 28px; color: var(--ios-secondary-label); font-size: 13px; line-height: 1.6; }
+.pipeline-layout { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 26px; align-items: start; }
+.pipeline-library { min-width: 0; }
+.pipeline-library > header { display: flex; align-items: center; justify-content: space-between; padding: 0 7px 12px; font-size: 12px; font-weight: 500; }
+.pipeline-library > p { padding: 12px 8px; color: var(--ios-secondary-label); font-size: 12px; }
+.pipeline-library-item { display: flex; align-items: flex-start; gap: 9px; width: 100%; margin-bottom: 5px; border-radius: 8px; padding: 12px 10px; text-align: left; }
+.pipeline-library-item:hover { background: var(--ios-fill); }
+.pipeline-library-item[aria-current="true"] { background: var(--ios-fill-strong); }
+.pipeline-library-item > svg { flex-shrink: 0; margin-top: 2px; }
+.pipeline-library-item > span { min-width: 0; }
+.pipeline-library-item strong { display: block; overflow-wrap: anywhere; font-size: 12px; font-weight: 500; }
+.pipeline-library-item small { display: block; margin-top: 5px; color: var(--ios-secondary-label); font-size: 10px; }
+.pipeline-editor { min-width: 0; }
+.pipeline-editor-heading { padding-bottom: 22px; border-bottom: 1px solid var(--ios-separator); }
+.pipeline-editor-heading input { padding-inline: 0; border-color: transparent; box-shadow: none; background: transparent; }
+.pipeline-editor-heading input:first-child { height: 40px; font-size: 23px; font-weight: 600; letter-spacing: -.025em; }
+.pipeline-editor-heading input + input { margin-top: 4px; font-size: 12px; color: var(--ios-secondary-label); }
+.pipeline-meta { display: flex; flex-wrap: wrap; gap: 16px; padding: 22px 0; color: var(--ios-secondary-label); font-size: 11px; }
+.pipeline-meta > span { display: inline-flex; align-items: center; gap: 5px; }
+.pipeline-step { overflow: hidden; border: 1px solid var(--ios-separator); border-radius: 11px; background: var(--ios-elevated-background); }
+.pipeline-step > header { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--ios-separator); background: var(--ios-background); }
+.pipeline-number { display: grid; width: 24px; height: 25px; flex-shrink: 0; place-items: center; border: 1px solid var(--ios-separator); border-radius: 7px; background: var(--ios-elevated-background); font-size: 11px; font-weight: 500; }
+.pipeline-step > header input { height: 29px; min-width: 0; flex: 1; padding: 0 3px; border-color: transparent; box-shadow: none; background: transparent; font-size: 13px; font-weight: 500; }
+.pipeline-step-tools { display: flex; flex-shrink: 0; gap: 0; }
+.pipeline-step-tools button { width: 26px; height: 27px; }
+.pipeline-step-body { padding: 18px; }
+.pipeline-role { display: flex; align-items: center; gap: 15px; margin-bottom: 22px; }
+.pipeline-role > label { flex-shrink: 0; color: var(--ios-secondary-label); font-size: 11px; }
+.pipeline-role > button { max-width: 340px; min-width: 0; flex: 1; height: 35px; background: var(--ios-background); font-size: 12px; }
+.pipeline-role > button > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pipeline-messages-label { color: var(--ios-secondary-label); font-size: 11px; }
+.pipeline-message { display: flex; align-items: flex-start; gap: 9px; margin-top: 9px; }
+.pipeline-message > span { flex-shrink: 0; width: 11px; padding-top: 11px; color: var(--ios-secondary-label); font-size: 10px; }
+.pipeline-message textarea { min-width: 0; flex: 1; min-height: 86px; padding: 10px 12px; font-size: 12px; line-height: 1.65; }
+.pipeline-message > button { flex-shrink: 0; width: 22px; color: var(--ios-secondary-label); }
+.pipeline-add-message { margin: 9px 0 0 14px; color: var(--ios-secondary-label); font-size: 11px; }
+.pipeline-connector { display: flex; align-items: center; gap: 9px; min-height: 34px; margin-left: 25px; padding: 0 10px; border-left: 1px solid var(--ios-separator); color: var(--ios-secondary-label); font-size: 10px; }
+.pipeline-add-step { width: 100%; height: 40px; border-style: dashed; background: var(--ios-background); color: var(--ios-secondary-label); font-size: 12px; }
+.pipeline-note { display: flex; align-items: flex-start; gap: 8px; margin-top: 22px; color: var(--ios-secondary-label); font-size: 11px; line-height: 1.7; }
+.pipeline-note > svg { margin-top: 2px; flex-shrink: 0; }
+.pipeline-editor-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--ios-separator); }
+.pipeline-editor-footer > span { display: flex; gap: 6px; align-items: center; color: var(--ios-secondary-label); font-size: 10px; }
+.pipeline-editor-footer > span > svg { flex-shrink: 0; }
+.pipeline-empty { padding: 70px 20px; text-align: center; color: var(--ios-secondary-label); }
+.pipeline-empty > svg { margin: 0 auto 18px; }
+.pipeline-empty h3 { color: var(--ios-label); }
+.pipeline-empty p { margin: 10px 0 20px; font-size: 12px; line-height: 1.6; }
+.pipeline-run-card { display: flex; align-items: center; gap: 10px; border: 1px solid var(--ios-separator); border-radius: 12px; background: var(--ios-grouped-background); padding: 12px 14px; }
+.pipeline-run-card > svg { flex-shrink: 0; color: var(--ios-secondary-label); }
+.pipeline-run-card strong { display: block; overflow-wrap: anywhere; font-size: 12px; font-weight: 500; }
+.pipeline-run-card p { margin-top: 3px; color: var(--ios-secondary-label); font-size: 10px; }
+.pipeline-run-card > button { flex-shrink: 0; font-size: 11px; }
+@media (max-width: 1000px) { .pipeline-layout { grid-template-columns: minmax(0, 1fr); gap: 20px; } .pipeline-library { display: flex; gap: 5px; overflow-x: auto; padding-bottom: 7px; } .pipeline-library > header { padding: 0 5px; gap: 10px; } .pipeline-library-item { width: auto; min-width: 150px; margin: 0; } }
+@media (max-width: 560px) { .pipeline-step > header { gap: 6px; padding: 10px; } .pipeline-step-body { padding: 12px; } .pipeline-role { gap: 8px; } .pipeline-message { gap: 5px; } .pipeline-step-tools button { width: 23px; } .pipeline-run-card { flex-wrap: wrap; } }
