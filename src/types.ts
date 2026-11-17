@@ -169,7 +169,7 @@ export type RepositoryTask = {
   deadline: string | null;
   parentId: string | null;
   color: TaskColor;
-  manualStatus: "inbox" | "inProgress" | "inReview" | null;
+  manualStatus: string | null;
   completed: boolean;
   attachments: ChatAttachment[];
   assets: TaskAsset[];

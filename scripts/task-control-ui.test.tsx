@@ -8,6 +8,7 @@ import { Window } from "@tauri-apps/api/window";
 import { fileStore, initializeFileStore } from "../src/fileStore";
 import { taskStorageKey, normalizeTask } from "../src/tasks";
 import { laneStorageKey } from "../src/laneAutomation";
+import { defaultTaskStatuses, taskStatusStorageKey } from "../src/taskStatuses";
 import { patchSavedSandbox } from "../src/taskSandbox";
 import App from "../src/App";
 let fixtureRoot: ReturnType<typeof createRoot> | undefined;
@@ -364,6 +365,23 @@ try {
   await click(button("Close task modal"));
   check(document.querySelector<HTMLTextAreaElement>('[aria-label="Review Agent message"]')?.value === "Keep my workspace draft", "Sending in the task modal must preserve the workspace draft");
   await event(sends.length - 1, { kind: "completed" });
+  const customWorkflow = { ...defaultTaskStatuses, statuses: [...defaultTaskStatuses.statuses, { id: "custom-qa", label: "Quality assurance" }], defaultStatus: "custom-qa" };
+  await act(async () => {
+    fileStore.setItem(taskStatusStorageKey(repo.rootPath), JSON.stringify(customWorkflow));
+    window.dispatchEvent(new StorageEvent("storage", { key: taskStatusStorageKey(repo.rootPath) }));
+  }); await settle();
+  const startContext = await request(null, "get_task_start_context", {});
+  check(startContext.result.defaultStatus === "custom-qa" && startContext.result.statuses.some((status: any) => status.id === "custom-qa"), "Agents must discover configured status IDs and the default");
+  const customTask = await request(null, "create_task", { title: "Uses custom default" });
+  check(!customTask.error && customTask.result.status === "custom-qa", "Agent-created tasks must use the custom default");
+  const configuredCustomLane = await request(null, "update_lane", { status: "custom-qa", enabled: false, prompt: "Inspect work", baseBranch: "main", workers: 1 });
+  check(!configuredCustomLane.error, "Custom lane configuration must initialize processing records");
+  const customLanes = await request(null, "get_lanes", {});
+  check(customLanes.result.find((lane: any) => lane.status === "custom-qa")?.prompt === "Inspect work", "Custom lane settings must persist");
+  const customFilter = await request(null, "get_tasks", { status: "custom-qa" });
+  check(customFilter.result.tasks.some((task: any) => task.id === customTask.result.id), "Status filters must support custom lanes");
+  const customCompletion = await request(null, "update_task", { taskId: customTask.result.id, status: "done" });
+  check(!customCompletion.error && customCompletion.result.status === "done", "Custom tasks must preserve normal completion behavior");
   check(!failures.length, `Unexpected IPC commands: ${failures.join(", ")}`);
   document.getElementById("result")!.textContent = "PASS: drawing/sandbox window isolation, single replies, persisted writes, stale repository rejection, workspace task-link modals with List/Kanban, unchanged active tab, separate drafts, task chat and changes, workspace/task agent coordination, sidebar removal, task metadata and hierarchy, cross-task comments, persisted writes, agent-template selection and role-switch protection, direct starts, model/worktree/draft preservation, exact queues, cycle prevention, cancellation, playbooks, lanes and stopped/foreign caller checks.";
 } catch (error) {

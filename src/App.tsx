@@ -21,6 +21,8 @@ import { useTaskFieldDraft } from "./useTaskFieldDraft";
 import { readTaskDrawing } from "./taskDrawing";
 import { applyTaskSandboxUpdate } from "./taskSandbox";
 import { WebsiteCredentialsSettings } from "./components/WebsiteCredentialsSettings";
+import { PipelineDesigner } from "./components/PipelineDesigner";
+import { loadPipelines, pipelineError, pipelineQueue, pipelinesStorageKey, pipelineTurn, type Pipeline } from "./pipelines";
 import { SettingsLayout, type SettingsPage } from "./components/SettingsLayout";
 import { TaskBrowser, hideTaskBrowsers } from "./components/TaskBrowser";
 import { TaskDrawingPanel, TaskSandboxPanel } from "./components/TaskVisualPanel";
@@ -71,6 +73,8 @@ import {
   ArrowUp,
   ArrowDown,
   Blocks,
+  Route,
+  Pause,
   Bot,
   Check,
   CircleAlert,
@@ -128,7 +132,8 @@ import { normalizePomodoroSettings, pomodoroSettingsKey } from "./pomodoro";
 import { usePromptScheduler } from "./usePromptScheduler";
 import { useTaskControl } from "./useTaskControl";
 import { agentMetadata, argumentsFor, getTask, metadataKeys, playbookMetadata, requiredText, taskMetadata, taskObservation, taskStartPoint, taskSummary } from "./taskControl";
-import { laneStatuses } from "./laneAutomation";
+import { loadTaskStatuses, reconcileTaskStatuses, resolveTaskStatus, saveTaskStatuses, taskStatusFields, taskStatusStorageKey, type TaskStatusSettings as StatusSettings, type TaskStatus } from "./taskStatuses";
+import { TaskStatusSettings } from "./components/TaskStatusSettings";
 import { useLaneAutomation } from "./useLaneAutomation";
 import { LaneAutomation } from "./components/LaneAutomation";
 import type { LaneRun } from "./laneAutomation";
@@ -199,13 +204,6 @@ function taskCustomFieldLabel(task: RepositoryTask, field: TaskCustomField): str
 const sidebarStorageKey = "chaoticreview.sidebar-widths";
 const simulatorStorageKey = "chaoticreview.simulator-space";
 const taskColumnStorageKey = "chaoticreview.task-column-widths";
-const boardStatusColumns: { id: TaskBoardStatus; label: string }[] = [
-  { id: "inbox", label: "Inbox" },
-  { id: "clear", label: "Planning" },
-  { id: "inProgress", label: "In development" },
-  { id: "inReview", label: "In review" },
-  { id: "done", label: "Done" },
-];
 const autoOpenEditedFileStorageKey = "chaoticreview.auto-open-edited-file";
 const showFullFileDiffStorageKey = "chaoticreview.show-full-file-diff";
 const systemNotificationsStorageKey = "chaoticreview.system-notifications";
@@ -265,6 +263,7 @@ const isSlackMcp = (url: string) => {
 };
 const openRouterProvider: ProviderSettingsEntry = { id: "openrouter", name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", envKey: "OPENROUTER_API_KEY" };
 type TaskRun = {
+  pipeline?: QueuedChatMessage["pipeline"];
   messageId: string;
   coordinationPath?: string[];
   automation?: LaneRun;
@@ -1043,6 +1042,12 @@ function AiChatPanel({
   onEditQueued,
   onMoveQueued,
   onResumeQueue,
+  onPauseQueue,
+  onStopPipeline,
+  pipelines,
+  canRunPipeline,
+  onRunPipeline,
+  onManagePipelines,
   onImplementPlan,
   onCancel,
   onClear,
@@ -1118,6 +1123,12 @@ function AiChatPanel({
   onEditQueued: (id: string, body: string) => void;
   onMoveQueued: (id: string, offset: -1 | 1) => void;
   onResumeQueue: () => void;
+  onPauseQueue: () => void;
+  onStopPipeline: () => void;
+  pipelines: Pipeline[];
+  canRunPipeline: boolean;
+  onRunPipeline: (pipeline: Pipeline) => void;
+  onManagePipelines: () => void;
   onImplementPlan: () => void;
   onCancel: () => void;
   onClear: () => void;
@@ -1162,7 +1173,7 @@ function AiChatPanel({
   const [configOpen, setConfigOpen] = useState(false);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [agentMenuOpen, setAgentMenuOpen] = useState(false);
-  const [addMenuPage, setAddMenuPage] = useState<"main" | "playbooks" | "assets">("main");
+  const [addMenuPage, setAddMenuPage] = useState<"main" | "playbooks" | "assets" | "pipelines">("main");
   const [showDebug, setShowDebug] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [composerDraft, setComposerDraft] = useState(draft);
@@ -1225,6 +1236,8 @@ function AiChatPanel({
     return () => { disposed = true; unlisten?.(); };
   }, []);
 
+  const pipeline = queuedMessages.find((item) => item.pipeline)?.pipeline;
+  const manualMessages = queuedMessages.filter((item) => !item.pipeline);
   const emptyCenteredChat = centered && !messages.length && !running && !queuedMessages.length && !variablePrompt && !agentInput && !agentApproval;
   const availableFavoriteModels = favoriteModels.filter((id) => models.some((entry) => entry.model === id));
 
@@ -1324,18 +1337,23 @@ function AiChatPanel({
         {emptyCenteredChat && <><h1 className="mb-1 text-center text-[28px] font-bold tracking-tight text-[#E8FFF0]">What's next?</h1><p className="mb-4 text-center text-sm text-[#7C9B88]">Tip: Use Plan mode first for better results, or start iterating on your idea right away.</p></>}
         {taskMode && error && <div role="alert" className="ios-error-callout mx-auto mb-3 flex w-full max-w-[960px] items-start gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium"><CircleAlert size={17} className="mt-0.5 shrink-0" /><span className="min-w-0 flex-1 break-words">{error}</span><button type="button" onClick={onDismissError} aria-label="Dismiss error" className="grid size-6 shrink-0 place-items-center rounded hover:bg-black/5"><X size={15} /></button></div>}
         {taskMode && taskSelected && taskLocation === "worktree" && !taskLocationLocked && !taskStartSelected(taskWorktreeStart) && <p className="mx-auto mb-2 w-full max-w-[960px] px-3 text-xs text-[#7C9B88]">Choose a start branch or the current workspace in Details before sending.</p>}
-        {!!queuedMessages.length && <div className="ios-chat-stack mx-auto mb-1 max-h-[35vh] w-full max-w-[960px] space-y-1 overflow-y-auto px-4 pb-1" aria-label="Queued messages">
-          {queuedMessages.map((item, index) => <div key={item.id} className="ios-chat-stack-item flex items-center gap-2 rounded-[18px] border px-4 py-3 text-sm">
+        {pipeline && <div className="pipeline-run-card mx-auto mb-2 w-full max-w-[960px]" aria-label="Running pipeline">
+          <Route size={17} /><div className="min-w-0 flex-1"><strong>{pipeline.title}</strong><p>Step {pipeline.stepIndex + 1} of {pipeline.stepCount} · {pipeline.stepTitle}</p><p>{queuePaused ? (running ? "Pausing after this response" : "Paused · resume to retry or continue") : running ? "Running" : "Starting…"} · Message {pipeline.position + 1} of {pipeline.total}</p></div>
+          <Button variant="ghost" size="sm" onClick={onStopPipeline}><Square size={13} /> Stop</Button>
+          <Button variant="ghost" size="sm" onClick={queuePaused ? onResumeQueue : onPauseQueue}>{queuePaused ? <Play size={13} /> : <Pause size={13} />}{queuePaused ? "Resume" : "Pause"}</Button>
+        </div>}
+        {!!manualMessages.length && <div className="ios-chat-stack mx-auto mb-1 max-h-[35vh] w-full max-w-[960px] space-y-1 overflow-y-auto px-4 pb-1" aria-label="Queued messages">
+          {manualMessages.map((item, index) => <div key={item.id} className="ios-chat-stack-item flex items-center gap-2 rounded-[18px] border px-4 py-3 text-sm">
             <ListTodo size={15} className="shrink-0 opacity-60" />
             <span className="min-w-0 flex-1 truncate" title={item.body}>{item.body || `${item.context.attachments.length} attachment${item.context.attachments.length === 1 ? "" : "s"}`}</span>
             {item.context.attachments.length > 0 && <span className="shrink-0 text-xs opacity-60">+{item.context.attachments.length}</span>}
             {running ? canSteerQueued && <button type="button" onClick={() => onSteerQueued(item.id)} className="ios-chat-stack-action" title="Send into the current response"><CornerDownRight size={15} /> Steer</button>
-              : index === 0 && <button type="button" onClick={onResumeQueue} className="ios-chat-stack-action">{queuePaused ? "Resume" : "Send now"}</button>}
+              : index === 0 && !pipeline && <button type="button" onClick={onResumeQueue} className="ios-chat-stack-action">{queuePaused ? "Resume" : "Send now"}</button>}
             <button type="button" onClick={() => onDeleteQueued(item.id)} className="ios-chat-stack-icon" aria-label="Delete queued message" title="Delete queued message"><Trash2 size={15} /></button>
             <DropdownMenu><DropdownMenuTrigger className="ios-chat-stack-icon" aria-label="More queued message actions"><Ellipsis size={16} /></DropdownMenuTrigger>
               <DropdownMenuContent align="end"><DropdownMenuItem onClick={() => { setEditingQueued(item); setQueuedEditDraft(item.body); }}><Pencil size={14} /> Edit</DropdownMenuItem>
-                <DropdownMenuItem disabled={index === 0} onClick={() => onMoveQueued(item.id, -1)}><ArrowUp size={14} /> Move up</DropdownMenuItem>
-                <DropdownMenuItem disabled={index === queuedMessages.length - 1} onClick={() => onMoveQueued(item.id, 1)}><ArrowDown size={14} /> Move down</DropdownMenuItem>
+                <DropdownMenuItem disabled={index === 0 || !!pipeline} onClick={() => onMoveQueued(item.id, -1)}><ArrowUp size={14} /> Move up</DropdownMenuItem>
+                <DropdownMenuItem disabled={index === manualMessages.length - 1} onClick={() => onMoveQueued(item.id, 1)}><ArrowDown size={14} /> Move down</DropdownMenuItem>
               </DropdownMenuContent></DropdownMenu>
           </div>)}
         </div>}
@@ -1371,12 +1389,17 @@ function AiChatPanel({
                 {addMenuPage === "main" ? <>
                   <button type="button" disabled={!comparison || sendPending || (taskMode && !taskSelected)} onClick={() => { setAddMenuOpen(false); void open({ multiple: true }).then((paths) => { if (Array.isArray(paths)) onAddFiles(paths); else if (paths) onAddFiles([paths]); }); }} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[#183522] disabled:opacity-40"><FileText size={15} className="text-[#7C9B88]" /><span className="flex-1">File</span></button>
                   <button type="button" onClick={() => setAddMenuPage("playbooks")} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[#183522]"><Blocks size={15} className="text-[#7C9B88]" /><span className="flex-1">Playbook</span><ChevronRight size={14} className="text-[#7C9B88]" /></button>
+                  {taskMode && <button type="button" onClick={() => setAddMenuPage("pipelines")} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[#183522]"><Route size={15} className="text-[#7C9B88]" /><span className="flex-1">Pipeline</span><ChevronRight size={14} className="text-[#7C9B88]" /></button>}
                   {taskMode && <button type="button" disabled={!taskSelected || !taskAssets.length} onClick={() => setAddMenuPage("assets")} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[#183522] disabled:opacity-40"><Folder size={15} className="text-[#7C9B88]" /><span className="flex-1">Assets</span>{selectedAssetIds.length > 0 && <span className="text-xs text-[#7C9B88]">{selectedAssetIds.length}</span>}<ChevronRight size={14} className="text-[#7C9B88]" /></button>}
                   <button type="button" role="switch" aria-checked={mode === "plan"} disabled={running || (taskMode && !taskSelected)} onClick={() => { onModeChange(mode === "plan" ? "default" : "plan"); setAddMenuOpen(false); }} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[#183522] disabled:opacity-40"><ListTodo size={15} className="text-[#7C9B88]" /><span className="flex-1">Plan</span><span className="text-xs text-[#7C9B88]">{mode === "plan" ? "On" : "Off"}</span></button>
                   <button type="button" role="switch" aria-checked={goalSettings.enabled} disabled={running || (taskMode && !taskSelected)} onClick={() => { onGoalSettingsChange({ ...goalSettings, enabled: !goalSettings.enabled }); setAddMenuOpen(false); }} className="flex w-full items-center justify-between gap-2.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[#183522] disabled:opacity-40"><span>Goal</span><span className="text-xs text-[#7C9B88]">{goalSettings.enabled ? "On" : "Off"}</span></button>
                 </> : <>
-                  <button type="button" onClick={() => setAddMenuPage("main")} className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs text-[#7C9B88] hover:bg-[#183522]"><ChevronLeft size={14} /> {addMenuPage === "playbooks" ? "Playbooks" : "Assets"}</button>
-                  {addMenuPage === "playbooks" ? <>
+                  <button type="button" onClick={() => setAddMenuPage("main")} className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs text-[#7C9B88] hover:bg-[#183522]"><ChevronLeft size={14} /> {addMenuPage === "playbooks" ? "Playbooks" : addMenuPage === "pipelines" ? "Pipelines" : "Assets"}</button>
+                  {addMenuPage === "pipelines" ? <>
+                    <button type="button" onClick={() => { setAddMenuOpen(false); onManagePipelines(); }} className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs font-medium hover:bg-[#183522]"><Settings size={13} /> Manage pipelines</button>
+                    <div className="max-h-72 overflow-y-auto">{pipelines.map((p) => <button key={p.id} type="button" aria-label={`Start pipeline ${p.title || "Untitled pipeline"}`} title={pipelineError(p, agents) ?? `Start ${p.title}`} disabled={!canRunPipeline || !!pipelineError(p, agents)} onClick={() => { setAddMenuOpen(false); onRunPipeline(p); }} className="flex w-full items-start gap-2.5 rounded-md px-2.5 py-2 text-left hover:bg-[#183522] disabled:opacity-40"><Route size={14} className="mt-0.5 shrink-0" /><span className="min-w-0"><span className="block truncate text-xs font-medium">{p.title || "Untitled pipeline"}</span><span className="mt-0.5 block text-[10px] text-[#7C9B88]">{pipelineError(p, agents) ? "Draft · finish in Settings" : `${p.steps.length} steps · ${p.description || "Run in this task"}`}</span></span></button>)}{!pipelines.length && <p className="px-3 py-5 text-center text-xs text-[#7C9B88]">Create your first pipeline in Settings.</p>}</div>
+                    {!canRunPipeline && <p className="px-3 py-2 text-[10px] text-[#7C9B88]">Choose an idle task with an empty queue to start a pipeline.</p>}
+                  </> : addMenuPage === "playbooks" ? <>
                     <button type="button" onClick={() => { setAddMenuOpen(false); onManagePlaybooks(); }} className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs font-bold hover:bg-[#183522]"><Settings size={13} className="text-[#7C9B88]" /> Manage playbooks</button>
                     <div className="max-h-72 overflow-y-auto">
                       {playbooks.map((playbook) => <button key={playbook.id} type="button" disabled={!canRunPlaybooks || !!variablePrompt || (taskMode && !taskSelected)} onClick={() => { setAddMenuOpen(false); onRunPlaybook(playbook); }} className="flex w-full items-start gap-2.5 rounded-md px-2.5 py-2 text-left hover:bg-[#183522] disabled:opacity-40"><Blocks size={14} className="mt-0.5 shrink-0 text-[#A3FF12]" /><span className="min-w-0"><span className="block truncate text-xs font-bold text-[#E8FFF0]">{playbook.title}</span><span className="mt-0.5 block truncate text-[10px] text-[#7C9B88]">{playbook.description || "Custom Agent Chat prompt"}</span></span></button>)}
@@ -1420,7 +1443,7 @@ function AiChatPanel({
                 </PopoverContent>
               </Popover>
               <Popover open={agentMenuOpen} onOpenChange={setAgentMenuOpen}>
-                <PopoverTrigger className="ios-chat-config-trigger max-w-[200px]" aria-label="Agent role" disabled={running || sendPending || !comparison || (taskMode && !taskSelected)}><span className="truncate">{chatAgent?.title ?? "None"}</span><ChevronDown size={14} className="shrink-0" /></PopoverTrigger>
+                <PopoverTrigger className="ios-chat-config-trigger max-w-[200px]" aria-label="Agent role" disabled={!!pipeline || running || sendPending || !comparison || (taskMode && !taskSelected)}><span className="truncate">{chatAgent?.title ?? "None"}</span><ChevronDown size={14} className="shrink-0" /></PopoverTrigger>
                 <PopoverContent side="top" align="start" className="w-72 overflow-hidden border border-[#294536] bg-[#111A15] p-1.5 shadow-2xl shadow-black/60">
                   <PopoverTitle className="px-2 py-2 text-xs font-bold text-[#7C9B88]">Agents</PopoverTitle>
                   <button type="button" onClick={() => { setAgentMenuOpen(false); onManageAgents(); }} className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs font-bold hover:bg-[#183522]"><Settings size={13} className="text-[#7C9B88]" /> Manage agents</button>
@@ -1695,7 +1718,7 @@ function TaskCommentForm({ taskId, drafts, onAdd }: { taskId: string; drafts: Ma
 
 type TaskAssetPreview = { kind: "image" | "pdf" | "video"; path: string } | { kind: "text"; content: string; truncated: boolean } | { kind: "unsupported" };
 
-function TaskDetailsPanel({ task, commentDrafts, branchPrefix, onBranchNameChange, customFields, branches, remoteBranches, workspaceBranch, startLocked, assetBusy, onTitleChange, onDescriptionChange, onScheduleChange, onCustomFieldChange, onStatusChange, onColorChange, onLocationChange, onStartChange, onStartOpen, onAddAssets, onRemoveAsset, onAddComment, onUpdateComment, onDeleteComment }: {
+function TaskDetailsPanel({ task, commentDrafts, branchPrefix, onBranchNameChange, customFields, statusOptions, branches, remoteBranches, workspaceBranch, startLocked, assetBusy, onTitleChange, onDescriptionChange, onScheduleChange, onCustomFieldChange, onStatusChange, onColorChange, onLocationChange, onStartChange, onStartOpen, onAddAssets, onRemoveAsset, onAddComment, onUpdateComment, onDeleteComment }: {
   task: RepositoryTask | null;
   commentDrafts: Map<string, string>;
   branchPrefix: string;
@@ -1711,6 +1734,7 @@ function TaskDetailsPanel({ task, commentDrafts, branchPrefix, onBranchNameChang
   onScheduleChange: (schedule: Pick<RepositoryTask, "startDate" | "deadline">) => void;
   onCustomFieldChange: (id: string, value: string | null) => void;
   onStatusChange: (status: TaskBoardStatus) => void;
+  statusOptions: TaskStatus[];
   onColorChange: (color: TaskColor) => void;
   onLocationChange: (location: TaskLocation) => void;
   onStartChange: (start: NonNullable<RepositoryTask["worktreeStart"]>) => void;
@@ -1782,7 +1806,7 @@ function TaskDetailsPanel({ task, commentDrafts, branchPrefix, onBranchNameChang
       <section aria-label="Task properties">
         <h3 className="task-details-heading">Properties</h3>
         <div className="task-details-properties">
-          <div className="task-details-row"><span className="text-xs font-semibold text-[#7C9B88]">Status</span><Select value={status} onValueChange={(value) => value && onStatusChange(value as TaskBoardStatus)}><SelectTrigger className="task-details-control h-10 w-full px-3" aria-label="Task status"><SelectValue>{(value) => value === "inbox" ? "Inbox" : value === "inProgress" ? "In development" : value === "inReview" ? "In review" : value === "done" ? "Done" : "Needs planning"}</SelectValue></SelectTrigger><SelectContent className="ios-select-content"><SelectItem value="inbox">Inbox</SelectItem><SelectItem value="clear">Needs planning</SelectItem><SelectItem value="inProgress">In development</SelectItem><SelectItem value="inReview">In review</SelectItem><SelectItem value="done">Done</SelectItem></SelectContent></Select></div>
+          <div className="task-details-row"><span className="text-xs font-semibold text-[#7C9B88]">Status</span><Select value={status} onValueChange={(value) => value && onStatusChange(value as TaskBoardStatus)}><SelectTrigger className="task-details-control h-10 w-full px-3" aria-label="Task status"><SelectValue>{(value) => statusOptions.find((status) => status.id === value)?.label}</SelectValue></SelectTrigger><SelectContent className="ios-select-content">{statusOptions.map((status) => <SelectItem key={status.id} value={status.id}>{status.label}</SelectItem>)}</SelectContent></Select></div>
           <div className="task-details-row">
             <span className="text-xs font-semibold text-[#7C9B88]">Color</span>
             <Select value={task.color} onValueChange={(value) => value && onColorChange(value as TaskColor)}>
@@ -2210,6 +2234,7 @@ function App() {
   const [runExitCode, setRunExitCode] = useState<number | null>(null);
   const [chatDefaults, setChatDefaults] = useState(storedChatDefaults);
   const [agents, setAgents] = useState<ChatAgent[]>(storedAgents);
+  const [pipelines, setPipelines] = useState<Pipeline[]>(loadPipelines);
   const [defaultAgentId, setDefaultAgentId] = useState(() => fileStore.getItem(defaultAgentStorageKey) ?? "");
   const defaultAgent = agents.find((agent) => agent.id === defaultAgentId) ?? null;
   const [favoriteModels, setFavoriteModels] = useState(storedChatModelFavorites);
@@ -2280,10 +2305,15 @@ function App() {
   const [taskChangesRevision, setTaskChangesRevision] = useState(0);
   const [taskGitAction, setTaskGitAction] = useState<"fetch" | "pull" | "push" | null>(null);
   const [tasks, replaceTasks] = useState<RepositoryTask[]>([]);
+  const [taskStatuses, setTaskStatusSettings] = useState(() => loadTaskStatuses(repositoryRoot));
+  const boardStatusColumns = taskStatuses.statuses;
   const setTasks = useCallback((update: RepositoryTask[] | ((current: RepositoryTask[]) => RepositoryTask[])) => {
     const now = Date.now();
-    replaceTasks((current) => timestampTaskUpdates(current, typeof update === "function" ? update(current) : update, now));
-  }, []);
+    replaceTasks((current) => {
+      const next = typeof update === "function" ? update(current) : update;
+      return timestampTaskUpdates(current, reconcileTaskStatuses(next, loadTaskStatuses(repositoryRoot)), now);
+    });
+  }, [repositoryRoot]);
   const [boardDropTarget, setBoardDropTarget] = useState<{ status: TaskBoardStatus; taskId: string | null; position: "before" | "after" } | null>(null);
   const [customFields, setCustomFields] = useState(loadTaskCustomFields);
   const [customFieldError, setCustomFieldError] = useState("");
@@ -2665,6 +2695,7 @@ function App() {
   const resetRepositoryTasks = useEffectEvent((root: string | null) => {
     setTaskStorageRoot(null);
     setAutomationStatus(null);
+    setTaskStatusSettings(loadTaskStatuses(root));
     setApprovalReviewerOverrides({});
     setTaskView(root ? loadTaskView(root) : "list");
     setBoardDrawerOpen(false);
@@ -2711,6 +2742,7 @@ function App() {
 
   useEffect(() => {
     const sync = (event: StorageEvent) => {
+      if (event.key === pipelinesStorageKey) setPipelines(loadPipelines());
       if (event.key === agentsStorageKey) setAgents(storedAgents());
       if (event.key === defaultAgentStorageKey) setDefaultAgentId(fileStore.getItem(defaultAgentStorageKey) ?? "");
       if (event.key === playbookStorageKey) setPlaybooks(storedPlaybooks());
@@ -2739,6 +2771,10 @@ function App() {
       if (event.key === customFieldsStorageKey) setCustomFields(loadTaskCustomFields());
       if (event.key === authOnboardingStorageKey && event.newValue !== null) setAuthOnboardingOpen(false);
       if (repositoryRoot && event.key === taskStorageKey(repositoryRoot)) replaceTasks(loadTasks(repositoryRoot, chatDefaults));
+      if (repositoryRoot && event.key === taskStatusStorageKey(repositoryRoot)) {
+        setTaskStatusSettings(loadTaskStatuses(repositoryRoot));
+        replaceTasks(loadTasks(repositoryRoot, chatDefaults));
+      }
       if (repositoryRoot && event.key === "chaoticreview.task-view") {
         const view = loadTaskView(repositoryRoot);
         setTaskView(view);
@@ -2861,11 +2897,16 @@ function App() {
         planReady: run.automation ? task.planReady : plan?.isPlan ?? false,
         unreadAgentResult: update.kind !== "cancelled",
       } : task);
-      setTasks(updateTasks);
+      if (run.pipeline) {
+        const next = updateTasks(tasksRef.current);
+        tasksRef.current = next; setTasks(next);
+        if (repositoryRef.current) saveTasks(repositoryRef.current.rootPath, next);
+      } else setTasks(updateTasks);
       if (run.automation) void laneAutomation.finish(run.automation, update.kind, update.kind === "failed" ? update.message ?? "Agent failed" : null);
       if (run.schedule) void finishSchedule(run.schedule, update.kind, update.kind === "failed" ? update.message ?? "Agent failed" : null).catch((reason) => setError(message(reason)));
       const nextRuns = { ...taskRunsRef.current }; delete nextRuns[taskId]; taskRunsRef.current = nextRuns; setTaskRuns(nextRuns);
       const key = repositoryRef.current ? taskQueueKey(repositoryRef.current.rootPath, taskId) : null;
+      if (key && run.pipeline && update.kind === "completed") removeQueued(key, run.messageId);
       if (key && update.kind === "completed") window.setTimeout(() => queueDispatchRef.current(key), 0);
       else if (key) setQueuePaused(key, true);
       if (run.mode === "default") void refreshRef.current();
@@ -4210,15 +4251,15 @@ function App() {
     }
   };
 
-  const setTaskStatus = (id: string, status: TaskBoardStatus) => updateTask(id, (task) => status === "done"
-    ? { ...task, completed: true, manualStatus: null }
-    : { ...task, completed: false, manualStatus: status === "clear" ? null : status, planReady: false });
+  const setTaskStatus = (id: string, status: TaskBoardStatus) => updateTask(id, (task) => ({
+    ...task, ...taskStatusFields(resolveTaskStatus(taskStatuses, status)), planReady: false,
+  }));
 
   const newRepositoryTask = (parentId: string | null, boardStatus: TaskBoardStatus, draft: Pick<RepositoryTask, "title" | "description">): RepositoryTask => {
     const title = draft.title.trim();
     const chatMode = "default";
     const now = Date.now();
-    const task: RepositoryTask = { id: crypto.randomUUID(), createdAt: now, updatedAt: now, title, description: draft?.description ?? "", customFields: {}, startDate: null, deadline: null, parentId, color: "clear", manualStatus: boardStatus === "inProgress" || boardStatus === "inReview" ? boardStatus : boardStatus === "clear" ? null : "inbox", completed: boardStatus === "done", attachments: [], assets: [], comments: [], chatMessages: [], agentThreadId: null, chatAgent: defaultAgent, planReady: false, unreadAgentResult: false, chatMode, chatModel: chatDefaults[chatMode].model, chatEffort: chatDefaults[chatMode].effort, ...agentChatConfig(defaultAgent), ...taskLocationFields(taskLocationDefault), worktree: null, started: false };
+    const task: RepositoryTask = { id: crypto.randomUUID(), createdAt: now, updatedAt: now, title, description: draft?.description ?? "", customFields: {}, startDate: null, deadline: null, parentId, color: "clear", ...taskStatusFields(resolveTaskStatus(taskStatuses, boardStatus)), attachments: [], assets: [], comments: [], chatMessages: [], agentThreadId: null, chatAgent: defaultAgent, planReady: false, unreadAgentResult: false, chatMode, chatModel: chatDefaults[chatMode].model, chatEffort: chatDefaults[chatMode].effort, ...agentChatConfig(defaultAgent), ...taskLocationFields(taskLocationDefault), worktree: null, started: false };
     return task;
   };
 
@@ -4343,6 +4384,7 @@ function App() {
     taskStartingRef.current.add(task.id);
     setTaskStartingIds((current) => new Set(current).add(task.id));
     const configuredTask = automation ? task : taskWithChatMode(task, mode);
+    const pipelineRequest = queuedItem?.pipeline ? pipelineTurn(task, queuedItem) : null;
     const userMessage: ChatMessage = { id: queuedItem?.id ?? crypto.randomUUID(), role: "user", runStatus: "running", body: prompt, createdAt: new Date().toISOString(), selection: queuedItem ? queuedItem.selection : selection, snapshotId: comparison.snapshotId, suggestions: [], contexts: [], attachments };
     setError("");
     const earlyEvents: AgentTurnEvent[] = [];
@@ -4372,14 +4414,15 @@ function App() {
       if (repositoryRef.current?.rootPath !== runRepositoryRoot || !tasksRef.current.some((current) => current.id === task.id && (!schedule || !current.completed))) {
         throw new Error("Task or repository changed before the prompt could start.");
       }
+      if (queuedItem?.pipeline && !chatQueuesRef.current[taskQueueKey(root, task.id)]?.some((item) => item.id === queuedItem.id)) throw new Error("Pipeline stopped before the agent started.");
       const accepted = await startChatTurn({
-        threadId: task.agentThreadId,
-        goalSettings: !schedule && !automation ? normalizeChatGoal(task.chatGoal) : defaultChatGoal,
-        chatAgent: task.chatAgent,
+        threadId: pipelineRequest ? pipelineRequest.threadId : task.agentThreadId,
+        goalSettings: !schedule && !automation && !queuedItem?.pipeline ? normalizeChatGoal(task.chatGoal) : defaultChatGoal,
+        chatAgent: pipelineRequest ? pipelineRequest.agent : task.chatAgent,
         model: queuedItem?.model ?? configuredTask.chatModel,
         effort: queuedItem?.effort ?? configuredTask.chatEffort,
         mode,
-        prompt,
+        prompt: pipelineRequest?.prompt ?? prompt,
         context: { mode: "auto", attachments },
         allowLongPrompt: true,
         taskId: task.id,
@@ -4387,28 +4430,29 @@ function App() {
         taskTitle: task.title,
         taskDescription: task.description,
       }, onTaskEvent);
-      if (repositoryRef.current?.rootPath !== runRepositoryRoot) {
-        await invoke("ai_chat_cancel", { requestId: accepted.requestId });
-        throw new Error("Repository changed before the agent started.");
-      }
       createdWorktree = false;
+      if (repositoryRef.current?.rootPath !== runRepositoryRoot || (queuedItem?.pipeline && !chatQueuesRef.current[taskQueueKey(root, task.id)]?.some((item) => item.id === queuedItem.id))) {
+        await invoke("ai_chat_cancel", { requestId: accepted.requestId });
+        throw new Error(repositoryRef.current?.rootPath !== runRepositoryRoot ? "Repository changed before the agent started." : "Pipeline stopped before the agent started.");
+      }
       acceptedRequestId = accepted.requestId;
-      updateTask(task.id, (current) => ({
+      updateTaskAtRoot(root, task.id, (current) => ({
         ...(automation ? current : taskWithChatMode(current, mode)),
         location: task.location,
         worktreeStart: task.worktreeStart,
         ...(worktree && task.worktreeStart?.kind !== "existing" ? { newBranchName: worktree.branch } : {}),
         agentThreadId: accepted.threadId,
+        ...(pipelineRequest ? { chatAgent: pipelineRequest.agent } : {}),
         started: true,
         worktree,
         unreadAgentResult: false,
         attachments: queuedItem ? current.attachments : [],
-        chatMessages: [...current.chatMessages.map((message) => message.plan ? { ...message, canImplementPlan: false } : message), userMessage].slice(-100),
+        chatMessages: [...current.chatMessages.filter((message) => !queuedItem?.pipeline || message.id !== userMessage.id).map((message) => message.plan ? { ...message, canImplementPlan: false } : message), userMessage].slice(-100),
         planReady: automation ? current.planReady : false,
       }));
       if (!queuedItem) { setTaskDrafts((current) => ({ ...current, [task.id]: "" })); setTaskAssetSelections((current) => ({ ...current, [task.id]: [] })); }
       setTaskChangesRevision((value) => value + 1);
-      const run: TaskRun = { messageId: userMessage.id, coordinationPath: queuedItem?.coordinationPath ?? [task.id], schedule, automation, accepted, mode, status: mode === "plan" ? "Planning…" : "Implementing…", timeline: [], plan: null, input: null, approval: null };
+      const run: TaskRun = { pipeline: queuedItem?.pipeline, messageId: userMessage.id, coordinationPath: queuedItem?.coordinationPath ?? [task.id], schedule, automation, accepted, mode, status: mode === "plan" ? "Planning…" : "Implementing…", timeline: [], plan: null, input: null, approval: null };
       taskRunsRef.current = { ...taskRunsRef.current, [task.id]: run };
       setTaskRuns(taskRunsRef.current);
       runReady = true;
@@ -4446,7 +4490,7 @@ function App() {
       catch (reason) { setError(message(reason)); return false; }
     }
     changeQueue(key, (items) => [...items, item]);
-    if (running) setQueuePaused(key, false);
+    if (running && !chatQueuesRef.current[key]?.some((entry) => entry.pipeline)) setQueuePaused(key, false);
     if (task) {
       updateTask(task.id, (current) => ({ ...current, attachments: [] }));
       setTaskAssetSelections((current) => ({ ...current, [task.id]: [] }));
@@ -4466,7 +4510,7 @@ function App() {
       const accepted = task ? await sendTaskMessage(task, item.mode, item.body, item)
         : await sendAiChat(item.body, item.context, item.mode, { model: item.model, effort: item.effort }, item);
       if (accepted) {
-        removeQueued(key, item.id);
+        if (!item.pipeline) removeQueued(key, item.id);
         if (!task) for (const attachment of item.context.attachments) if (isChatUpload(attachment)) void invoke("release_chat_image_reference", { path: attachment.path }).catch((reason) => setError(message(reason)));
       } else {
         setQueuePaused(key, true);
@@ -4481,6 +4525,30 @@ function App() {
     if (modelsStatus !== "Loading models…") for (const key of Object.keys(chatQueuesRef.current)) queueDispatchRef.current(key);
   }, [modelsStatus, modelsLoaded]);
 
+  const startPipeline = (pipeline: Pipeline) => {
+    const root = repositoryRef.current?.rootPath;
+    const task = tasksRef.current.find((t) => t.id === selectedTaskId);
+    if (!root || !task || !comparison || !review || taskDeletionBusyRef.current || taskGitAction) return;
+    const key = taskQueueKey(root, task.id);
+    if (taskRunsRef.current[task.id] || taskStartingRef.current.has(task.id) || queueBusyRef.current.has(key) || chatQueuesRef.current[key]?.length) { setError("Finish the current task run and queue before starting a pipeline."); return; }
+    if (task.location === "worktree" && !task.worktree && !taskStartSelected(task.worktreeStart)) { setError("Choose the Worktree start point before starting this task."); return; }
+    try {
+      const items = pipelineQueue(pipeline, agents, task);
+      changeQueue(key, () => items);
+      setQueuePaused(key, false);
+      queueDispatchRef.current(key);
+    } catch (reason) { setError(message(reason)); }
+  };
+  const stopPipeline = async () => {
+    const root = repositoryRef.current?.rootPath;
+    if (!root || !selectedTaskId) return;
+    const key = taskQueueKey(root, selectedTaskId);
+    const run = taskRunsRef.current[selectedTaskId];
+    setQueuePaused(key, true);
+    changeQueue(key, (items) => items.filter((item) => !item.pipeline));
+    if (run?.pipeline) { try { await invoke("ai_chat_cancel", { requestId: run.accepted.requestId }); } catch (reason) { setError(message(reason)); } }
+  };
+
   const automationDirectory = (task: RepositoryTask) => {
     const branch = task.worktree?.branch ?? (task.worktreeStart?.kind === "existing" ? task.worktreeStart.remote ? task.worktreeStart.branch.replace(/^origin\//, "") : task.worktreeStart.branch : null);
     return task.location === "workspace" || branch === repository?.currentBranch ? "workspace" : branch ? `branch:${branch}` : `task:${task.id}`;
@@ -4488,6 +4556,7 @@ function App() {
   const laneAutomation = useLaneAutomation({
     root: repository?.rootPath,
     ready: !!repository && taskStorageRoot === repository.rootPath,
+    statuses: boardStatusColumns.map((status) => status.id),
     tasks,
     activity: JSON.stringify([Object.keys(taskRuns), [...taskStartingIds], chatQueues, workspaceOperationBusy, !!comparison, !!review, modelsStatus, modelsLoaded]),
     busy: (task) => {
@@ -4497,6 +4566,18 @@ function App() {
     },
     send: (task, item, run) => sendTaskMessage(task, "default", item.body, item, undefined, run),
   });
+
+  const changeTaskStatusSettings = (next: StatusSettings) => {
+    if (!repository || taskStorageRoot !== repository.rootPath) throw new Error("Wait for the repository to finish loading.");
+    const removed = taskStatuses.statuses.filter((status) => !next.statuses.some((item) => item.id === status.id));
+    if (removed.some((status) => laneAutomation.lanes[status.id]?.enabled || Object.values(laneAutomation.lanes[status.id]?.attempts ?? {}).some((attempt) => attempt.status === "running"))) throw new Error("Pause automation and wait for active runs before deleting this status.");
+    saveTaskStatuses(repository.rootPath, next);
+    const updated = timestampTaskUpdates(tasksRef.current, reconcileTaskStatuses(tasksRef.current, next));
+    tasksRef.current = updated;
+    replaceTasks(updated);
+    saveTasks(repository.rootPath, updated);
+    setTaskStatusSettings(next);
+  };
 
   const promptScheduler = usePromptScheduler({
     rootPath: repository?.rootPath,
@@ -4656,7 +4737,7 @@ function App() {
     if (!current || (taskMode && !task) || JSON.stringify(current.chatAgent ?? null) === JSON.stringify(agent)) return;
     if (task ? !!taskRunsRef.current[task.id] || taskStartingRef.current.has(task.id) : aiChatRunningRef.current) return;
     const key = task && repository ? taskQueueKey(repository.rootPath, task.id) : reviewQueueKey(reviewRef.current!);
-    if (queueBusyRef.current.has(key)) return;
+    if (queueBusyRef.current.has(key) || chatQueuesRef.current[key]?.some((item) => item.pipeline)) return;
     for (const item of chatQueuesRef.current[key] ?? []) removeQueued(key, item.id, true);
     setVariablePrompt(null);
     setError("");
@@ -5079,13 +5160,13 @@ function App() {
     }
     setTaskTerminals((current) => [...current, { key: activeTaskTerminalKey, rootPath: repository.rootPath, taskId: selectedTask.location === "worktree" ? selectedTask.id : undefined }]);
   }, [activeTaskTerminalKey, repository, selectedTask, taskTerminals]);
-  const boardGroups = useMemo(() => boardStatusColumns.map(({ id, label }) => ({ key: `board-status:${id}`, label, status: id, tasks: tasks.filter((task) => taskBoardStatus(task) === id) })), [tasks]);
+  const boardGroups = useMemo(() => boardStatusColumns.map(({ id, label }) => ({ key: `board-status:${id}`, label, status: id, tasks: tasks.filter((task) => taskBoardStatus(task) === id) })), [tasks, boardStatusColumns]);
   const statusDeletionIds = useMemo(() => new Map(boardGroups.map((group) => [group.status, taskSubtreeIds(tasks, group.tasks.map((task) => task.id))])), [tasks, boardGroups]);
   const renderStatusOptions = (status: TaskBoardStatus, label: string) => {
     const ids = statusDeletionIds.get(status)!;
     const deletionLocked = !ids.size || [...ids].some((id) => protectedTaskIds.has(id));
     return <DropdownMenu>
-      <DropdownMenuTrigger aria-label={`Options for ${label} column`} className="flex h-7 items-center gap-1 px-1 text-[#7C9B88]">{laneAutomation.lanes[status].enabled && <span className="size-1.5 rounded-full bg-[#A3FF12]" aria-label="Automation enabled" />}<Ellipsis size={15} /></DropdownMenuTrigger>
+      <DropdownMenuTrigger aria-label={`Options for ${label} column`} className="flex h-7 items-center gap-1 px-1 text-[#7C9B88]">{laneAutomation.lanes[status]?.enabled && <span className="size-1.5 rounded-full bg-[#A3FF12]" aria-label="Automation enabled" />}<Ellipsis size={15} /></DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="min-w-44 whitespace-nowrap">
         <DropdownMenuItem onClick={() => { setAutomationStatus(status); void invoke<BranchRefs>("list_branch_refs").then(setBranchRefs).catch((reason) => setError(message(reason))); }}><Play size={14} /> Automation…</DropdownMenuItem>
         <DropdownMenuSeparator />
@@ -5223,25 +5304,25 @@ function App() {
       if (request.name === "get_github_notifications") return githubInbox.notificationsContext;
       if (request.name === "get_tasks") {
         if (args.query !== undefined && typeof args.query !== "string") throw new Error("Query must be text.");
-        if (args.status !== undefined && !laneStatuses.includes(args.status as TaskBoardStatus)) throw new Error("Invalid task status.");
+        if (args.status !== undefined && !boardStatusColumns.some((status) => status.id === args.status)) throw new Error("Invalid task status.");
         const query = String(args.query ?? "").toLowerCase();
-        return { repositoryRoot: request.repositoryRoot, customFields, tasks: tasksRef.current.filter((task) => (!args.status || taskBoardStatus(task) === args.status) && `${task.title}\n${task.description}`.toLowerCase().includes(query)).map(taskSummary) };
+        return { repositoryRoot: request.repositoryRoot, customFields, statuses: boardStatusColumns, defaultStatus: taskStatuses.defaultStatus, tasks: tasksRef.current.filter((task) => (!args.status || taskBoardStatus(task) === args.status) && `${task.title}\n${task.description}`.toLowerCase().includes(query)).map(taskSummary) };
       }
       if (request.name === "get_task_execution") { const task = getTask(tasksRef.current, args.taskId); return { id: task.id, execution: snapshot(task) }; }
       if (request.name === "get_task") { const task = getTask(tasksRef.current, args.taskId); return { ...taskSummary(task), agent: task.chatAgent ?? null, drawing: readTaskDrawing(task.drawing), comments: task.comments, assets: task.assets, chatMessages: task.chatMessages, model: task.chatModel, effort: task.chatEffort, mode: task.chatMode, worktree: task.worktree, queue: (chatQueuesRef.current[taskQueueKey(request.repositoryRoot, task.id)] ?? []).map(({ id, body, mode, model, effort }) => ({ id, body, mode, model, effort })), execution: { ...snapshot(task), progress: taskRunsRef.current[task.id]?.status ?? null, liveMessages: taskRunsRef.current[task.id]?.timeline ?? [], question: taskRunsRef.current[task.id]?.input ?? null, approval: taskRunsRef.current[task.id]?.approval ?? null } }; }
-      if (request.name === "get_task_start_context") { const branches = await invoke<BranchRefs>("list_branch_refs"); return { branches: branches.refs, remoteBranches: branches.remoteRefs, customFields, defaultLocation: taskLocationDefault, newBranchPrefix: loadBranchPrefix(repositoryRef.current!.rootPath), defaultPlanMode: false, locations: ["workspace", "worktree", "existing"], startKinds: ["workspace", "branch", "remote", "existing"] }; }
+      if (request.name === "get_task_start_context") { const branches = await invoke<BranchRefs>("list_branch_refs"); return { branches: branches.refs, remoteBranches: branches.remoteRefs, customFields, statuses: boardStatusColumns, defaultStatus: taskStatuses.defaultStatus, defaultLocation: taskLocationDefault, newBranchPrefix: loadBranchPrefix(repositoryRef.current!.rootPath), defaultPlanMode: false, locations: ["workspace", "worktree", "existing"], startKinds: ["workspace", "branch", "remote", "existing"] }; }
       if (request.name === "create_task" || request.name === "add_task") {
         const title = requiredText(args.title, "Title", 500);
-        const initial = newRepositoryTask(null, (args.status as TaskBoardStatus) ?? "inbox", { title, description: "" });
+        const initial = newRepositoryTask(null, (args.status as TaskBoardStatus) ?? taskStatuses.defaultStatus, { title, description: "" });
         const task = "agentId" in args ? { ...initial, chatAgent: null, chatModel: chatDefaults[initial.chatMode].model, chatEffort: chatDefaults[initial.chatMode].effort } : initial;
-        const next = await commit((current) => taskMetadata([...current, task], task, args, customFields, storedAgents())); return taskSummary(getTask(next, task.id));
+        const next = await commit((current) => taskMetadata([...current, task], task, args, customFields, storedAgents(), taskStatuses)); return taskSummary(getTask(next, task.id));
       }
       if (request.name === "update_task") {
         const task = getTask(tasksRef.current, args.taskId);
         if (Object.keys(args).length < 2) throw new Error("Provide at least one task change.");
         const next = await commit((current) => {
           const original = getTask(current, task.id);
-          const updated = taskMetadata(current, original, args, customFields, storedAgents());
+          const updated = taskMetadata(current, original, args, customFields, storedAgents(), taskStatuses);
           if (JSON.stringify(original.chatAgent ?? null) !== JSON.stringify(getTask(updated, task.id).chatAgent ?? null)) {
             const key = taskQueueKey(request.repositoryRoot, task.id);
             if (taskRunsRef.current[task.id] || taskStartingRef.current.has(task.id) || queueBusyRef.current.has(key) || chatQueuesRef.current[key]?.length) throw new Error("Task is running or has queued prompts. Finish or stop its work and clear its queue before changing the agent role.");
@@ -5333,9 +5414,9 @@ function App() {
         await fileStore.flush();
         return { taskId: task.id, cancellationRequested: !!run, queuePaused: true };
       }
-      if (request.name === "get_lanes") return laneStatuses.map((status) => ({ status, ...laneAutomation.lanes[status], taskIds: tasksRef.current.filter((task) => taskBoardStatus(task) === status).map((task) => task.id) }));
+      if (request.name === "get_lanes") return boardStatusColumns.map(({ id: status, label }) => ({ status, label, ...laneAutomation.lanes[status], taskIds: tasksRef.current.filter((task) => taskBoardStatus(task) === status).map((task) => task.id) }));
       const status = args.status as TaskBoardStatus;
-      if (!laneStatuses.includes(status)) throw new Error("Invalid lane status.");
+      if (!boardStatusColumns.some((item) => item.id === status)) throw new Error("Invalid lane status.");
       if (request.name === "retry_lane_task") { const task = getTask(tasksRef.current, args.taskId); const attempt = laneAutomation.lanes[status].attempts[task.id]; if (!attempt || !["failed", "interrupted", "held"].includes(attempt.status)) throw new Error("Only failed, interrupted or held attempts can be released."); await ensureActive(); if (!await laneAutomation.retry(status, task.id)) throw new Error("Could not save the lane retry."); return { taskIds: [task.id] }; }
       if (request.name === "update_lane") {
         const current = laneAutomation.lanes[status];
@@ -5370,7 +5451,7 @@ function App() {
     <DropdownMenuContent align="end" className="min-w-44">
       <DropdownMenuItem onClick={() => openBoardTask(task, "detail")}><Pencil size={14} /> Edit task</DropdownMenuItem>
       {taskView === "kanban" && <DropdownMenuItem onClick={() => { setBoardAddingSubtaskId(task.id); setNewTaskDrafts((current) => ({ ...current, [task.id]: "" })); }}><Plus size={14} /> Add subtask</DropdownMenuItem>}
-      <DropdownMenuGroup><DropdownMenuLabel>Status</DropdownMenuLabel>{boardStatusColumns.map(({ id, label }) => <DropdownMenuItem key={id} onClick={() => setTaskStatus(task.id, id)}>{id === "clear" ? "Needs planning" : label}{taskBoardStatus(task) === id && <Check className="ml-auto" />}</DropdownMenuItem>)}</DropdownMenuGroup>
+      <DropdownMenuGroup><DropdownMenuLabel>Status</DropdownMenuLabel>{boardStatusColumns.map(({ id, label }) => <DropdownMenuItem key={id} onClick={() => setTaskStatus(task.id, id)}>{label}{taskBoardStatus(task) === id && <Check className="ml-auto" />}</DropdownMenuItem>)}</DropdownMenuGroup>
       <DropdownMenuGroup><DropdownMenuLabel>Color</DropdownMenuLabel>{taskColors.map((item) => <DropdownMenuItem key={item.value} onClick={() => updateTask(task.id, (current) => ({ ...current, color: item.value }))}><span className={`task-color-dot ${item.value === "clear" ? "task-color-dot-clear" : ""}`} style={{ backgroundColor: item.color }} />{item.label}{task.color === item.value && <Check className="ml-auto" />}</DropdownMenuItem>)}</DropdownMenuGroup>
       <DropdownMenuSeparator />
       <DropdownMenuItem variant="destructive" disabled={protectedTaskIds.has(task.id)} onClick={() => confirmDeleteTasks(taskSubtreeIds(tasks, [task.id]))}><Trash2 size={14} /> Delete task</DropdownMenuItem>
@@ -5685,6 +5766,8 @@ function App() {
               </div>
             </section>}
 
+            {repository && taskStorageRoot === repository.rootPath && <TaskStatusSettings key={repository.rootPath} settings={taskStatuses} onChange={changeTaskStatusSettings} canDelete={(id) => !laneAutomation.lanes[id]?.enabled && !Object.values(laneAutomation.lanes[id]?.attempts ?? {}).some((attempt) => attempt.status === "running")} />}
+
             <section className="mt-10" aria-labelledby="custom-fields-title">
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h2 id="custom-fields-title" className="text-[17px] font-semibold text-[#E8FFF0]">Task custom fields</h2><p className="mt-1 text-sm text-[#7C9B88]">Available in every repository. Values belong to individual tasks.</p></div><div className="flex gap-2">{(["text", "select"] as const).map((type) => <button key={type} type="button" className="quiet-button" onClick={() => { const name = `New ${type === "text" ? "text" : "selection"} field`; const names = new Set(customFields.map((field) => field.name.toLowerCase())); let candidate = name; for (let number = 2; names.has(candidate.toLowerCase()); number++) candidate = `${name} ${number}`; updateCustomFields([...customFields, { id: crypto.randomUUID(), name: candidate, type, options: [], showOnCards: false, multiline: type === "text", hyperlink: false }]); }}><Plus size={14} /> {type === "text" ? "Text field" : "Selection field"}</button>)}</div></div>
               {customFieldError && <p role="alert" className="mb-3 text-sm text-[#FB7185]">{customFieldError}</p>}
@@ -5703,6 +5786,9 @@ function App() {
                 {field.type === "select" && <div className="space-y-2"><p className="text-xs font-semibold text-[#7C9B88]">Options</p>{field.options.map((option) => <div key={option.id} className="flex items-center gap-2"><Input key={`${option.id}:${option.label}`} defaultValue={option.label} maxLength={80} aria-label={`Option ${option.label}`} className="h-9 border-[#294536] bg-[#050807] text-[#E8FFF0]" onBlur={(event) => { const label = event.currentTarget.value.trim(); if (!label || field.options.some((other) => other.id !== option.id && other.label.toLowerCase() === label.toLowerCase())) { event.currentTarget.value = option.label; setCustomFieldError("Option names must be non-empty and unique within a field."); return; } if (label !== option.label) updateCustomFields(customFields.map((item) => item.id === field.id ? { ...item, options: item.options.map((entry) => entry.id === option.id ? { ...entry, label } : entry) } : item)); }} /><button type="button" className="quiet-button h-9 px-2 text-[#FB7185]" aria-label={`Delete option ${option.label}`} onClick={() => setConfirmation({ title: `Delete ${option.label}?`, description: "Tasks using this option will have an empty value in this field across every repository. This cannot be undone.", actionLabel: "Delete option", action: () => { if (clearCustomFieldValues(field.id, option.id)) updateCustomFields(customFields.map((item) => item.id === field.id ? { ...item, options: item.options.filter((entry) => entry.id !== option.id) } : item)); } })}><X size={14} /></button></div>)}<button type="button" className="quiet-button text-xs" onClick={() => { const labels = new Set(field.options.map((option) => option.label.toLowerCase())); let label = "New option"; for (let number = 2; labels.has(label.toLowerCase()); number++) label = `New option ${number}`; updateCustomFields(customFields.map((item) => item.id === field.id ? { ...item, options: [...item.options, { id: crypto.randomUUID(), label }] } : item)); }}><Plus size={13} /> Add option</button></div>}
               </div>)}</div>
             </section>
+          </div>
+          <div hidden={settingsPage !== "pipelines"} data-settings-page="pipelines">
+            <PipelineDesigner pipelines={pipelines} agents={agents} onChange={(next) => { setPipelines(next); fileStore.setJSON(pipelinesStorageKey, next); }} onConfirm={setConfirmation} />
           </div>
           <div hidden={settingsPage !== "pomodoro"} data-settings-page="pomodoro">
             <PomodoroSettings settings={pomodoroSettings} onSave={(settings) => { setPomodoroSettings(settings); setPomodoroRevision((revision) => revision + 1); }} />
@@ -6093,7 +6179,7 @@ function App() {
             <>
               <div className="ios-file-sidebar-header task-list-header flex shrink-0 items-center justify-between gap-3">
                 <div className="flex items-center gap-3"><h2>Tasks</h2><div role="group" aria-label="Task view" className="task-view-switch"><button type="button" aria-pressed={taskView === "list"} onClick={() => { setTaskView("list"); setBoardDrawerOpen(false); setBoardAddingSubtaskId(null); }}><ListTodo size={14} /> List</button><button type="button" aria-pressed={taskView === "kanban"} onClick={() => { setTaskView("kanban"); setBoardDrawerOpen(false); }}><LayoutGrid size={14} /> Kanban</button><button type="button" aria-pressed={taskView === "gantt"} onClick={() => { setTaskView("gantt"); setBoardDrawerOpen(false); }}><ChartGantt size={14} /> Gantt</button></div></div>
-                <NewTaskButton key={repository?.rootPath} onCreate={({ status, ...draft }) => createTask(null, status, draft)} />
+                <NewTaskButton key={repository?.rootPath} statuses={boardStatusColumns} defaultStatus={taskStatuses.defaultStatus} onCreate={({ status, ...draft }) => createTask(null, status, draft)} />
               </div>
               {taskView === "gantt" ? <TaskGantt tasks={tasks} groups={boardGroups} onOpenTask={(task) => openBoardTask(task, "detail")} renderTaskOptions={renderTaskOptions} renderStatusOptions={(group) => renderStatusOptions(group.status, group.label)} renderAgentStatus={(task) => {
                 const run = taskRuns[task.id];
@@ -6118,13 +6204,12 @@ function App() {
                       const parent = task.parentId ? tasks.find((item) => item.id === task.parentId) : null;
                       const run = taskRuns[task.id];
                       const attention = taskAttention(task, run);
-                      const status = task.completed ? "Done" : run?.input ? "Awaiting input" : task.manualStatus === "inProgress" ? "In development" : task.manualStatus === "inReview" ? "In review" : run ? "Working…" : task.manualStatus === "inbox" ? "Inbox" : "Needs planning";
                       const color = taskColors.find((item) => item.value === task.color)!;
                       const visibleCustomFields = customFields.filter((field) => field.showOnCards && taskCustomFieldLabel(task, field));
                       return <SortableBoardTask key={task.id} id={task.id} index={index} group={group.key}>{({ ref, isDragging }) => <div ref={ref} tabIndex={0} role="group" data-drop-position={boardDropTarget?.taskId === task.id ? boardDropTarget.position : undefined} aria-label={`Drag ${task.title}`} onClick={(event) => { if (event.currentTarget.contains(event.target as Node) && !event.defaultPrevented && !(event.target as HTMLElement).closest("button, input, textarea")) openBoardTask(task); }} className={`task-board-card rounded-lg border bg-[#0B110E] p-3 ${isDragging ? "task-row-dragging" : ""}`} style={{ borderLeftColor: task.color === "clear" ? undefined : color.color, borderLeftWidth: task.color === "clear" ? undefined : 3 }}>
                         <div className="flex items-start gap-2"><button type="button" onClick={() => openBoardTask(task)} className="pointer-events-none min-w-0 flex-1 break-words text-left text-sm font-medium text-[#E8FFF0] hover:underline">{task.title}</button>{renderTaskOptions(task)}</div>
                         {parent && <p className="mt-1 truncate text-[11px] text-[#7C9B88]" title={parent.title}>↳ {parent.title}</p>}
-                        <div className="mt-2 flex flex-wrap items-start gap-x-3 gap-y-1"><span className="shrink-0 text-xs text-[#7C9B88]">{status}</span>{visibleCustomFields.map((field) => <span key={field.id} className={`min-w-0 max-w-full border-l border-[#7C9B88]/35 pl-3 text-xs text-[#7C9B88] ${field.multiline ? "whitespace-pre-wrap [overflow-wrap:anywhere]" : "truncate"}`} title={`${field.name}: ${taskCustomFieldLabel(task, field)}`}>{field.name}: <TaskCustomFieldValue task={task} field={field} /></span>)}{attention && <span role="status" className={`task-attention ${run?.input || run?.approval ? "task-attention-waiting" : ""}`}><CircleAlert size={12} />{attention}</span>}{run && !run.input && !run.approval && <LoaderCircle size={13} className="shrink-0 animate-spin" aria-label="Task running" />}</div>
+                        {(visibleCustomFields.length > 0 || attention || run && !run.input && !run.approval) && <div className="mt-2 flex flex-wrap items-start gap-x-3 gap-y-1">{visibleCustomFields.map((field, fieldIndex) => <span key={field.id} className={`min-w-0 max-w-full text-xs text-[#7C9B88] ${fieldIndex > 0 ? "border-l border-[#7C9B88]/35 pl-3" : ""} ${field.multiline ? "whitespace-pre-wrap [overflow-wrap:anywhere]" : "truncate"}`} title={`${field.name}: ${taskCustomFieldLabel(task, field)}`}>{field.name}: <TaskCustomFieldValue task={task} field={field} /></span>)}{attention && <span role="status" className={`task-attention ${run?.input || run?.approval ? "task-attention-waiting" : ""}`}><CircleAlert size={12} />{attention}</span>}{run && !run.input && !run.approval && <LoaderCircle size={13} className="shrink-0 animate-spin" aria-label="Task running" />}</div>}
                         {boardAddingSubtaskId === task.id && <form onSubmit={(event) => { event.preventDefault(); createTask(task.id, group.status); }} className="mt-2 flex gap-1"><Input autoFocus value={newTaskDrafts[task.id] ?? ""} onChange={(event) => { const value = event.currentTarget.value; setNewTaskDrafts((current) => ({ ...current, [task.id]: value })); }} onKeyDown={(event) => { if (event.key === "Escape") setBoardAddingSubtaskId(null); }} placeholder="Subtask title" aria-label={`New subtask for ${task.title}`} className="h-8 min-w-0 flex-1 px-2 text-xs" /><button type="submit" className="quiet-button h-8 px-2 text-xs">Add</button></form>}
                       </div>}</SortableBoardTask>;
                     })}</div>
@@ -6151,12 +6236,12 @@ function App() {
                   const hasChildren = taskLayout.parents.has(task.id);
                   const collapsed = collapsedTaskIds.has(task.id);
                   const color = taskColors.find((item) => item.value === task.color)!;
-                  const status = task.completed ? "Done" : run?.input ? "Awaiting input" : task.manualStatus === "inProgress" ? "In development" : task.manualStatus === "inReview" ? "In review" : run ? null : task.manualStatus === "inbox" ? "Inbox" : "Needs planning";
+                  const status = run?.input ? "Awaiting input" : run && !task.completed ? "Working…" : boardStatusColumns.find((item) => item.id === taskBoardStatus(task))?.label;
                   const readyToPlan = !task.completed && (task.manualStatus === null || task.manualStatus === "inbox") && !run && !task.planReady;
                   const closingParents = taskLayout.closingParents.get(task.id) ?? [];
                   return <SortableTask key={task.id} id={task.id} index={index}>{({ ref, handleRef, isDragging }) => <Fragment><div ref={ref} onClick={(event) => { if (!(event.target as HTMLElement).closest("button, input, textarea")) openBoardTask(task); }} style={{ paddingLeft: `${12 + taskLayout.depths.get(task.id)! * 16}px` }} className={`task-row grid gap-2 py-2 pr-3 ${isDragging ? "task-row-dragging" : ""} ${selectedTaskId === task.id ? "bg-[#183522]" : "hover:bg-[#111A15]"}`}>
                   <button ref={handleRef} type="button" className="task-drag-handle mt-[2px] self-start" aria-label={`Drag ${task.title}`}><GripVertical size={16} /></button>
-                  <button type="button" role="checkbox" aria-checked={task.completed} onClick={() => updateTask(task.id, (current) => ({ ...current, completed: !current.completed, manualStatus: null }))} style={{ borderColor: task.color === "clear" ? undefined : color.color, borderWidth: task.color === "clear" ? 1 : 2, backgroundColor: task.completed && task.color !== "clear" ? color.color : undefined, color: task.completed && task.color !== "clear" ? "white" : undefined }} className="task-check mt-[3px] grid size-6 shrink-0 self-start place-items-center rounded-full border text-[#39FF88]">{task.completed && <Check size={13} />}</button>
+                  <button type="button" role="checkbox" aria-checked={task.completed} onClick={() => setTaskStatus(task.id, task.completed ? taskStatuses.defaultStatus === "done" ? boardStatusColumns.find((status) => status.id !== "done")!.id : taskStatuses.defaultStatus : "done")} style={{ borderColor: task.color === "clear" ? undefined : color.color, borderWidth: task.color === "clear" ? 1 : 2, backgroundColor: task.completed && task.color !== "clear" ? color.color : undefined, color: task.completed && task.color !== "clear" ? "white" : undefined }} className="task-check mt-[3px] grid size-6 shrink-0 self-start place-items-center rounded-full border text-[#39FF88]">{task.completed && <Check size={13} />}</button>
                   <div className="task-row-content min-w-0">
                     <div className="task-row-heading flex min-w-0 items-start gap-1">
                       {hasChildren && <button type="button" aria-expanded={!collapsed} aria-label={`${collapsed ? "Expand" : "Collapse"} ${task.title}`} onClick={(event) => { event.stopPropagation(); setCollapsedTaskIds((current) => { const next = new Set(current); if (next.has(task.id)) next.delete(task.id); else next.add(task.id); return next; }); }} className="mt-[3px] grid size-6 shrink-0 place-items-center text-[#7C9B88] hover:text-[#E8FFF0]">{collapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}</button>}
@@ -6171,11 +6256,7 @@ function App() {
                       {readyToPlan && <DropdownMenuItem onClick={() => { selectTask(task); void sendTaskMessage(task, "plan", task.title); }}>Start planning</DropdownMenuItem>}
                       <DropdownMenuGroup>
                         <DropdownMenuLabel>Status</DropdownMenuLabel>
-                        <DropdownMenuItem onClick={() => setTaskStatus(task.id, "inbox")}>Inbox{!task.completed && task.manualStatus === "inbox" && <Check className="ml-auto" />}</DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => setTaskStatus(task.id, "clear")}>Needs planning{!task.completed && !task.manualStatus && <Check className="ml-auto" />}</DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => setTaskStatus(task.id, "inProgress")}>In development{!task.completed && task.manualStatus === "inProgress" && <Check className="ml-auto" />}</DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => setTaskStatus(task.id, "inReview")}>In review{!task.completed && task.manualStatus === "inReview" && <Check className="ml-auto" />}</DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => setTaskStatus(task.id, "done")}>Done{task.completed && <Check className="ml-auto" />}</DropdownMenuItem>
+                        {boardStatusColumns.map(({ id, label }) => <DropdownMenuItem key={id} onClick={() => setTaskStatus(task.id, id)}>{label}{taskBoardStatus(task) === id && <Check className="ml-auto" />}</DropdownMenuItem>)}
                       </DropdownMenuGroup>
                       <DropdownMenuSeparator />
                       <DropdownMenuGroup>
@@ -6332,7 +6413,7 @@ function App() {
             <div className="ml-auto flex min-w-0 items-center gap-1"><PomodoroTimer onSettings={openPomodoroSettings} />{taskMode && !boardMode && !zenMode && taskGitToolbar && <><span className="task-modal-toolbar-divider" aria-hidden="true" />{taskGitToolbar}</>}</div>
           </div>
           <div id="task-details-panel" role="tabpanel" aria-labelledby="task-details-tab" data-active={taskDetailsTab === "details"} className="task-tab-panel min-h-0 flex-1" style={{ display: taskDetailsTab === "details" ? undefined : "none" }}>
-          <TaskSurface board={boardMode} target={boardDetailHost}><TaskDetailsPanel commentDrafts={commentDrafts.current} key={repository.rootPath} branchPrefix={branchPrefix} onBranchNameChange={(newBranchName) => { if (selectedTask && taskStartEditable(selectedTask, taskStartingRef.current.has(selectedTask.id))) updateTaskAtRoot(repository.rootPath, selectedTask.id, (task) => ({ ...task, newBranchName })); }} onScheduleChange={(schedule) => { if (selectedTask) updateTaskAtRoot(repository.rootPath, selectedTask.id, (task) => ({ ...task, ...schedule })); }} customFields={customFields} onCustomFieldChange={(id, value) => { if (selectedTask) changeTaskCustomField(repository.rootPath, selectedTask.id, id, value); }} assetBusy={selectedTaskRootBusy} task={selectedTask} branches={branchRefs?.refs ?? []} remoteBranches={branchRefs?.remoteRefs ?? []} workspaceBranch={repository.currentBranch} startLocked={!taskStartEditable(selectedTask, !!(selectedTask && taskStartingIds.has(selectedTask.id)))} onTitleChange={(title) => { if (selectedTask) { updateTask(selectedTask.id, (task) => ({ ...task, title })); } }} onDescriptionChange={(description) => { if (selectedTask) updateTaskAtRoot(repository.rootPath, selectedTask.id, (task) => ({ ...task, description })); }} onStatusChange={(status) => { if (selectedTask) setTaskStatus(selectedTask.id, status); }} onColorChange={(color) => { if (selectedTask) updateTask(selectedTask.id, (task) => ({ ...task, color })); }} onLocationChange={(location) => { if (selectedTask && taskStartEditable(selectedTask, taskStartingRef.current.has(selectedTask.id))) updateTask(selectedTask.id, (task) => ({ ...task, ...taskLocationFields(location), worktree: null })); }} onStartChange={(worktreeStart) => { if (selectedTask && taskStartEditable(selectedTask, taskStartingRef.current.has(selectedTask.id))) updateTask(selectedTask.id, (task) => ({ ...task, worktreeStart })); }} onStartOpen={() => { void invoke<BranchRefs>("list_branch_refs").then(setBranchRefs).catch((reason) => setError(message(reason))); }} onAddAssets={(paths) => { if (selectedTask) void addTaskAssets(selectedTask.id, paths); }} onRemoveAsset={(assetId) => { if (selectedTask) void removeTaskAsset(selectedTask, assetId); }} onAddComment={(body) => { if (selectedTask) updateTask(selectedTask.id, (task) => ({ ...task, comments: [...task.comments, { id: crypto.randomUUID(), author: "user", body, createdAt: Date.now() }] })); }} onUpdateComment={(commentId, body) => { if (selectedTask) updateTask(selectedTask.id, (task) => ({ ...task, comments: task.comments.map((comment) => comment.id === commentId ? { ...comment, body } : comment) })); }} onDeleteComment={(commentId) => { if (selectedTask) updateTask(selectedTask.id, (task) => ({ ...task, comments: task.comments.filter((comment) => comment.id !== commentId) })); }} /></TaskSurface>
+          <TaskSurface board={boardMode} target={boardDetailHost}><TaskDetailsPanel statusOptions={boardStatusColumns} commentDrafts={commentDrafts.current} key={repository.rootPath} branchPrefix={branchPrefix} onBranchNameChange={(newBranchName) => { if (selectedTask && taskStartEditable(selectedTask, taskStartingRef.current.has(selectedTask.id))) updateTaskAtRoot(repository.rootPath, selectedTask.id, (task) => ({ ...task, newBranchName })); }} onScheduleChange={(schedule) => { if (selectedTask) updateTaskAtRoot(repository.rootPath, selectedTask.id, (task) => ({ ...task, ...schedule })); }} customFields={customFields} onCustomFieldChange={(id, value) => { if (selectedTask) changeTaskCustomField(repository.rootPath, selectedTask.id, id, value); }} assetBusy={selectedTaskRootBusy} task={selectedTask} branches={branchRefs?.refs ?? []} remoteBranches={branchRefs?.remoteRefs ?? []} workspaceBranch={repository.currentBranch} startLocked={!taskStartEditable(selectedTask, !!(selectedTask && taskStartingIds.has(selectedTask.id)))} onTitleChange={(title) => { if (selectedTask) { updateTask(selectedTask.id, (task) => ({ ...task, title })); } }} onDescriptionChange={(description) => { if (selectedTask) updateTaskAtRoot(repository.rootPath, selectedTask.id, (task) => ({ ...task, description })); }} onStatusChange={(status) => { if (selectedTask) setTaskStatus(selectedTask.id, status); }} onColorChange={(color) => { if (selectedTask) updateTask(selectedTask.id, (task) => ({ ...task, color })); }} onLocationChange={(location) => { if (selectedTask && taskStartEditable(selectedTask, taskStartingRef.current.has(selectedTask.id))) updateTask(selectedTask.id, (task) => ({ ...task, ...taskLocationFields(location), worktree: null })); }} onStartChange={(worktreeStart) => { if (selectedTask && taskStartEditable(selectedTask, taskStartingRef.current.has(selectedTask.id))) updateTask(selectedTask.id, (task) => ({ ...task, worktreeStart })); }} onStartOpen={() => { void invoke<BranchRefs>("list_branch_refs").then(setBranchRefs).catch((reason) => setError(message(reason))); }} onAddAssets={(paths) => { if (selectedTask) void addTaskAssets(selectedTask.id, paths); }} onRemoveAsset={(assetId) => { if (selectedTask) void removeTaskAsset(selectedTask, assetId); }} onAddComment={(body) => { if (selectedTask) updateTask(selectedTask.id, (task) => ({ ...task, comments: [...task.comments, { id: crypto.randomUUID(), author: "user", body, createdAt: Date.now() }] })); }} onUpdateComment={(commentId, body) => { if (selectedTask) updateTask(selectedTask.id, (task) => ({ ...task, comments: task.comments.map((comment) => comment.id === commentId ? { ...comment, body } : comment) })); }} onDeleteComment={(commentId) => { if (selectedTask) updateTask(selectedTask.id, (task) => ({ ...task, comments: task.comments.filter((comment) => comment.id !== commentId) })); }} /></TaskSurface>
           </div>
           <div id="task-draw-panel" role="tabpanel" aria-labelledby="task-draw-tab" data-active={taskDetailsTab === "draw"} className="task-tab-panel min-h-0 flex-1" style={{ display: taskDetailsTab === "draw" ? undefined : "none" }}>
             <TaskSurface board={boardMode} target={boardDrawHost}>{selectedTask && taskVisualSessionOpen && <TaskDrawingPanel key={`${repository.rootPath}:${selectedTask.id}`} active={boardMode ? boardTab === "draw" : taskDetailsTab === "draw"} value={selectedTask.drawing} onChange={(drawing) => {
@@ -6421,6 +6502,12 @@ function App() {
             onDeleteQueued={(id) => { if (activeQueueKey && !queueBusyRef.current.has(activeQueueKey)) removeQueued(activeQueueKey, id, true); }}
             onEditQueued={(id, body) => { if (activeQueueKey && !queueBusyRef.current.has(activeQueueKey)) changeQueue(activeQueueKey, (items) => items.map((item) => item.id === id ? { ...item, body: body.trim() } : item)); }}
             onMoveQueued={(id, offset) => { if (activeQueueKey && !queueBusyRef.current.has(activeQueueKey)) changeQueue(activeQueueKey, (items) => moveQueuedMessage(items, id, offset)); }}
+            pipelines={pipelines}
+            canRunPipeline={taskMode && !!selectedTask && !!comparison && !!review && !selectedTaskRun && !taskStartingIds.has(selectedTask.id) && !taskGitAction && (!activeQueueKey || !chatQueues[activeQueueKey]?.length)}
+            onRunPipeline={startPipeline}
+            onManagePipelines={() => { void openSettings("pipelines"); }}
+            onPauseQueue={() => { if (activeQueueKey) setQueuePaused(activeQueueKey, true); }}
+            onStopPipeline={() => { void stopPipeline(); }}
             onResumeQueue={() => { if (activeQueueKey) { setQueuePaused(activeQueueKey, false); queueDispatchRef.current(activeQueueKey); } }}
             onImplementPlan={() => { if (taskMode && selectedTask) void implementTask(selectedTask); else { selectAiChatMode("default"); void sendAiChat(implementPlanPrompt, chatRequestContext, "default"); } }}
             onCancel={() => { if (taskMode && selectedTask) void cancelTaskPlan(selectedTask.id); else void cancelAiChat(); }}

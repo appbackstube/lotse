@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { fileStore } from "./fileStore";
-import { finishLaneAttempt, holdLaneTask, laneCandidates, laneConfigError, laneMessage, laneStatuses, laneStorageKey, laneTask, readLaneAutomations, type LaneAutomations, type LaneConfig, type LaneRun } from "./laneAutomation";
+import { emptyLane, finishLaneAttempt, holdLaneTask, laneCandidates, laneConfigError, laneMessage, laneStorageKey, laneTask, readLaneAutomations, type LaneAutomations, type LaneConfig, type LaneRun } from "./laneAutomation";
 import type { RepositoryTask } from "./types";
 import { taskBoardStatus, type TaskBoardStatus } from "./tasks";
 import type { QueuedChatMessage } from "./chatQueue";
 
 type Options = {
-  root: string | undefined; ready: boolean; tasks: RepositoryTask[]; activity: string;
+  root: string | undefined; ready: boolean; statuses: string[]; tasks: RepositoryTask[]; activity: string;
   busy: (task: RepositoryTask) => boolean;
   send: (task: RepositoryTask, item: QueuedChatMessage, run: LaneRun) => Promise<boolean>;
 };
@@ -43,10 +43,10 @@ export function useLaneAutomation(options: Options) {
     processing.current = true;
     const active = () => latest.current.root === root && loadedRoot.current === root && latest.current.ready && !blocked.current;
     try {
-      for (const status of laneStatuses) {
+      for (const status of latest.current.statuses) {
         while (active()) {
           const current = latest.current;
-          const lane = state.current[status];
+          const lane = state.current[status] ?? emptyLane();
           const task = laneCandidates(current.tasks, status, lane, current.busy)[0];
           if (!task) break;
           const run: LaneRun = { root, lane: status, id: crypto.randomUUID(), taskId: task.id };
@@ -75,7 +75,7 @@ export function useLaneAutomation(options: Options) {
     loadedRoot.current = undefined; blocked.current = false; setError("");
     if (!options.root || !options.ready) { state.current = readLaneAutomations(null); setLanes(state.current); return; }
     try {
-      const next = readLaneAutomations(fileStore.getItem(laneStorageKey(options.root)), true);
+      const next = readLaneAutomations(fileStore.getItem(laneStorageKey(options.root)), true, latest.current.statuses);
       loadedRoot.current = options.root;
       void persist(options.root, next).then(() => tick.current()).catch(() => {});
     } catch (error) { blocked.current = true; setError(message(error)); }
@@ -93,7 +93,7 @@ export function useLaneAutomation(options: Options) {
     setSaving(true); setError("");
     try {
       const { enabled, prompt, baseBranch, baseKind, workers } = config;
-      await persist(root, { ...state.current, [status]: { ...state.current[status], enabled, prompt: prompt.trim(), baseBranch, baseKind, workers } });
+      await persist(root, { ...state.current, [status]: { ...(state.current[status] ?? emptyLane()), enabled, prompt: prompt.trim(), baseBranch, baseKind, workers } });
       return true;
     }
     catch (error) { setError(message(error)); return false; }
@@ -101,7 +101,7 @@ export function useLaneAutomation(options: Options) {
   };
 
   const retry = async (status: TaskBoardStatus, taskId: string) => {
-    const lane = state.current[status];
+    const lane = state.current[status] ?? emptyLane();
     if (!latest.current.root || blocked.current || lane.attempts[taskId]?.status === "running") return false;
     const attempts = { ...lane.attempts }; delete attempts[taskId];
     try { await persist(latest.current.root, { ...state.current, [status]: { ...lane, attempts } }); await tick.current(); return true; }
@@ -115,7 +115,8 @@ export function useLaneAutomation(options: Options) {
     catch (error) { setError(message(error)); return false; }
   };
 
-  return { lanes, error, saving, ready: options.ready && loadedRoot.current === options.root && !blocked.current, save, retry, finish, hold };
+  const visibleLanes = Object.fromEntries(options.statuses.map((status) => [status, lanes[status] ?? emptyLane()]));
+  return { lanes: visibleLanes, error, saving, ready: options.ready && loadedRoot.current === options.root && !blocked.current, save, retry, finish, hold };
 }
 
 export type LaneAutomationController = ReturnType<typeof useLaneAutomation>;

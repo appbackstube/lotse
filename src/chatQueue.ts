@@ -1,9 +1,11 @@
+import { validPipelineMessage, type PipelineMessage } from "./pipelines.ts";
 import { fileStore } from "./fileStore.ts";
 import type { AiChatMode, ChatRequestContext, CodeSelection } from "./types.ts";
 import type { ChatEffort } from "./chatDefaults.ts";
 
 export type QueuedChatMessage = {
   id: string;
+  pipeline?: PipelineMessage;
   body: string;
   coordinationPath?: string[];
   context: ChatRequestContext;
@@ -23,6 +25,7 @@ export function loadChatQueues(): ChatQueues {
     return Object.fromEntries(Object.entries(value).map(([key, items]) => [key, Array.isArray(items) ? items.filter((item): item is QueuedChatMessage =>
       !!item && typeof item.id === "string" && typeof item.body === "string" && item.context?.mode === "auto" && Array.isArray(item.context.attachments)
       && (item.coordinationPath === undefined || Array.isArray(item.coordinationPath) && item.coordinationPath.every((id: unknown) => typeof id === "string"))
+      && (item.pipeline === undefined || validPipelineMessage(item.pipeline))
       && (item.mode === "default" || item.mode === "plan") && typeof item.model === "string" && typeof item.effort === "string") : []]));
   } catch { return {}; }
 }
@@ -33,7 +36,7 @@ export function saveChatQueues(queues: ChatQueues): void {
 
 export function moveQueuedMessage(items: QueuedChatMessage[], id: string, offset: -1 | 1): QueuedChatMessage[] {
   const index = items.findIndex((item) => item.id === id);
-  if (index < 0 || index + offset < 0 || index + offset >= items.length) return items;
+  if (index < 0 || index + offset < 0 || index + offset >= items.length || items[index].pipeline || items[index + offset].pipeline) return items;
   const next = [...items];
   [next[index], next[index + offset]] = [next[index + offset], next[index]];
   return next;
