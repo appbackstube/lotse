@@ -3042,7 +3042,7 @@ struct ThreadOptions<'a> {
 
 fn thread_config(options: &ThreadOptions<'_>, thread_id: Option<&str>) -> Value {
     let ThreadOptions { root, provider, model, effort, mcp_url, developer_instructions, mode, approval_mode, user_mcp_servers } = *options;
-    let mcp = json!({
+    let mut mcp = json!({
         "url": mcp_url,
         "bearer_token_env_var": MCP_TOKEN_ENV,
         "enabled": true,
@@ -3083,6 +3083,9 @@ fn thread_config(options: &ThreadOptions<'_>, thread_id: Option<&str>) -> Value 
         },
         "disabled_tools": ["add_comment", "reply_to_comment", "resolve_comment"]
     });
+    for name in ["get_pipelines", "get_pipeline", "create_pipeline", "update_pipeline", "delete_pipeline", "start_task_pipeline", "get_task_pipeline_run", "stop_task_pipeline"] {
+        mcp["tools"][name] = json!({"approval_mode":"approve"});
+    }
     let mut mcp_servers = serde_json::Map::new();
     mcp_servers.insert("chaoticreview".into(), mcp);
     for server in user_mcp_servers {
@@ -3301,6 +3304,9 @@ mod tests {
                 assert_eq!(config["approvalPolicy"], "on-request");
                 assert_eq!(config["permissions"], mode.permissions());
                 assert_eq!(config["config"]["mcp_servers"]["chaoticreview"]["tools"]["import_task_assets"]["approval_mode"], "approve");
+                for name in ["get_pipelines", "get_pipeline", "create_pipeline", "update_pipeline", "delete_pipeline", "start_task_pipeline", "get_task_pipeline_run", "stop_task_pipeline"] {
+                    assert_eq!(config["config"]["mcp_servers"]["chaoticreview"]["tools"][name]["approval_mode"], "approve");
+                }
                 assert_eq!(config.get("threadId").and_then(Value::as_str), thread_id);
             }
         }

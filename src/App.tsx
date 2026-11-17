@@ -22,6 +22,8 @@ import { readTaskDrawing } from "./taskDrawing";
 import { applyTaskSandboxUpdate } from "./taskSandbox";
 import { WebsiteCredentialsSettings } from "./components/WebsiteCredentialsSettings";
 import { PipelineDesigner } from "./components/PipelineDesigner";
+import { getPipeline, pipelineMetadata, pipelineToolKeys } from "./pipelineControl";
+import { loadPipelineRuns, newPipelineRun, observePipelineRun, removePipelineRuns, savePipelineRun, updatePipelineMessage } from "./pipelineRuns";
 import { loadPipelines, pipelineChatConfig, pipelineError, pipelineQueue, pipelinesStorageKey, pipelineTurn, type Pipeline } from "./pipelines";
 import { SettingsLayout, type SettingsPage } from "./components/SettingsLayout";
 import { TaskBrowser, hideTaskBrowsers } from "./components/TaskBrowser";
@@ -2250,6 +2252,7 @@ function App() {
   const [aiChatDraft, setAiChatDraft] = useState("");
   const [chatQueues, setChatQueues] = useState<ChatQueues>(loadChatQueues);
   const chatQueuesRef = useRef(chatQueues);
+  const startingPipelineRef = useRef(new Map<string, string>());
   const [pausedQueueKeys, setPausedQueueKeys] = useState<Set<string>>(() => new Set(Object.keys(loadChatQueues())));
   const pausedQueueKeysRef = useRef(pausedQueueKeys);
   const queueDispatchRef = useRef<(key: string) => void>(() => {});
@@ -2899,7 +2902,10 @@ function App() {
       if (run.schedule) void finishSchedule(run.schedule, update.kind, update.kind === "failed" ? update.message ?? "Agent failed" : null).catch((reason) => setError(message(reason)));
       const nextRuns = { ...taskRunsRef.current }; delete nextRuns[taskId]; taskRunsRef.current = nextRuns; setTaskRuns(nextRuns);
       const key = repositoryRef.current ? taskQueueKey(repositoryRef.current.rootPath, taskId) : null;
-      if (key && run.pipeline && update.kind === "completed") removeQueued(key, run.messageId);
+      if (key && run.pipeline) {
+        updatePipelineMessage(key, run.pipeline.runId, run.messageId, update.kind, update.kind === "failed" ? update.message ?? "Agent failed" : null, messages.map((m) => m.id));
+        if (update.kind === "completed") removeQueued(key, run.messageId);
+      }
       if (key && update.kind === "completed") window.setTimeout(() => queueDispatchRef.current(key), 0);
       else if (key) setQueuePaused(key, true);
       if (run.mode === "default") void refreshRef.current();
@@ -4213,6 +4219,7 @@ function App() {
     if (repository) for (const task of removed) {
       const key = taskQueueKey(repository.rootPath, task.id);
       for (const item of chatQueuesRef.current[key] ?? []) removeQueued(key, item.id, true);
+      removePipelineRuns(key);
     }
     removed.forEach((task) => { void invoke("delete_task_assets", { taskId: task.id }).catch((reason) => setError(message(reason))); });
     setTaskTerminals((current) => current.filter((terminal) => !terminal.taskId || !ids.has(terminal.taskId)));
@@ -4375,6 +4382,11 @@ function App() {
       return false;
     }
     taskStartingRef.current.add(task.id);
+    if (queuedItem?.pipeline) {
+      startingPipelineRef.current.set(task.id, queuedItem.pipeline.runId);
+      // Persist the start attempt before IPC; a reload must not confirm an unknown cancellation.
+      updatePipelineMessage(taskQueueKey(root, task.id), queuedItem.pipeline.runId, queuedItem.id, "running");
+    }
     setTaskStartingIds((current) => new Set(current).add(task.id));
     const configuredTask = taskWithChatMode(task, mode);
     const pipelineRequest = queuedItem?.pipeline ? pipelineTurn(task, queuedItem) : null;
@@ -4421,10 +4433,11 @@ function App() {
         taskDescription: task.description,
       }, onTaskEvent);
       createdWorktree = false;
-      if (repositoryRef.current?.rootPath !== runRepositoryRoot || (queuedItem?.pipeline && !chatQueuesRef.current[taskQueueKey(root, task.id)]?.some((item) => item.id === queuedItem.id))) {
+      if (repositoryRef.current?.rootPath !== runRepositoryRoot) {
         await invoke("ai_chat_cancel", { requestId: accepted.requestId });
-        throw new Error(repositoryRef.current?.rootPath !== runRepositoryRoot ? "Repository changed before the agent started." : "Pipeline stopped before the agent started.");
+        throw new Error("Repository changed before the agent started.");
       }
+      const stoppedBeforeAccepted = !!queuedItem?.pipeline && !chatQueuesRef.current[taskQueueKey(root, task.id)]?.some((item) => item.id === queuedItem.id);
       acceptedRequestId = accepted.requestId;
       updateTaskAtRoot(root, task.id, (current) => ({
         ...taskWithChatMode(current, mode),
@@ -4445,8 +4458,17 @@ function App() {
       const run: TaskRun = { pipeline: queuedItem?.pipeline, messageId: userMessage.id, coordinationPath: queuedItem?.coordinationPath ?? [task.id], schedule, accepted, mode, status: mode === "plan" ? "Planning…" : "Implementing…", timeline: [], plan: null, input: null, approval: null };
       taskRunsRef.current = { ...taskRunsRef.current, [task.id]: run };
       setTaskRuns(taskRunsRef.current);
+      if (queuedItem?.pipeline) updatePipelineMessage(taskQueueKey(root, task.id), queuedItem.pipeline.runId, queuedItem.id, "running");
       runReady = true;
       earlyEvents.forEach(onTaskEvent);
+      // Retain the accepted run until its terminal event, even if cancellation fails.
+      if (stoppedBeforeAccepted && taskRunsRef.current[task.id]?.accepted.requestId === accepted.requestId) {
+        try { await invoke("ai_chat_cancel", { requestId: accepted.requestId }); }
+        catch (reason) {
+          if (taskRunsRef.current[task.id]?.accepted.requestId === accepted.requestId) updatePipelineMessage(taskQueueKey(root, task.id), queuedItem!.pipeline!.runId, queuedItem!.id, "running", `Cancellation failed: ${message(reason)}`);
+          setError(`Cancellation failed: ${message(reason)}`);
+        }
+      }
       return true;
     } catch (reason) {
       let errorMessage = message(reason);
@@ -4455,10 +4477,11 @@ function App() {
         catch (cleanupError) { errorMessage += ` The prepared worktree was kept: ${message(cleanupError)}`; }
       }
       setError(errorMessage);
+      if (queuedItem?.pipeline) updatePipelineMessage(taskQueueKey(root, task.id), queuedItem.pipeline.runId, queuedItem.id, "failed", errorMessage);
       if (schedule) await finishSchedule(schedule, "failed", errorMessage).catch((reason) => setError(message(reason)));
       return false;
     }
-    finally { taskStartingRef.current.delete(task.id); setTaskStartingIds((current) => { const next = new Set(current); next.delete(task.id); return next; }); }
+    finally { startingPipelineRef.current.delete(task.id); taskStartingRef.current.delete(task.id); setTaskStartingIds((current) => { const next = new Set(current); next.delete(task.id); return next; }); }
   };
 
   const sendComposerMessage = async (draft: string): Promise<boolean> => {
@@ -4493,6 +4516,12 @@ function App() {
     if (!modelsLoaded) return;
     const item = chatQueuesRef.current[key]?.[0];
     if (!item || !repositoryRef.current) return;
+    if (item.pipeline && loadPipelineRuns(key).some((run) => run.runId === item.pipeline!.runId && run.stopRequested)) {
+      // A failed queue write can leave stopped messages on disk. Never replay them.
+      changeQueue(key, (items) => items.filter((entry) => entry.pipeline?.runId !== item.pipeline!.runId));
+      queueMicrotask(() => queueDispatchRef.current(key));
+      return;
+    }
     const task = tasksRef.current.find((entry) => taskQueueKey(repositoryRef.current!.rootPath, entry.id) === key);
     if (task ? !!taskRunsRef.current[task.id] || taskStartingRef.current.has(task.id) : aiChatRunningRef.current || !reviewRef.current || reviewQueueKey(reviewRef.current) !== key) return;
     queueBusyRef.current.add(key);
@@ -4503,9 +4532,16 @@ function App() {
         if (!item.pipeline) removeQueued(key, item.id);
         if (!task) for (const attachment of item.context.attachments) if (isChatUpload(attachment)) void invoke("release_chat_image_reference", { path: attachment.path }).catch((reason) => setError(message(reason)));
       } else {
+        if (item.pipeline) {
+          const recorded = loadPipelineRuns(key).find((run) => run.runId === item.pipeline!.runId)?.messages.find((m) => m.messageId === item.id);
+          if (recorded?.status !== "failed") updatePipelineMessage(key, item.pipeline.runId, item.id, "failed", "The agent could not start. Check the task configuration and retry.");
+        }
         setQueuePaused(key, true);
       }
-    })().catch((reason) => { setError(message(reason)); setQueuePaused(key, true); }).finally(() => {
+    })().catch((reason) => {
+      if (item.pipeline) updatePipelineMessage(key, item.pipeline.runId, item.id, "failed", message(reason));
+      setError(message(reason)); setQueuePaused(key, true);
+    }).finally(() => {
       queueBusyRef.current.delete(key);
       if (chatQueuesRef.current[key]?.length && !pausedQueueKeysRef.current.has(key)) queueMicrotask(() => queueDispatchRef.current(key));
     });
@@ -4515,28 +4551,84 @@ function App() {
     if (modelsLoaded) for (const key of Object.keys(chatQueuesRef.current)) queueDispatchRef.current(key);
   }, [modelsStatus, modelsLoaded]);
 
+  const pipelineRunSnapshot = (root: string, taskId: string, runId: string) => {
+    const key = taskQueueKey(root, taskId);
+    const run = loadPipelineRuns(key).find((entry) => entry.runId === runId);
+    if (!run) throw new Error("Pipeline run not found. Only the latest 20 runs per task are retained.");
+    const active = taskRunsRef.current[taskId];
+    return observePipelineRun(run, { activeMessageId: active?.messageId, starting: startingPipelineRef.current.get(taskId) === runId,
+      paused: pausedQueueKeysRef.current.has(key), queueIds: (chatQueuesRef.current[key] ?? []).map((m) => m.id), input: active?.input, approval: active?.approval });
+  };
+  const enqueuePipeline = (root: string, taskId: string, pipeline: Pipeline, coordinationPath: string[] = []) => {
+    const task = getTask(tasksRef.current, taskId);
+    if (repositoryRef.current?.rootPath !== root || !comparison || !review || taskDeletionBusyRef.current || taskGitAction) throw new Error("Wait for the repository operation to finish.");
+    if (coordinationPath.includes(task.id)) throw new Error("Cannot start a pipeline: it would create a task coordination cycle.");
+    const key = taskQueueKey(root, task.id);
+    if (taskRunsRef.current[task.id] || taskStartingRef.current.has(task.id) || queueBusyRef.current.has(key) || chatQueuesRef.current[key]?.length) throw new Error("Finish the current task run and queue before starting a pipeline.");
+    if (task.location === "worktree" && !task.worktree && !taskStartSelected(task.worktreeStart)) throw new Error("Choose the Worktree start point before starting this task.");
+    if (task.location === "worktree" && !task.worktree && task.worktreeStart?.kind !== "existing") {
+      const name = taskNewBranchName(task, loadBranchPrefix(root), false);
+      if (!name.trim() || name === loadBranchPrefix(root) || name.endsWith("/")) throw new Error("Enter a complete branch name before starting this task.");
+    }
+    const items = pipelineQueue(pipeline, storedAgents(), task).map((item) => ({ ...item, coordinationPath: [...coordinationPath, task.id] }));
+    for (const item of items) {
+      const error = chatConfigurationError(item.model, item.effort, chatModels, modelsLoaded);
+      if (error) throw new Error(error);
+    }
+    const run = newPipelineRun(task.id, pipeline.id, items);
+    // Persist a paused queue before dispatch; failed writes must never start work.
+    setQueuePaused(key, true);
+    savePipelineRun(key, run);
+    changeQueue(key, () => items);
+    return run;
+  };
   const startPipeline = (pipeline: Pipeline) => {
     const root = repositoryRef.current?.rootPath;
-    const task = tasksRef.current.find((t) => t.id === selectedTaskId);
-    if (!root || !task || !comparison || !review || taskDeletionBusyRef.current || taskGitAction) return;
-    const key = taskQueueKey(root, task.id);
-    if (taskRunsRef.current[task.id] || taskStartingRef.current.has(task.id) || queueBusyRef.current.has(key) || chatQueuesRef.current[key]?.length) { setError("Finish the current task run and queue before starting a pipeline."); return; }
-    if (task.location === "worktree" && !task.worktree && !taskStartSelected(task.worktreeStart)) { setError("Choose the Worktree start point before starting this task."); return; }
+    if (!root || !selectedTaskId) return;
     try {
-      const items = pipelineQueue(pipeline, agents, task);
-      changeQueue(key, () => items);
-      setQueuePaused(key, false);
-      queueDispatchRef.current(key);
+      const run = enqueuePipeline(root, selectedTaskId, pipeline);
+      void fileStore.flush().then(() => {
+        if (repositoryRef.current?.rootPath !== root) return;
+        const key = taskQueueKey(root, run.taskId);
+        if (!chatQueuesRef.current[key]?.some((m) => m.pipeline?.runId === run.runId)) return;
+        setQueuePaused(key, false); queueDispatchRef.current(key);
+      }).catch((reason) => setError(`Operation outcome uncertain: ${message(reason)}`));
     } catch (reason) { setError(message(reason)); }
+  };
+  const stopPipelineRun = async (root: string, taskId: string, runId: string) => {
+    const key = taskQueueKey(root, taskId);
+    const run = loadPipelineRuns(key).find((entry) => entry.runId === runId);
+    if (!run) throw new Error("Pipeline run not found.");
+    const active = taskRunsRef.current[taskId];
+    const matching = active?.pipeline?.runId === runId;
+    const queued = chatQueuesRef.current[key]?.some((item) => item.pipeline?.runId === runId);
+    if (!matching && !queued) return pipelineRunSnapshot(root, taskId, runId);
+    savePipelineRun(key, { ...run, stopRequested: true, updatedAt: Date.now() });
+    // Remove only this run. Preserve unrelated messages and the queue's pause state.
+    changeQueue(key, (items) => items.filter((item) => item.pipeline?.runId !== runId));
+    try {
+      if (matching) await invoke("ai_chat_cancel", { requestId: active.accepted.requestId });
+    } catch (reason) {
+      const current = loadPipelineRuns(key).find((entry) => entry.runId === runId);
+      if (current) savePipelineRun(key, { ...current, error: `Cancellation failed: ${message(reason)}`, updatedAt: Date.now() });
+      await fileStore.flush();
+      throw new Error(`Cancellation failed; the pipeline turn may still be running: ${message(reason)}`);
+    }
+    await fileStore.flush();
+    return pipelineRunSnapshot(root, taskId, runId);
   };
   const stopPipeline = async () => {
     const root = repositoryRef.current?.rootPath;
     if (!root || !selectedTaskId) return;
     const key = taskQueueKey(root, selectedTaskId);
-    const run = taskRunsRef.current[selectedTaskId];
-    setQueuePaused(key, true);
-    changeQueue(key, (items) => items.filter((item) => !item.pipeline));
-    if (run?.pipeline) { try { await invoke("ai_chat_cancel", { requestId: run.accepted.requestId }); } catch (reason) { setError(message(reason)); } }
+    const runId = taskRunsRef.current[selectedTaskId]?.pipeline?.runId ?? chatQueuesRef.current[key]?.find((item) => item.pipeline)?.pipeline?.runId;
+    if (!runId) return;
+    // Pre-existing UI queues have no saved run record yet.
+    if (!loadPipelineRuns(key).some((run) => run.runId === runId)) {
+      const items = (chatQueuesRef.current[key] ?? []).filter((m) => m.pipeline?.runId === runId);
+      if (items.length) savePipelineRun(key, newPipelineRun(selectedTaskId, "", items));
+    }
+    try { await stopPipelineRun(root, selectedTaskId, runId); } catch (reason) { setError(message(reason)); }
   };
 
   const taskWorkingDirectory = (task: RepositoryTask) => {
@@ -5208,6 +5300,7 @@ function App() {
     cancelConfirmation: () => { if (taskControlConfirmationRef.current) { taskControlConfirmationRef.current(); taskControlConfirmationRef.current = null; setConfirmation(null); } },
     execute: async (request, active) => {
       const toolKeys: Record<string, string[]> = {
+        ...pipelineToolKeys,
         get_agents: ["query"], get_agent: ["agentId"], create_agent: ["title", "prompt", "modelConfig"], update_agent: ["agentId", "title", "prompt", "modelConfig"],
         create_playbook: ["title", "description", "prompt", "variables"], update_playbook: ["playbookId", "title", "description", "prompt", "variables"],
         get_playbooks: ["query"], get_playbook: ["playbookId"], run_task_playbook: ["taskId", "playbookId", "values"], get_tasks: ["query", "status"], add_task: metadataKeys, update_task_comment: ["taskId", "commentId", "body"], get_github_notifications: [], get_task: ["taskId"], get_task_execution: ["taskId"], create_task: metadataKeys, update_task: ["taskId", ...metadataKeys], add_task_comment: ["taskId", "body"], delete_task: ["taskId"], start_task_run: ["taskId", "prompt", "startPoint", "mode"], stop_task_run: ["taskId"], update_task_queue: ["taskId", "paused", "removeMessageIds"], get_task_start_context: [] };
@@ -5223,6 +5316,48 @@ function App() {
       };
       const snapshot = (task: RepositoryTask) => taskObservation(task, { starting: taskStartingRef.current.has(task.id), running: !!taskRunsRef.current[task.id], approvalId: taskRunsRef.current[task.id]?.approval?.requestId, inputId: taskRunsRef.current[task.id]?.input?.requestId,
         queuePaused: pausedQueueKeysRef.current.has(taskQueueKey(request.repositoryRoot, task.id)), queueIds: (chatQueuesRef.current[taskQueueKey(request.repositoryRoot, task.id)] ?? []).map((item) => item.id) });
+      if (request.name === "get_pipelines") {
+        if (args.query !== undefined && typeof args.query !== "string") throw new Error("Query must be text.");
+        const query = String(args.query ?? "").toLowerCase();
+        return loadPipelines().filter((p) => `${p.title}\n${p.description}`.toLowerCase().includes(query)).map((p) => {
+          const validationError = pipelineError(p, storedAgents());
+          return { id: p.id, title: p.title, description: p.description, stepCount: p.steps.length,
+            messageCount: p.steps.reduce((n, step) => n + step.messages.length, 0), startable: !validationError, validationError };
+        });
+      }
+      if (request.name === "get_pipeline") return getPipeline(loadPipelines(), args.pipelineId);
+      if (["create_pipeline", "update_pipeline", "delete_pipeline"].includes(request.name)) {
+        await ensureActive();
+        const current = loadPipelines();
+        const original = request.name === "create_pipeline" ? null : getPipeline(current, args.pipelineId);
+        const saved = request.name === "delete_pipeline" ? null : pipelineMetadata(original, args, storedAgents());
+        const next = saved ? original ? current.map((p) => p.id === saved.id ? saved : p) : [...current, saved] : current.filter((p) => p.id !== original!.id);
+        fileStore.setJSON(pipelinesStorageKey, next); setPipelines(next);
+        try { await fileStore.flush(); } catch (error) { throw new Error(`Operation outcome uncertain: ${message(error)}`); }
+        return saved ?? { pipelineId: original!.id, deleted: true };
+      }
+      if (request.name === "start_task_pipeline") {
+        await ensureActive();
+        const task = getTask(tasksRef.current, requiredText(args.taskId, "Task ID"));
+        const path = request.callerTaskId ? taskRunsRef.current[request.callerTaskId]?.coordinationPath ?? [request.callerTaskId] : [];
+        const run = enqueuePipeline(request.repositoryRoot, task.id, getPipeline(loadPipelines(), args.pipelineId), path);
+        try { await fileStore.flush(); } catch (error) { throw new Error(`Operation outcome uncertain: ${message(error)}`); }
+        await ensureActive();
+        const key = taskQueueKey(request.repositoryRoot, task.id);
+        if (!chatQueuesRef.current[key]?.some((m) => m.pipeline?.runId === run.runId)) throw new Error("Pipeline stopped before dispatch.");
+        setQueuePaused(key, false); queueDispatchRef.current(key);
+        return { ...pipelineRunSnapshot(request.repositoryRoot, task.id, run.runId), messageIds: run.messages.map((m) => m.messageId) };
+      }
+      if (request.name === "get_task_pipeline_run" || request.name === "stop_task_pipeline") {
+        const task = getTask(tasksRef.current, requiredText(args.taskId, "Task ID"));
+        const runId = requiredText(args.runId, "Run ID");
+        if (request.name === "get_task_pipeline_run") return pipelineRunSnapshot(request.repositoryRoot, task.id, runId);
+        const path = request.callerTaskId ? taskRunsRef.current[request.callerTaskId]?.coordinationPath ?? [request.callerTaskId] : [];
+        if (path.includes(task.id)) throw new Error("Cannot stop a task in the caller's coordination path.");
+        await ensureActive();
+        try { return await stopPipelineRun(request.repositoryRoot, task.id, runId); }
+        catch (error) { throw new Error(`Operation outcome uncertain: ${message(error)}`); }
+      }
       if (request.name === "get_playbooks") {
         if (args.query !== undefined && typeof args.query !== "string") throw new Error("Query must be text.");
         const query = String(args.query ?? "").toLowerCase();
@@ -5281,7 +5416,7 @@ function App() {
         return { repositoryRoot: request.repositoryRoot, customFields, statuses: boardStatusColumns, defaultStatus: taskStatuses.defaultStatus, tasks: tasksRef.current.filter((task) => (!args.status || taskBoardStatus(task) === args.status) && `${task.title}\n${task.description}`.toLowerCase().includes(query)).map(taskSummary) };
       }
       if (request.name === "get_task_execution") { const task = getTask(tasksRef.current, args.taskId); return { id: task.id, execution: snapshot(task) }; }
-      if (request.name === "get_task") { const task = getTask(tasksRef.current, args.taskId); return { ...taskSummary(task), agent: task.chatAgent ?? null, drawing: readTaskDrawing(task.drawing), comments: task.comments, assets: task.assets, chatMessages: task.chatMessages, model: task.chatModel, effort: task.chatEffort, mode: task.chatMode, worktree: task.worktree, queue: (chatQueuesRef.current[taskQueueKey(request.repositoryRoot, task.id)] ?? []).map(({ id, body, mode, model, effort }) => ({ id, body, mode, model, effort })), execution: { ...snapshot(task), progress: taskRunsRef.current[task.id]?.status ?? null, liveMessages: taskRunsRef.current[task.id]?.timeline ?? [], question: taskRunsRef.current[task.id]?.input ?? null, approval: taskRunsRef.current[task.id]?.approval ?? null } }; }
+      if (request.name === "get_task") { const task = getTask(tasksRef.current, args.taskId); return { ...taskSummary(task), agent: task.chatAgent ?? null, drawing: readTaskDrawing(task.drawing), comments: task.comments, assets: task.assets, chatMessages: task.chatMessages, model: task.chatModel, effort: task.chatEffort, mode: task.chatMode, worktree: task.worktree, queue: (chatQueuesRef.current[taskQueueKey(request.repositoryRoot, task.id)] ?? []).map(({ id, body, mode, model, effort, pipeline }) => ({ id, body, mode, model, effort, pipeline: pipeline ?? null })), execution: { ...snapshot(task), progress: taskRunsRef.current[task.id]?.status ?? null, liveMessages: taskRunsRef.current[task.id]?.timeline ?? [], question: taskRunsRef.current[task.id]?.input ?? null, approval: taskRunsRef.current[task.id]?.approval ?? null } }; }
       if (request.name === "get_task_start_context") { const branches = await invoke<BranchRefs>("list_branch_refs"); return { branches: branches.refs, remoteBranches: branches.remoteRefs, customFields, statuses: boardStatusColumns, defaultStatus: taskStatuses.defaultStatus, defaultLocation: taskLocationDefault, newBranchPrefix: loadBranchPrefix(repositoryRef.current!.rootPath), defaultPlanMode: false, locations: ["workspace", "worktree", "existing"], startKinds: ["workspace", "branch", "remote", "existing"] }; }
       if (request.name === "create_task" || request.name === "add_task") {
         const title = requiredText(args.title, "Title", 500);
