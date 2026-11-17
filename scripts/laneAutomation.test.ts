@@ -6,6 +6,10 @@ const task = normalizeTask({ id: "12345678-1234-1234-1234-123456789abc", title: 
 const second = { ...task, id: "second" };
 const third = { ...task, id: "third" };
 const lane = { ...emptyLane(), enabled: true, prompt: "Work on this task", baseBranch: "main", workers: 2 };
+const customLanes = readLaneAutomations(JSON.stringify({ qa: lane }), false, ["inbox", "qa", "done"]);
+assert.equal(customLanes.qa.enabled, true);
+assert.deepEqual(laneCandidates([{ ...task, manualStatus: "qa" }], "qa", customLanes.qa, () => false).map((task) => task.id), [task.id]);
+assert.deepEqual(readLaneAutomations(JSON.stringify(customLanes)).qa, lane, "custom automation must survive app restarts and reads for inactive repositories");
 assert.equal(laneConfigError(lane), null);
 for (const workers of [0, -1, 1.5, NaN, Infinity]) assert.match(laneConfigError({ ...lane, workers })!, /whole number/);
 assert.match(laneConfigError({ ...lane, prompt: " " })!, /prompt/);

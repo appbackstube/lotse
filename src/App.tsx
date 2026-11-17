@@ -127,7 +127,8 @@ import { normalizePomodoroSettings, pomodoroSettingsKey } from "./pomodoro";
 import { usePromptScheduler } from "./usePromptScheduler";
 import { useTaskControl } from "./useTaskControl";
 import { agentMetadata, argumentsFor, getTask, metadataKeys, playbookMetadata, requiredText, taskMetadata, taskObservation, taskStartPoint, taskSummary } from "./taskControl";
-import { laneStatuses } from "./laneAutomation";
+import { loadTaskStatuses, reconcileTaskStatuses, resolveTaskStatus, saveTaskStatuses, taskStatusFields, taskStatusStorageKey, type TaskStatusSettings as StatusSettings, type TaskStatus } from "./taskStatuses";
+import { TaskStatusSettings } from "./components/TaskStatusSettings";
 import { useLaneAutomation } from "./useLaneAutomation";
 import { LaneAutomation } from "./components/LaneAutomation";
 import type { LaneRun } from "./laneAutomation";
@@ -198,13 +199,6 @@ function taskCustomFieldLabel(task: RepositoryTask, field: TaskCustomField): str
 const sidebarStorageKey = "chaoticreview.sidebar-widths";
 const simulatorStorageKey = "chaoticreview.simulator-space";
 const taskColumnStorageKey = "chaoticreview.task-column-widths";
-const boardStatusColumns: { id: TaskBoardStatus; label: string }[] = [
-  { id: "inbox", label: "Inbox" },
-  { id: "clear", label: "Planning" },
-  { id: "inProgress", label: "In development" },
-  { id: "inReview", label: "In review" },
-  { id: "done", label: "Done" },
-];
 const autoOpenEditedFileStorageKey = "chaoticreview.auto-open-edited-file";
 const showFullFileDiffStorageKey = "chaoticreview.show-full-file-diff";
 const systemNotificationsStorageKey = "chaoticreview.system-notifications";
@@ -1725,7 +1719,7 @@ function TaskCommentForm({ taskId, drafts, onAdd }: { taskId: string; drafts: Ma
 
 type TaskAssetPreview = { kind: "image" | "pdf" | "video"; path: string } | { kind: "text"; content: string; truncated: boolean } | { kind: "unsupported" };
 
-function TaskDetailsPanel({ task, commentDrafts, branchPrefix, onBranchNameChange, customFields, branches, remoteBranches, workspaceBranch, startLocked, assetBusy, onTitleChange, onDescriptionChange, onScheduleChange, onCustomFieldChange, onStatusChange, onColorChange, onLocationChange, onStartChange, onStartOpen, onAddAssets, onRemoveAsset, onAddComment, onUpdateComment, onDeleteComment }: {
+function TaskDetailsPanel({ task, commentDrafts, branchPrefix, onBranchNameChange, customFields, statusOptions, branches, remoteBranches, workspaceBranch, startLocked, assetBusy, onTitleChange, onDescriptionChange, onScheduleChange, onCustomFieldChange, onStatusChange, onColorChange, onLocationChange, onStartChange, onStartOpen, onAddAssets, onRemoveAsset, onAddComment, onUpdateComment, onDeleteComment }: {
   task: RepositoryTask | null;
   commentDrafts: Map<string, string>;
   branchPrefix: string;
@@ -1741,6 +1735,7 @@ function TaskDetailsPanel({ task, commentDrafts, branchPrefix, onBranchNameChang
   onScheduleChange: (schedule: Pick<RepositoryTask, "startDate" | "deadline">) => void;
   onCustomFieldChange: (id: string, value: string | null) => void;
   onStatusChange: (status: TaskBoardStatus) => void;
+  statusOptions: TaskStatus[];
   onColorChange: (color: TaskColor) => void;
   onLocationChange: (location: TaskLocation) => void;
   onStartChange: (start: NonNullable<RepositoryTask["worktreeStart"]>) => void;
@@ -1812,7 +1807,7 @@ function TaskDetailsPanel({ task, commentDrafts, branchPrefix, onBranchNameChang
       <section aria-label="Task properties">
         <h3 className="task-details-heading">Properties</h3>
         <div className="task-details-properties">
-          <div className="task-details-row"><span className="text-xs font-semibold text-[#7C9B88]">Status</span><Select value={status} onValueChange={(value) => value && onStatusChange(value as TaskBoardStatus)}><SelectTrigger className="task-details-control h-10 w-full px-3" aria-label="Task status"><SelectValue>{(value) => value === "inbox" ? "Inbox" : value === "inProgress" ? "In development" : value === "inReview" ? "In review" : value === "done" ? "Done" : "Needs planning"}</SelectValue></SelectTrigger><SelectContent className="ios-select-content"><SelectItem value="inbox">Inbox</SelectItem><SelectItem value="clear">Needs planning</SelectItem><SelectItem value="inProgress">In development</SelectItem><SelectItem value="inReview">In review</SelectItem><SelectItem value="done">Done</SelectItem></SelectContent></Select></div>
+          <div className="task-details-row"><span className="text-xs font-semibold text-[#7C9B88]">Status</span><Select value={status} onValueChange={(value) => value && onStatusChange(value as TaskBoardStatus)}><SelectTrigger className="task-details-control h-10 w-full px-3" aria-label="Task status"><SelectValue>{(value) => statusOptions.find((status) => status.id === value)?.label}</SelectValue></SelectTrigger><SelectContent className="ios-select-content">{statusOptions.map((status) => <SelectItem key={status.id} value={status.id}>{status.label}</SelectItem>)}</SelectContent></Select></div>
           <div className="task-details-row">
             <span className="text-xs font-semibold text-[#7C9B88]">Color</span>
             <Select value={task.color} onValueChange={(value) => value && onColorChange(value as TaskColor)}>
@@ -2309,10 +2304,15 @@ function App() {
   const [taskChangesRevision, setTaskChangesRevision] = useState(0);
   const [taskGitAction, setTaskGitAction] = useState<"fetch" | "pull" | "push" | null>(null);
   const [tasks, replaceTasks] = useState<RepositoryTask[]>([]);
+  const [taskStatuses, setTaskStatusSettings] = useState(() => loadTaskStatuses(repositoryRoot));
+  const boardStatusColumns = taskStatuses.statuses;
   const setTasks = useCallback((update: RepositoryTask[] | ((current: RepositoryTask[]) => RepositoryTask[])) => {
     const now = Date.now();
-    replaceTasks((current) => timestampTaskUpdates(current, typeof update === "function" ? update(current) : update, now));
-  }, []);
+    replaceTasks((current) => {
+      const next = typeof update === "function" ? update(current) : update;
+      return timestampTaskUpdates(current, reconcileTaskStatuses(next, loadTaskStatuses(repositoryRoot)), now);
+    });
+  }, [repositoryRoot]);
   const [boardDropTarget, setBoardDropTarget] = useState<{ status: TaskBoardStatus; taskId: string | null; position: "before" | "after" } | null>(null);
   const [customFields, setCustomFields] = useState(loadTaskCustomFields);
   const [customFieldError, setCustomFieldError] = useState("");
@@ -2694,6 +2694,7 @@ function App() {
   const resetRepositoryTasks = useEffectEvent((root: string | null) => {
     setTaskStorageRoot(null);
     setAutomationStatus(null);
+    setTaskStatusSettings(loadTaskStatuses(root));
     setApprovalReviewerOverrides({});
     setTaskView(root ? loadTaskView(root) : "list");
     setBoardDrawerOpen(false);
@@ -2768,6 +2769,10 @@ function App() {
       if (event.key === customFieldsStorageKey) setCustomFields(loadTaskCustomFields());
       if (event.key === authOnboardingStorageKey && event.newValue !== null) setAuthOnboardingOpen(false);
       if (repositoryRoot && event.key === taskStorageKey(repositoryRoot)) replaceTasks(loadTasks(repositoryRoot, chatDefaults));
+      if (repositoryRoot && event.key === taskStatusStorageKey(repositoryRoot)) {
+        setTaskStatusSettings(loadTaskStatuses(repositoryRoot));
+        replaceTasks(loadTasks(repositoryRoot, chatDefaults));
+      }
       if (repositoryRoot && event.key === "chaoticreview.task-view") {
         const view = loadTaskView(repositoryRoot);
         setTaskView(view);
@@ -4229,15 +4234,15 @@ function App() {
     }
   };
 
-  const setTaskStatus = (id: string, status: TaskBoardStatus) => updateTask(id, (task) => status === "done"
-    ? { ...task, completed: true, manualStatus: null }
-    : { ...task, completed: false, manualStatus: status === "clear" ? null : status, planReady: false });
+  const setTaskStatus = (id: string, status: TaskBoardStatus) => updateTask(id, (task) => ({
+    ...task, ...taskStatusFields(resolveTaskStatus(taskStatuses, status)), planReady: false,
+  }));
 
   const newRepositoryTask = (parentId: string | null, boardStatus: TaskBoardStatus, draft: Pick<RepositoryTask, "title" | "description">): RepositoryTask => {
     const title = draft.title.trim();
     const chatMode = "default";
     const now = Date.now();
-    const task: RepositoryTask = { id: crypto.randomUUID(), createdAt: now, updatedAt: now, title, description: draft?.description ?? "", customFields: {}, startDate: null, deadline: null, parentId, color: "clear", manualStatus: boardStatus === "inProgress" || boardStatus === "inReview" ? boardStatus : boardStatus === "clear" ? null : "inbox", completed: boardStatus === "done", attachments: [], assets: [], comments: [], chatMessages: [], agentThreadId: null, chatAgent: defaultAgent, planReady: false, unreadAgentResult: false, chatMode, chatModel: chatDefaults[chatMode].model, chatEffort: chatDefaults[chatMode].effort, ...taskLocationFields(taskLocationDefault), worktree: null, started: false };
+    const task: RepositoryTask = { id: crypto.randomUUID(), createdAt: now, updatedAt: now, title, description: draft?.description ?? "", customFields: {}, startDate: null, deadline: null, parentId, color: "clear", ...taskStatusFields(resolveTaskStatus(taskStatuses, boardStatus)), attachments: [], assets: [], comments: [], chatMessages: [], agentThreadId: null, chatAgent: defaultAgent, planReady: false, unreadAgentResult: false, chatMode, chatModel: chatDefaults[chatMode].model, chatEffort: chatDefaults[chatMode].effort, ...taskLocationFields(taskLocationDefault), worktree: null, started: false };
     return task;
   };
 
@@ -4497,6 +4502,7 @@ function App() {
   const laneAutomation = useLaneAutomation({
     root: repository?.rootPath,
     ready: !!repository && taskStorageRoot === repository.rootPath,
+    statuses: boardStatusColumns.map((status) => status.id),
     tasks,
     activity: JSON.stringify([Object.keys(taskRuns), [...taskStartingIds], chatQueues, workspaceOperationBusy, !!comparison, !!review]),
     busy: (task) => {
@@ -4506,6 +4512,18 @@ function App() {
     },
     send: (task, item, run) => sendTaskMessage(task, "default", item.body, item, undefined, run),
   });
+
+  const changeTaskStatusSettings = (next: StatusSettings) => {
+    if (!repository || taskStorageRoot !== repository.rootPath) throw new Error("Wait for the repository to finish loading.");
+    const removed = taskStatuses.statuses.filter((status) => !next.statuses.some((item) => item.id === status.id));
+    if (removed.some((status) => laneAutomation.lanes[status.id]?.enabled || Object.values(laneAutomation.lanes[status.id]?.attempts ?? {}).some((attempt) => attempt.status === "running"))) throw new Error("Pause automation and wait for active runs before deleting this status.");
+    saveTaskStatuses(repository.rootPath, next);
+    const updated = timestampTaskUpdates(tasksRef.current, reconcileTaskStatuses(tasksRef.current, next));
+    tasksRef.current = updated;
+    replaceTasks(updated);
+    saveTasks(repository.rootPath, updated);
+    setTaskStatusSettings(next);
+  };
 
   const promptScheduler = usePromptScheduler({
     rootPath: repository?.rootPath,
@@ -5082,13 +5100,13 @@ function App() {
     }
     setTaskTerminals((current) => [...current, { key: activeTaskTerminalKey, rootPath: repository.rootPath, taskId: selectedTask.location === "worktree" ? selectedTask.id : undefined }]);
   }, [activeTaskTerminalKey, repository, selectedTask, taskTerminals]);
-  const boardGroups = useMemo(() => boardStatusColumns.map(({ id, label }) => ({ key: `board-status:${id}`, label, status: id, tasks: tasks.filter((task) => taskBoardStatus(task) === id) })), [tasks]);
+  const boardGroups = useMemo(() => boardStatusColumns.map(({ id, label }) => ({ key: `board-status:${id}`, label, status: id, tasks: tasks.filter((task) => taskBoardStatus(task) === id) })), [tasks, boardStatusColumns]);
   const statusDeletionIds = useMemo(() => new Map(boardGroups.map((group) => [group.status, taskSubtreeIds(tasks, group.tasks.map((task) => task.id))])), [tasks, boardGroups]);
   const renderStatusOptions = (status: TaskBoardStatus, label: string) => {
     const ids = statusDeletionIds.get(status)!;
     const deletionLocked = !ids.size || [...ids].some((id) => protectedTaskIds.has(id));
     return <DropdownMenu>
-      <DropdownMenuTrigger aria-label={`Options for ${label} column`} className="flex h-7 items-center gap-1 px-1 text-[#7C9B88]">{laneAutomation.lanes[status].enabled && <span className="size-1.5 rounded-full bg-[#A3FF12]" aria-label="Automation enabled" />}<Ellipsis size={15} /></DropdownMenuTrigger>
+      <DropdownMenuTrigger aria-label={`Options for ${label} column`} className="flex h-7 items-center gap-1 px-1 text-[#7C9B88]">{laneAutomation.lanes[status]?.enabled && <span className="size-1.5 rounded-full bg-[#A3FF12]" aria-label="Automation enabled" />}<Ellipsis size={15} /></DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="min-w-44 whitespace-nowrap">
         <DropdownMenuItem onClick={() => { setAutomationStatus(status); void invoke<BranchRefs>("list_branch_refs").then(setBranchRefs).catch((reason) => setError(message(reason))); }}><Play size={14} /> Automation…</DropdownMenuItem>
         <DropdownMenuSeparator />
@@ -5222,24 +5240,24 @@ function App() {
       if (request.name === "get_github_notifications") return githubInbox.notificationsContext;
       if (request.name === "get_tasks") {
         if (args.query !== undefined && typeof args.query !== "string") throw new Error("Query must be text.");
-        if (args.status !== undefined && !laneStatuses.includes(args.status as TaskBoardStatus)) throw new Error("Invalid task status.");
+        if (args.status !== undefined && !boardStatusColumns.some((status) => status.id === args.status)) throw new Error("Invalid task status.");
         const query = String(args.query ?? "").toLowerCase();
-        return { repositoryRoot: request.repositoryRoot, customFields, tasks: tasksRef.current.filter((task) => (!args.status || taskBoardStatus(task) === args.status) && `${task.title}\n${task.description}`.toLowerCase().includes(query)).map(taskSummary) };
+        return { repositoryRoot: request.repositoryRoot, customFields, statuses: boardStatusColumns, defaultStatus: taskStatuses.defaultStatus, tasks: tasksRef.current.filter((task) => (!args.status || taskBoardStatus(task) === args.status) && `${task.title}\n${task.description}`.toLowerCase().includes(query)).map(taskSummary) };
       }
       if (request.name === "get_task_execution") { const task = getTask(tasksRef.current, args.taskId); return { id: task.id, execution: snapshot(task) }; }
       if (request.name === "get_task") { const task = getTask(tasksRef.current, args.taskId); return { ...taskSummary(task), agent: task.chatAgent ?? null, drawing: readTaskDrawing(task.drawing), comments: task.comments, assets: task.assets, chatMessages: task.chatMessages, model: task.chatModel, effort: task.chatEffort, mode: task.chatMode, worktree: task.worktree, queue: (chatQueuesRef.current[taskQueueKey(request.repositoryRoot, task.id)] ?? []).map(({ id, body, mode, model, effort }) => ({ id, body, mode, model, effort })), execution: { ...snapshot(task), progress: taskRunsRef.current[task.id]?.status ?? null, liveMessages: taskRunsRef.current[task.id]?.timeline ?? [], question: taskRunsRef.current[task.id]?.input ?? null, approval: taskRunsRef.current[task.id]?.approval ?? null } }; }
-      if (request.name === "get_task_start_context") { const branches = await invoke<BranchRefs>("list_branch_refs"); return { branches: branches.refs, remoteBranches: branches.remoteRefs, customFields, defaultLocation: taskLocationDefault, newBranchPrefix: loadBranchPrefix(repositoryRef.current!.rootPath), defaultPlanMode: false, locations: ["workspace", "worktree", "existing"], startKinds: ["workspace", "branch", "remote", "existing"] }; }
+      if (request.name === "get_task_start_context") { const branches = await invoke<BranchRefs>("list_branch_refs"); return { branches: branches.refs, remoteBranches: branches.remoteRefs, customFields, statuses: boardStatusColumns, defaultStatus: taskStatuses.defaultStatus, defaultLocation: taskLocationDefault, newBranchPrefix: loadBranchPrefix(repositoryRef.current!.rootPath), defaultPlanMode: false, locations: ["workspace", "worktree", "existing"], startKinds: ["workspace", "branch", "remote", "existing"] }; }
       if (request.name === "create_task" || request.name === "add_task") {
         const title = requiredText(args.title, "Title", 500);
-        const task = newRepositoryTask(null, (args.status as TaskBoardStatus) ?? "inbox", { title, description: "" });
-        const next = await commit((current) => taskMetadata([...current, task], task, args, customFields, storedAgents())); return taskSummary(getTask(next, task.id));
+        const task = newRepositoryTask(null, (args.status as TaskBoardStatus) ?? taskStatuses.defaultStatus, { title, description: "" });
+        const next = await commit((current) => taskMetadata([...current, task], task, args, customFields, storedAgents(), taskStatuses)); return taskSummary(getTask(next, task.id));
       }
       if (request.name === "update_task") {
         const task = getTask(tasksRef.current, args.taskId);
         if (Object.keys(args).length < 2) throw new Error("Provide at least one task change.");
         const next = await commit((current) => {
           const original = getTask(current, task.id);
-          const updated = taskMetadata(current, original, args, customFields, storedAgents());
+          const updated = taskMetadata(current, original, args, customFields, storedAgents(), taskStatuses);
           if (JSON.stringify(original.chatAgent ?? null) !== JSON.stringify(getTask(updated, task.id).chatAgent ?? null)) {
             const key = taskQueueKey(request.repositoryRoot, task.id);
             if (taskRunsRef.current[task.id] || taskStartingRef.current.has(task.id) || queueBusyRef.current.has(key) || chatQueuesRef.current[key]?.length) throw new Error("Task is running or has queued prompts. Finish or stop its work and clear its queue before changing the agent role.");
@@ -5331,9 +5349,9 @@ function App() {
         await fileStore.flush();
         return { taskId: task.id, cancellationRequested: !!run, queuePaused: true };
       }
-      if (request.name === "get_lanes") return laneStatuses.map((status) => ({ status, ...laneAutomation.lanes[status], taskIds: tasksRef.current.filter((task) => taskBoardStatus(task) === status).map((task) => task.id) }));
+      if (request.name === "get_lanes") return boardStatusColumns.map(({ id: status, label }) => ({ status, label, ...laneAutomation.lanes[status], taskIds: tasksRef.current.filter((task) => taskBoardStatus(task) === status).map((task) => task.id) }));
       const status = args.status as TaskBoardStatus;
-      if (!laneStatuses.includes(status)) throw new Error("Invalid lane status.");
+      if (!boardStatusColumns.some((item) => item.id === status)) throw new Error("Invalid lane status.");
       if (request.name === "retry_lane_task") { const task = getTask(tasksRef.current, args.taskId); const attempt = laneAutomation.lanes[status].attempts[task.id]; if (!attempt || !["failed", "interrupted", "held"].includes(attempt.status)) throw new Error("Only failed, interrupted or held attempts can be released."); await ensureActive(); if (!await laneAutomation.retry(status, task.id)) throw new Error("Could not save the lane retry."); return { taskIds: [task.id] }; }
       if (request.name === "update_lane") {
         const current = laneAutomation.lanes[status];
@@ -5368,7 +5386,7 @@ function App() {
     <DropdownMenuContent align="end" className="min-w-44">
       <DropdownMenuItem onClick={() => openBoardTask(task, "detail")}><Pencil size={14} /> Edit task</DropdownMenuItem>
       {taskView === "kanban" && <DropdownMenuItem onClick={() => { setBoardAddingSubtaskId(task.id); setNewTaskDrafts((current) => ({ ...current, [task.id]: "" })); }}><Plus size={14} /> Add subtask</DropdownMenuItem>}
-      <DropdownMenuGroup><DropdownMenuLabel>Status</DropdownMenuLabel>{boardStatusColumns.map(({ id, label }) => <DropdownMenuItem key={id} onClick={() => setTaskStatus(task.id, id)}>{id === "clear" ? "Needs planning" : label}{taskBoardStatus(task) === id && <Check className="ml-auto" />}</DropdownMenuItem>)}</DropdownMenuGroup>
+      <DropdownMenuGroup><DropdownMenuLabel>Status</DropdownMenuLabel>{boardStatusColumns.map(({ id, label }) => <DropdownMenuItem key={id} onClick={() => setTaskStatus(task.id, id)}>{label}{taskBoardStatus(task) === id && <Check className="ml-auto" />}</DropdownMenuItem>)}</DropdownMenuGroup>
       <DropdownMenuGroup><DropdownMenuLabel>Color</DropdownMenuLabel>{taskColors.map((item) => <DropdownMenuItem key={item.value} onClick={() => updateTask(task.id, (current) => ({ ...current, color: item.value }))}><span className={`task-color-dot ${item.value === "clear" ? "task-color-dot-clear" : ""}`} style={{ backgroundColor: item.color }} />{item.label}{task.color === item.value && <Check className="ml-auto" />}</DropdownMenuItem>)}</DropdownMenuGroup>
       <DropdownMenuSeparator />
       <DropdownMenuItem variant="destructive" disabled={protectedTaskIds.has(task.id)} onClick={() => confirmDeleteTasks(taskSubtreeIds(tasks, [task.id]))}><Trash2 size={14} /> Delete task</DropdownMenuItem>
@@ -5682,6 +5700,8 @@ function App() {
                 </div>
               </div>
             </section>}
+
+            {repository && taskStorageRoot === repository.rootPath && <TaskStatusSettings key={repository.rootPath} settings={taskStatuses} onChange={changeTaskStatusSettings} canDelete={(id) => !laneAutomation.lanes[id]?.enabled && !Object.values(laneAutomation.lanes[id]?.attempts ?? {}).some((attempt) => attempt.status === "running")} />}
 
             <section className="mt-10" aria-labelledby="custom-fields-title">
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h2 id="custom-fields-title" className="text-[17px] font-semibold text-[#E8FFF0]">Task custom fields</h2><p className="mt-1 text-sm text-[#7C9B88]">Available in every repository. Values belong to individual tasks.</p></div><div className="flex gap-2">{(["text", "select"] as const).map((type) => <button key={type} type="button" className="quiet-button" onClick={() => { const name = `New ${type === "text" ? "text" : "selection"} field`; const names = new Set(customFields.map((field) => field.name.toLowerCase())); let candidate = name; for (let number = 2; names.has(candidate.toLowerCase()); number++) candidate = `${name} ${number}`; updateCustomFields([...customFields, { id: crypto.randomUUID(), name: candidate, type, options: [], showOnCards: false, multiline: type === "text", hyperlink: false }]); }}><Plus size={14} /> {type === "text" ? "Text field" : "Selection field"}</button>)}</div></div>
@@ -6091,7 +6111,7 @@ function App() {
             <>
               <div className="ios-file-sidebar-header task-list-header flex shrink-0 items-center justify-between gap-3">
                 <div className="flex items-center gap-3"><h2>Tasks</h2><div role="group" aria-label="Task view" className="task-view-switch"><button type="button" aria-pressed={taskView === "list"} onClick={() => { setTaskView("list"); setBoardDrawerOpen(false); setBoardAddingSubtaskId(null); }}><ListTodo size={14} /> List</button><button type="button" aria-pressed={taskView === "kanban"} onClick={() => { setTaskView("kanban"); setBoardDrawerOpen(false); }}><LayoutGrid size={14} /> Kanban</button><button type="button" aria-pressed={taskView === "gantt"} onClick={() => { setTaskView("gantt"); setBoardDrawerOpen(false); }}><ChartGantt size={14} /> Gantt</button></div></div>
-                <NewTaskButton key={repository?.rootPath} onCreate={({ status, ...draft }) => createTask(null, status, draft)} />
+                <NewTaskButton key={repository?.rootPath} statuses={boardStatusColumns} defaultStatus={taskStatuses.defaultStatus} onCreate={({ status, ...draft }) => createTask(null, status, draft)} />
               </div>
               {taskView === "gantt" ? <TaskGantt tasks={tasks} groups={boardGroups} onOpenTask={(task) => openBoardTask(task, "detail")} renderTaskOptions={renderTaskOptions} renderStatusOptions={(group) => renderStatusOptions(group.status, group.label)} renderAgentStatus={(task) => {
                 const run = taskRuns[task.id];
@@ -6116,7 +6136,7 @@ function App() {
                       const parent = task.parentId ? tasks.find((item) => item.id === task.parentId) : null;
                       const run = taskRuns[task.id];
                       const attention = taskAttention(task, run);
-                      const status = task.completed ? "Done" : run?.input ? "Awaiting input" : task.manualStatus === "inProgress" ? "In development" : task.manualStatus === "inReview" ? "In review" : run ? "Working…" : task.manualStatus === "inbox" ? "Inbox" : "Needs planning";
+                      const status = run?.input ? "Awaiting input" : run && !task.completed ? "Working…" : boardStatusColumns.find((item) => item.id === taskBoardStatus(task))?.label;
                       const color = taskColors.find((item) => item.value === task.color)!;
                       const visibleCustomFields = customFields.filter((field) => field.showOnCards && taskCustomFieldLabel(task, field));
                       return <SortableBoardTask key={task.id} id={task.id} index={index} group={group.key}>{({ ref, isDragging }) => <div ref={ref} tabIndex={0} role="group" data-drop-position={boardDropTarget?.taskId === task.id ? boardDropTarget.position : undefined} aria-label={`Drag ${task.title}`} onClick={(event) => { if (event.currentTarget.contains(event.target as Node) && !event.defaultPrevented && !(event.target as HTMLElement).closest("button, input, textarea")) openBoardTask(task); }} className={`task-board-card rounded-lg border bg-[#0B110E] p-3 ${isDragging ? "task-row-dragging" : ""}`} style={{ borderLeftColor: task.color === "clear" ? undefined : color.color, borderLeftWidth: task.color === "clear" ? undefined : 3 }}>
@@ -6149,12 +6169,12 @@ function App() {
                   const hasChildren = taskLayout.parents.has(task.id);
                   const collapsed = collapsedTaskIds.has(task.id);
                   const color = taskColors.find((item) => item.value === task.color)!;
-                  const status = task.completed ? "Done" : run?.input ? "Awaiting input" : task.manualStatus === "inProgress" ? "In development" : task.manualStatus === "inReview" ? "In review" : run ? null : task.manualStatus === "inbox" ? "Inbox" : "Needs planning";
+                  const status = run?.input ? "Awaiting input" : run && !task.completed ? "Working…" : boardStatusColumns.find((item) => item.id === taskBoardStatus(task))?.label;
                   const readyToPlan = !task.completed && (task.manualStatus === null || task.manualStatus === "inbox") && !run && !task.planReady;
                   const closingParents = taskLayout.closingParents.get(task.id) ?? [];
                   return <SortableTask key={task.id} id={task.id} index={index}>{({ ref, handleRef, isDragging }) => <Fragment><div ref={ref} onClick={(event) => { if (!(event.target as HTMLElement).closest("button, input, textarea")) openBoardTask(task); }} style={{ paddingLeft: `${12 + taskLayout.depths.get(task.id)! * 16}px` }} className={`task-row grid gap-2 py-2 pr-3 ${isDragging ? "task-row-dragging" : ""} ${selectedTaskId === task.id ? "bg-[#183522]" : "hover:bg-[#111A15]"}`}>
                   <button ref={handleRef} type="button" className="task-drag-handle mt-[2px] self-start" aria-label={`Drag ${task.title}`}><GripVertical size={16} /></button>
-                  <button type="button" role="checkbox" aria-checked={task.completed} onClick={() => updateTask(task.id, (current) => ({ ...current, completed: !current.completed, manualStatus: null }))} style={{ borderColor: task.color === "clear" ? undefined : color.color, borderWidth: task.color === "clear" ? 1 : 2, backgroundColor: task.completed && task.color !== "clear" ? color.color : undefined, color: task.completed && task.color !== "clear" ? "white" : undefined }} className="task-check mt-[3px] grid size-6 shrink-0 self-start place-items-center rounded-full border text-[#39FF88]">{task.completed && <Check size={13} />}</button>
+                  <button type="button" role="checkbox" aria-checked={task.completed} onClick={() => setTaskStatus(task.id, task.completed ? taskStatuses.defaultStatus === "done" ? boardStatusColumns.find((status) => status.id !== "done")!.id : taskStatuses.defaultStatus : "done")} style={{ borderColor: task.color === "clear" ? undefined : color.color, borderWidth: task.color === "clear" ? 1 : 2, backgroundColor: task.completed && task.color !== "clear" ? color.color : undefined, color: task.completed && task.color !== "clear" ? "white" : undefined }} className="task-check mt-[3px] grid size-6 shrink-0 self-start place-items-center rounded-full border text-[#39FF88]">{task.completed && <Check size={13} />}</button>
                   <div className="task-row-content min-w-0">
                     <div className="task-row-heading flex min-w-0 items-start gap-1">
                       {hasChildren && <button type="button" aria-expanded={!collapsed} aria-label={`${collapsed ? "Expand" : "Collapse"} ${task.title}`} onClick={(event) => { event.stopPropagation(); setCollapsedTaskIds((current) => { const next = new Set(current); if (next.has(task.id)) next.delete(task.id); else next.add(task.id); return next; }); }} className="mt-[3px] grid size-6 shrink-0 place-items-center text-[#7C9B88] hover:text-[#E8FFF0]">{collapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}</button>}
@@ -6169,11 +6189,7 @@ function App() {
                       {readyToPlan && <DropdownMenuItem onClick={() => { selectTask(task); void sendTaskMessage(task, "plan", task.title); }}>Start planning</DropdownMenuItem>}
                       <DropdownMenuGroup>
                         <DropdownMenuLabel>Status</DropdownMenuLabel>
-                        <DropdownMenuItem onClick={() => setTaskStatus(task.id, "inbox")}>Inbox{!task.completed && task.manualStatus === "inbox" && <Check className="ml-auto" />}</DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => setTaskStatus(task.id, "clear")}>Needs planning{!task.completed && !task.manualStatus && <Check className="ml-auto" />}</DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => setTaskStatus(task.id, "inProgress")}>In development{!task.completed && task.manualStatus === "inProgress" && <Check className="ml-auto" />}</DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => setTaskStatus(task.id, "inReview")}>In review{!task.completed && task.manualStatus === "inReview" && <Check className="ml-auto" />}</DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => setTaskStatus(task.id, "done")}>Done{task.completed && <Check className="ml-auto" />}</DropdownMenuItem>
+                        {boardStatusColumns.map(({ id, label }) => <DropdownMenuItem key={id} onClick={() => setTaskStatus(task.id, id)}>{label}{taskBoardStatus(task) === id && <Check className="ml-auto" />}</DropdownMenuItem>)}
                       </DropdownMenuGroup>
                       <DropdownMenuSeparator />
                       <DropdownMenuGroup>
@@ -6330,7 +6346,7 @@ function App() {
             <div className="ml-auto flex min-w-0 items-center gap-1"><PomodoroTimer onSettings={openPomodoroSettings} />{taskMode && !boardMode && !zenMode && taskGitToolbar && <><span className="task-modal-toolbar-divider" aria-hidden="true" />{taskGitToolbar}</>}</div>
           </div>
           <div id="task-details-panel" role="tabpanel" aria-labelledby="task-details-tab" data-active={taskDetailsTab === "details"} className="task-tab-panel min-h-0 flex-1" style={{ display: taskDetailsTab === "details" ? undefined : "none" }}>
-          <TaskSurface board={boardMode} target={boardDetailHost}><TaskDetailsPanel commentDrafts={commentDrafts.current} key={repository.rootPath} branchPrefix={branchPrefix} onBranchNameChange={(newBranchName) => { if (selectedTask && taskStartEditable(selectedTask, taskStartingRef.current.has(selectedTask.id))) updateTaskAtRoot(repository.rootPath, selectedTask.id, (task) => ({ ...task, newBranchName })); }} onScheduleChange={(schedule) => { if (selectedTask) updateTaskAtRoot(repository.rootPath, selectedTask.id, (task) => ({ ...task, ...schedule })); }} customFields={customFields} onCustomFieldChange={(id, value) => { if (selectedTask) changeTaskCustomField(repository.rootPath, selectedTask.id, id, value); }} assetBusy={selectedTaskRootBusy} task={selectedTask} branches={branchRefs?.refs ?? []} remoteBranches={branchRefs?.remoteRefs ?? []} workspaceBranch={repository.currentBranch} startLocked={!taskStartEditable(selectedTask, !!(selectedTask && taskStartingIds.has(selectedTask.id)))} onTitleChange={(title) => { if (selectedTask) { updateTask(selectedTask.id, (task) => ({ ...task, title })); } }} onDescriptionChange={(description) => { if (selectedTask) updateTaskAtRoot(repository.rootPath, selectedTask.id, (task) => ({ ...task, description })); }} onStatusChange={(status) => { if (selectedTask) setTaskStatus(selectedTask.id, status); }} onColorChange={(color) => { if (selectedTask) updateTask(selectedTask.id, (task) => ({ ...task, color })); }} onLocationChange={(location) => { if (selectedTask && taskStartEditable(selectedTask, taskStartingRef.current.has(selectedTask.id))) updateTask(selectedTask.id, (task) => ({ ...task, ...taskLocationFields(location), worktree: null })); }} onStartChange={(worktreeStart) => { if (selectedTask && taskStartEditable(selectedTask, taskStartingRef.current.has(selectedTask.id))) updateTask(selectedTask.id, (task) => ({ ...task, worktreeStart })); }} onStartOpen={() => { void invoke<BranchRefs>("list_branch_refs").then(setBranchRefs).catch((reason) => setError(message(reason))); }} onAddAssets={(paths) => { if (selectedTask) void addTaskAssets(selectedTask.id, paths); }} onRemoveAsset={(assetId) => { if (selectedTask) void removeTaskAsset(selectedTask, assetId); }} onAddComment={(body) => { if (selectedTask) updateTask(selectedTask.id, (task) => ({ ...task, comments: [...task.comments, { id: crypto.randomUUID(), author: "user", body, createdAt: Date.now() }] })); }} onUpdateComment={(commentId, body) => { if (selectedTask) updateTask(selectedTask.id, (task) => ({ ...task, comments: task.comments.map((comment) => comment.id === commentId ? { ...comment, body } : comment) })); }} onDeleteComment={(commentId) => { if (selectedTask) updateTask(selectedTask.id, (task) => ({ ...task, comments: task.comments.filter((comment) => comment.id !== commentId) })); }} /></TaskSurface>
+          <TaskSurface board={boardMode} target={boardDetailHost}><TaskDetailsPanel statusOptions={boardStatusColumns} commentDrafts={commentDrafts.current} key={repository.rootPath} branchPrefix={branchPrefix} onBranchNameChange={(newBranchName) => { if (selectedTask && taskStartEditable(selectedTask, taskStartingRef.current.has(selectedTask.id))) updateTaskAtRoot(repository.rootPath, selectedTask.id, (task) => ({ ...task, newBranchName })); }} onScheduleChange={(schedule) => { if (selectedTask) updateTaskAtRoot(repository.rootPath, selectedTask.id, (task) => ({ ...task, ...schedule })); }} customFields={customFields} onCustomFieldChange={(id, value) => { if (selectedTask) changeTaskCustomField(repository.rootPath, selectedTask.id, id, value); }} assetBusy={selectedTaskRootBusy} task={selectedTask} branches={branchRefs?.refs ?? []} remoteBranches={branchRefs?.remoteRefs ?? []} workspaceBranch={repository.currentBranch} startLocked={!taskStartEditable(selectedTask, !!(selectedTask && taskStartingIds.has(selectedTask.id)))} onTitleChange={(title) => { if (selectedTask) { updateTask(selectedTask.id, (task) => ({ ...task, title })); } }} onDescriptionChange={(description) => { if (selectedTask) updateTaskAtRoot(repository.rootPath, selectedTask.id, (task) => ({ ...task, description })); }} onStatusChange={(status) => { if (selectedTask) setTaskStatus(selectedTask.id, status); }} onColorChange={(color) => { if (selectedTask) updateTask(selectedTask.id, (task) => ({ ...task, color })); }} onLocationChange={(location) => { if (selectedTask && taskStartEditable(selectedTask, taskStartingRef.current.has(selectedTask.id))) updateTask(selectedTask.id, (task) => ({ ...task, ...taskLocationFields(location), worktree: null })); }} onStartChange={(worktreeStart) => { if (selectedTask && taskStartEditable(selectedTask, taskStartingRef.current.has(selectedTask.id))) updateTask(selectedTask.id, (task) => ({ ...task, worktreeStart })); }} onStartOpen={() => { void invoke<BranchRefs>("list_branch_refs").then(setBranchRefs).catch((reason) => setError(message(reason))); }} onAddAssets={(paths) => { if (selectedTask) void addTaskAssets(selectedTask.id, paths); }} onRemoveAsset={(assetId) => { if (selectedTask) void removeTaskAsset(selectedTask, assetId); }} onAddComment={(body) => { if (selectedTask) updateTask(selectedTask.id, (task) => ({ ...task, comments: [...task.comments, { id: crypto.randomUUID(), author: "user", body, createdAt: Date.now() }] })); }} onUpdateComment={(commentId, body) => { if (selectedTask) updateTask(selectedTask.id, (task) => ({ ...task, comments: task.comments.map((comment) => comment.id === commentId ? { ...comment, body } : comment) })); }} onDeleteComment={(commentId) => { if (selectedTask) updateTask(selectedTask.id, (task) => ({ ...task, comments: task.comments.filter((comment) => comment.id !== commentId) })); }} /></TaskSurface>
           </div>
           <div id="task-draw-panel" role="tabpanel" aria-labelledby="task-draw-tab" data-active={taskDetailsTab === "draw"} className="task-tab-panel min-h-0 flex-1" style={{ display: taskDetailsTab === "draw" ? undefined : "none" }}>
             <TaskSurface board={boardMode} target={boardDrawHost}>{selectedTask && taskVisualSessionOpen && <TaskDrawingPanel key={`${repository.rootPath}:${selectedTask.id}`} active={boardMode ? boardTab === "draw" : taskDetailsTab === "draw"} value={selectedTask.drawing} onChange={(drawing) => {

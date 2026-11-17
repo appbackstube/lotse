@@ -6,6 +6,7 @@ import { normalizeTaskDate } from "./taskSchedule.ts";
 import { normalizeChatGoal } from "./chatGoal.ts";
 import { normalizeGitHubLink } from "./github.ts";
 import { validSandboxHtml } from "./taskSandbox.ts";
+import { loadTaskStatuses, reconcileTaskStatuses } from "./taskStatuses.ts";
 
 export const taskStoragePrefix = "chaoticreview.repository-tasks:";
 export const taskStorageKey = (rootPath: string) => `${taskStoragePrefix}${rootPath}`;
@@ -16,7 +17,7 @@ const openNewTaskInDrawerStorageKey = "chaoticreview.open-new-task-in-drawer";
 const closeKanbanModalOnOutsideClickStorageKey = "chaoticreview.close-kanban-modal-on-outside-click";
 const taskViewStorageKey = "chaoticreview.task-view";
 export type TaskView = "list" | "kanban" | "gantt";
-export type TaskBoardStatus = "inbox" | "clear" | "inProgress" | "inReview" | "done";
+export type TaskBoardStatus = string;
 export type TaskDropPosition = "before" | "inside" | "after";
 
 export function loadTaskCustomFields(): TaskCustomField[] {
@@ -367,7 +368,7 @@ export function normalizeTask(value: unknown, defaults: ChatDefaults = defaultCh
   if (!value || typeof value !== "object") return null;
   const task = value as Partial<RepositoryTask>;
   if (typeof task.id !== "string" || typeof task.title !== "string") return null;
-  const manualStatus = task.manualStatus === "inbox" || task.manualStatus === "inProgress" || task.manualStatus === "inReview" ? task.manualStatus : null;
+  const manualStatus = typeof task.manualStatus === "string" && /^[\w-]{1,100}$/.test(task.manualStatus) && task.manualStatus !== "done" && task.manualStatus !== "clear" ? task.manualStatus : null;
   const chatMode = task.chatMode === "plan" ? "plan" : "default";
   const chatModel = validChatModel(task.chatModel) ? task.chatModel : defaults[chatMode].model;
   const chatEffort = typeof task.chatEffort === "string" && chatEfforts.some((value) => value === task.chatEffort) ? task.chatEffort as RepositoryTask["chatEffort"] : defaults[chatMode].effort;
@@ -419,15 +420,15 @@ export function loadTasks(rootPath: string, defaults: ChatDefaults = defaultChat
   try {
     const value: unknown = JSON.parse(fileStore.getItem(taskStorageKey(rootPath)) ?? "[]");
     if (!Array.isArray(value)) return [];
-    return value.flatMap((item): RepositoryTask[] => {
+    return reconcileTaskStatuses(value.flatMap((item): RepositoryTask[] => {
       const task = normalizeTask(item, defaults);
       return task ? [task] : [];
-    });
+    }), loadTaskStatuses(rootPath));
   } catch { return []; }
 }
 
 export function saveTasks(rootPath: string, tasks: RepositoryTask[]) {
-  fileStore.setJSON(taskStorageKey(rootPath), tasks);
+  fileStore.setJSON(taskStorageKey(rootPath), reconcileTaskStatuses(tasks, loadTaskStatuses(rootPath)));
 }
 
 export function timestampTaskUpdates(previous: RepositoryTask[], next: RepositoryTask[], now = Date.now()): RepositoryTask[] {
