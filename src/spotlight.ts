@@ -4,7 +4,7 @@ export type SearchTarget =
   | { type: "task"; taskId: string; commentId?: string; messageId?: string }
   | { type: "memory"; path: string }
   | { type: "workspace"; messageId: string; context: string; archiveId?: string };
-export type SearchDocument = { id: string; kind: "Task" | "Comment" | "Chat" | "Memory"; title: string; body: string; breadcrumb: string; target: SearchTarget };
+export type SearchDocument = { id: string; kind: "Task" | "Comment" | "Chat" | "Memory"; title: string; body: string; breadcrumb: string; target: SearchTarget; searchContext?: string; titleMatched?: boolean };
 export type SearchResponse = { documents: SearchDocument[]; errors: string[] };
 export const searchWords = (query: string) => [...new Set(query.toLowerCase().trim().split(/\s+/).filter(Boolean))];
 export const workspaceSearchContext = (review: ReviewSession) => JSON.stringify([review.mode, review.baseRef, review.compareRef, review.mode === "workingCopy" ? review.baseOid : null]);
@@ -14,7 +14,7 @@ export function taskSearchDocuments(tasks: RepositoryTask[]): SearchDocument[] {
   return tasks.flatMap((task) => [
     { id: `task:${task.id}`, kind: "Task" as const, title: task.title, body: task.description, breadcrumb: `Tasks / ${task.completed ? "Done / " : ""}${task.title}`, target: { type: "task" as const, taskId: task.id } },
     ...task.comments.map((comment) => ({ id: `comment:${task.id}:${comment.id}`, kind: "Comment" as const, title: task.title, body: comment.body, breadcrumb: `${task.title} / Comments / ${comment.author === "user" ? "You" : "Agent"}`, target: { type: "task" as const, taskId: task.id, commentId: comment.id } })),
-    ...task.chatMessages.map((message) => ({ id: `chat:${task.id}:${message.id}`, kind: "Chat" as const, title: messageTitle(message), body: message.body, breadcrumb: `${task.title} / Chat / ${message.role === "user" ? "You" : "Agent"}`, target: { type: "task" as const, taskId: task.id, messageId: message.id } })),
+    ...task.chatMessages.map((message) => ({ id: `chat:${task.id}:${message.id}`, kind: "Chat" as const, title: messageTitle(message), body: message.body, searchContext: task.title, breadcrumb: `${task.title} / Chat / ${message.role === "user" ? "You" : "Agent"}`, target: { type: "task" as const, taskId: task.id, messageId: message.id } })),
   ]);
 }
 
@@ -22,25 +22,6 @@ export function workspaceSearchDocuments(review: ReviewSession | null): SearchDo
   if (!review) return [];
   const context = workspaceSearchContext(review);
   return review.chatMessages.map((message) => ({ id: `workspace:current:${message.id}`, kind: "Chat", title: messageTitle(message), body: message.body, breadcrumb: `Workspace / Chat / ${message.role === "user" ? "You" : "Agent"}`, target: { type: "workspace", messageId: message.id, context } }));
-}
-
-export function searchDocuments(documents: SearchDocument[], query: string): SearchDocument[] {
-  const words = searchWords(query);
-  if (!words.length) return [];
-  const normalized = query.trim().toLowerCase();
-  const rank = (doc: SearchDocument) => {
-    const title = doc.title.toLowerCase();
-    const body = doc.body.toLowerCase();
-    if (doc.kind === "Comment") return body.includes(normalized) ? 0 : words.every((word) => body.includes(word)) ? 1 : 2;
-    return title === normalized ? 0 : title.startsWith(normalized) ? 1 : words.every((word) => title.includes(word)) ? 2 : body.includes(normalized) ? 3 : 4;
-  };
-  return documents.filter((doc) => {
-    const title = doc.title.toLowerCase();
-    const body = doc.body.toLowerCase();
-    if (!words.every((word) => title.includes(word) || body.includes(word))) return false;
-    if (doc.kind !== "Comment") return true;
-    return words.every((word) => title.includes(word)) ? words.every((word) => body.includes(word)) : words.some((word) => body.includes(word));
-  }).sort((a, b) => Number(b.kind === "Task") - Number(a.kind === "Task") || rank(a) - rank(b) || a.id.localeCompare(b.id));
 }
 
 export function searchSnippet(body: string, query: string): string {

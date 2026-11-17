@@ -57,7 +57,7 @@ import { ChatGoalSettings } from "./components/ChatGoalSettings";
 import { defaultChatGoal, normalizeChatGoal } from "./chatGoal";
 import { SpotlightSearch, SearchHighlight } from "./components/SpotlightSearch";
 import "./components/SpotlightSearch.css";
-import { revealSearchSource, searchDocuments, taskSearchDocuments, workspaceSearchContext, workspaceSearchDocuments, type SearchDocument } from "./spotlight";
+import { revealSearchSource, taskSearchDocuments, workspaceSearchContext, workspaceSearchDocuments, type SearchDocument } from "./spotlight";
 import { MemoryWorkspace } from "@/components/MemoryWorkspace";
 import { TaskGantt, TaskScheduleFields } from "@/components/TaskGantt";
 import { TaskAssetThumbnail } from "@/components/TaskAssetThumbnail";
@@ -2284,7 +2284,7 @@ function App() {
   const memoryFlushRef = useRef<(() => Promise<boolean>) | null>(null);
   const commentDrafts = useRef(new Map<string, string>());
   useEffect(() => { commentDrafts.current.clear(); }, [repositoryRoot]);
-  const memoryOpenRef = useRef<((path: string, query: string, signal: AbortSignal) => Promise<boolean>) | null>(null);
+  const memoryOpenRef = useRef<((path: string, query: string, signal: AbortSignal, expectedContent: string) => Promise<boolean>) | null>(null);
   const [searchSource, setSearchSource] = useState<{ document: SearchDocument; query: string; request: number } | null>(null);
   const [searchArchive, setSearchArchive] = useState<{ session: ReviewSession; messageId: string; query: string } | null>(null);
   useEffect(() => { setSearchSource(null); setSearchArchive(null); }, [repositoryRoot]);
@@ -2293,7 +2293,7 @@ function App() {
     const target = searchSource.document.target;
     return revealSearchSource(() => {
       const form = document.querySelector<HTMLElement>(`[data-search-task="${CSS.escape(target.taskId)}"]`);
-      return target.commentId ? form?.querySelector<HTMLElement>(`[data-search-comment="${CSS.escape(target.commentId)}"]`) ?? null : form?.querySelector<HTMLElement>(searchDocuments([{ ...searchSource.document, body: "" }], searchSource.query).length ? ".task-details-title-input" : ".task-description-editor") ?? null;
+      return target.commentId ? form?.querySelector<HTMLElement>(`[data-search-comment="${CSS.escape(target.commentId)}"]`) ?? null : form?.querySelector<HTMLElement>(searchSource.document.titleMatched || !searchSource.document.body ? ".task-details-title-input" : ".task-description-editor") ?? null;
     }, searchSource.query);
   }, [searchSource]);
   useEffect(() => {
@@ -4275,26 +4275,26 @@ function App() {
     if (target.type === "task") {
       const current = tasksRef.current.find((task) => task.id === target.taskId);
       const fresh = current && taskSearchDocuments([current]).find((entry) => entry.id === doc.id);
-      if (!current || !fresh || !searchDocuments([fresh], query).length) throw new Error("This result has changed or was deleted. Search again.");
+      if (!current || !fresh || fresh.title !== doc.title || fresh.body !== doc.body || fresh.searchContext !== doc.searchContext) throw new Error("This result has changed or was deleted. Search again.");
       setSettingsOpen(false); setZenMode(false); setTerminalOpen(false); setWorkspaceMode("tasks");
       setCollapsedTaskIds((collapsed) => { const next = new Set(collapsed); let parent = current.parentId; const seen = new Set<string>(); while (parent && !seen.has(parent)) { seen.add(parent); next.delete(parent); parent = tasksRef.current.find((task) => task.id === parent)?.parentId ?? null; } return next; });
       openBoardTask(current, "detail");
     } else if (target.type === "memory") {
-      if (!memoryOpenRef.current || !await memoryOpenRef.current(target.path, query, signal)) return false;
+      if (!memoryOpenRef.current || !await memoryOpenRef.current(target.path, query, signal, doc.body)) return false;
       if (signal.aborted || repositoryRef.current?.rootPath !== root) return false;
       setSettingsOpen(false); setZenMode(false); setBoardDrawerOpen(false); setWorkspaceMode("memory");
     } else {
       const current = reviewRef.current;
       if (current && target.context === workspaceSearchContext(current)) {
         const fresh = workspaceSearchDocuments(current).find((entry) => entry.target.type === "workspace" && entry.target.messageId === target.messageId);
-        if (!fresh || !searchDocuments([fresh], query).length) throw new Error("This message has changed or was deleted. Search again.");
+        if (!fresh || fresh.body !== doc.body) throw new Error("This message has changed or was deleted. Search again.");
         setSettingsOpen(false); setZenMode(false); setTerminalOpen(false); setBoardDrawerOpen(false); setWorkspaceMode("workspace");
       } else {
         if (!target.archiveId) throw new Error("This workspace chat is no longer available. Search again.");
         const session = await invoke<ReviewSession>("read_spotlight_chat", { repositoryRoot: root, archiveId: target.archiveId });
         if (signal.aborted || repositoryRef.current?.rootPath !== root) return false;
         const fresh = workspaceSearchDocuments(session).find((entry) => entry.target.type === "workspace" && entry.target.messageId === target.messageId);
-        if (!fresh || !searchDocuments([fresh], query).length) throw new Error("This message has changed or was deleted. Search again.");
+        if (!fresh || fresh.body !== doc.body) throw new Error("This message has changed or was deleted. Search again.");
         setSearchArchive({ session, messageId: target.messageId, query });
       }
     }

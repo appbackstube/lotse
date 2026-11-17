@@ -5,6 +5,7 @@ mod agent_runtime;
 mod credentials;
 mod memory;
 mod spotlight;
+mod spotlight_index;
 mod github;
 mod scheduler;
 mod task_control;
