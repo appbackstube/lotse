@@ -49,7 +49,7 @@ mockIPC(async (command, args: any) => {
   if (command === "plugin:window|outer_size" || command === "plugin:window|inner_size") return { width: innerWidth, height: innerHeight };
   if (command === "save_review" || command === "set_mcp_context" || command.startsWith("plugin:window|")) return;
   if (command.startsWith("plugin:notification|")) return false;
-  if (command === "list_memory") return [];
+  if (command === "list_memory" || command === "load_mcp_servers") return [];
   if (command === "scheduler_list") return [];
   if (command === "cleanup_unstarted_task_worktree") return;
   if (command === "ai_chat_send") { sends.push(args); return { requestId: `run-${sends.length}`, threadId: `thread-${sends.length}`, turnId: `turn-${sends.length}` }; }
@@ -101,6 +101,13 @@ try {
   check(button("Model and effort").textContent?.includes("Custom model") && button("Model and effort").textContent?.includes("High"), "Switching to Plan must preserve the role configuration");
   await click(button("Disable Plan mode"));
   check(button("Model and effort").textContent?.includes("Custom model") && button("Model and effort").textContent?.includes("High"), "Leaving Plan must preserve the role configuration");
+  await click(button("Settings")); await click(button("Agent preferences"));
+  await click(document.querySelector<HTMLElement>('[data-settings-page="agent"] .model-picker-trigger')!);
+  await click([...document.querySelectorAll<HTMLElement>('[role="option"]')].find((item) => visible(item) && item.textContent?.includes("Custom model"))!);
+  await click(document.querySelector<HTMLElement>('[data-settings-page="agent"] .model-picker-trigger')!);
+  await click([...document.querySelectorAll<HTMLElement>('[role="option"]')].find((item) => visible(item) && item.textContent?.includes("Default"))!);
+  await click(button("Close settings"));
+  check(button("Model and effort").textContent?.includes("Custom model") && button("Model and effort").textContent?.includes("High"), "Changing global defaults must not replace an existing review configuration");
   const enableGoal = async () => {
     await click(button("Add to chat"));
     const goal = [...document.querySelectorAll<HTMLElement>('button[role="switch"]')].find((b) => visible(b) && b.textContent?.startsWith("Goal"))!;

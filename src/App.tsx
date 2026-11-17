@@ -4500,7 +4500,7 @@ function App() {
 
   queueDispatchRef.current = (key) => {
     if (pausedQueueKeysRef.current.has(key) || queueBusyRef.current.has(key)) return;
-    if (modelsStatus === "Loading models…") return;
+    if (!modelsLoaded) return;
     const item = chatQueuesRef.current[key]?.[0];
     if (!item || !repositoryRef.current) return;
     const task = tasksRef.current.find((entry) => taskQueueKey(repositoryRef.current!.rootPath, entry.id) === key);
@@ -4522,7 +4522,7 @@ function App() {
   };
 
   useEffect(() => {
-    if (modelsStatus !== "Loading models…") for (const key of Object.keys(chatQueuesRef.current)) queueDispatchRef.current(key);
+    if (modelsLoaded) for (const key of Object.keys(chatQueuesRef.current)) queueDispatchRef.current(key);
   }, [modelsStatus, modelsLoaded]);
 
   const startPipeline = (pipeline: Pipeline) => {
@@ -4560,7 +4560,7 @@ function App() {
     tasks,
     activity: JSON.stringify([Object.keys(taskRuns), [...taskStartingIds], chatQueues, workspaceOperationBusy, !!comparison, !!review, modelsStatus, modelsLoaded]),
     busy: (task) => {
-      if (!comparison || !review || modelsStatus === "Loading models…" || taskDeletionBusyRef.current || taskGitAction || taskRunsRef.current[task.id] || taskStartingRef.current.has(task.id)) return true;
+      if (!comparison || !review || !modelsLoaded || taskDeletionBusyRef.current || taskGitAction || taskRunsRef.current[task.id] || taskStartingRef.current.has(task.id)) return true;
       if (repository && chatQueuesRef.current[taskQueueKey(repository.rootPath, task.id)]?.length) return true;
       return automationDirectory(task) === "workspace" && workspaceOperationBusy;
     },
@@ -4584,7 +4584,7 @@ function App() {
     ready: !!repository && taskStorageRoot === repository.rootPath,
     tasks,
     activity: JSON.stringify([Object.keys(taskRuns), [...taskStartingIds], Object.entries(chatQueues).map(([key, items]) => [key, items.length]), workspaceOperationBusy, !!comparison, !!review, taskDeletionBusyRef.current, modelsStatus, modelsLoaded]),
-    busy: (task) => !comparison || !review || modelsStatus === "Loading models…" || taskDeletionBusyRef.current || !!taskGitAction || !!taskRunsRef.current[task.id] || taskStartingRef.current.has(task.id) || (automationDirectory(task) === "workspace" && workspaceOperationBusy),
+    busy: (task) => !comparison || !review || !modelsLoaded || taskDeletionBusyRef.current || !!taskGitAction || !!taskRunsRef.current[task.id] || taskStartingRef.current.has(task.id) || (automationDirectory(task) === "workspace" && workspaceOperationBusy),
     queued: (task) => !!repository && !!chatQueuesRef.current[taskQueueKey(repository.rootPath, task.id)]?.length,
     send: (task, item, schedule) => sendTaskMessage(task, item.mode, item.body, item, schedule),
   });
@@ -4764,8 +4764,6 @@ function App() {
 
   const updateChatDefault = (mode: AiChatMode, value: Partial<ChatDefaults[AiChatMode]>) => {
     setChatDefaults((current) => ({ ...current, [mode]: { ...current[mode], ...value } }));
-    if (mode !== aiChatMode) return;
-    updateReviewChatConfig({ model: value.model ?? aiChatModel, effort: value.effort ?? aiChatEffort });
   };
 
   const updateReviewChatConfig = (config: ChatDefaults[AiChatMode]) => {

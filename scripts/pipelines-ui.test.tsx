@@ -13,7 +13,7 @@ import App from "../src/App";
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const repo = { rootPath: "/synthetic-settings", name: "Settings preview", currentBranch: "main", hasOrigin: true };
 const agent = { id: "owner", title: "Product Owner", prompt: "Clarify goals." };
-const reviewer = { id: "reviewer", title: "Reviewer", prompt: "Review changes." };
+const reviewer = { id: "reviewer", title: "Reviewer", prompt: "Review changes.", modelConfig: { model: "review-model", effort: "high" as const } };
 const pipeline: Pipeline = { id: "build", title: "Build & review", description: "A clear plan, implementation, then review.", steps: [
   { id: "plan", title: "Plan & implement", agentId: agent.id, messages: ["Inspect the task.", "Implement the plan."] },
   { id: "review", title: "Review", agentId: reviewer.id, messages: ["Review the result."] },
@@ -38,7 +38,7 @@ mockIPC(async (command, args: any) => {
   if (command === "list_branch_refs") return { refs: ["main"], remoteRefs: ["origin/main"], defaultBase: "main", pullCount: 0, pushCount: 0 };
   if (command === "compare_working_copy") return { mode: "workingCopy", baseRef: null, compareRef: null, baseOid: "a".repeat(40), baseCommitOid: "a".repeat(40), compareCommitOid: "a".repeat(40), snapshotId: "snapshot", files: [] };
   if (command === "load_review" || command === "github_connection") return null;
-  if (command === "agent_models") return [{ model: "gpt-5.6-terra", displayName: "Default" }];
+  if (command === "agent_models") return [{ model: "gpt-5.6-terra", displayName: "Default" }, { model: "review-model", displayName: "Review model", supportedReasoningEfforts: [{ reasoningEffort: "high" }] }];
   if (["scheduler_list", "list_memory", "load_mcp_servers", "list_website_credentials"].includes(command)) return [];
   if (command === "plugin:window|scale_factor") return 1;
   if (command === "plugin:window|theme") return "light";
@@ -98,6 +98,7 @@ try {
   await click(button('Resume')); check(sends.length === 3 && sends[2].prompt === 'Implement the plan.', 'Retry must repeat the failed message');
   await event(2, 'assistantMessageCompleted', { finalText: 'Implementation verified.' }); await event(2, 'completed');
   check(sends.length === 4 && sends[3].agentPrompt === reviewer.prompt && sends[3].agentThreadId === null, 'Role switch must start a fresh reviewer thread');
+  check(sends[3].model === 'review-model' && sends[3].effort === 'high', 'A pipeline role switch must use the role model and effort');
   check(sends[3].prompt.includes('Implementation verified.') && sends[3].prompt.includes('Plan ready.'), 'Handoff must include previous results');
   check(storedTask().chatMessages.some((m: any) => m.body === 'Plan ready.'), 'Switching roles must preserve chat history');
   await event(3, 'completed'); check(!queue().length && !document.querySelector('.pipeline-run-card'), 'Completion must clear the pipeline');
