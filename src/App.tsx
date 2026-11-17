@@ -22,7 +22,7 @@ import { readTaskDrawing } from "./taskDrawing";
 import { applyTaskSandboxUpdate } from "./taskSandbox";
 import { WebsiteCredentialsSettings } from "./components/WebsiteCredentialsSettings";
 import { PipelineDesigner } from "./components/PipelineDesigner";
-import { loadPipelines, pipelineError, pipelineQueue, pipelinesStorageKey, pipelineTurn, type Pipeline } from "./pipelines";
+import { loadPipelines, pipelineChatConfig, pipelineError, pipelineQueue, pipelinesStorageKey, pipelineTurn, type Pipeline } from "./pipelines";
 import { SettingsLayout, type SettingsPage } from "./components/SettingsLayout";
 import { TaskBrowser, hideTaskBrowsers } from "./components/TaskBrowser";
 import { TaskDrawingPanel, TaskSandboxPanel } from "./components/TaskVisualPanel";
@@ -4442,7 +4442,7 @@ function App() {
         worktreeStart: task.worktreeStart,
         ...(worktree && task.worktreeStart?.kind !== "existing" ? { newBranchName: worktree.branch } : {}),
         agentThreadId: accepted.threadId,
-        ...(pipelineRequest ? { chatAgent: pipelineRequest.agent } : {}),
+        ...(pipelineRequest && queuedItem ? { chatAgent: pipelineRequest.agent, ...pipelineChatConfig(task, current, queuedItem) } : {}),
         started: true,
         worktree,
         unreadAgentResult: false,

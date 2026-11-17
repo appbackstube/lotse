@@ -88,6 +88,15 @@ export function pipelineTurn(task: RepositoryTask, item: QueuedChatMessage): { a
   return { agent, threadId: changed ? null : task.agentThreadId, prompt: history ? `${item.body}\n\nPrevious task conversation (handoff context):\n${history}` : item.body };
 }
 
+export function pipelineChatConfig(task: RepositoryTask, current: RepositoryTask, item: QueuedChatMessage): Partial<Pick<RepositoryTask, "chatModel" | "chatEffort">> {
+  const agent = item.pipeline?.agent;
+  if (!agent?.modelConfig || JSON.stringify(agent) === JSON.stringify(task.chatAgent ?? null)) return {};
+  return {
+    ...(current.chatModel === task.chatModel ? { chatModel: item.model } : {}),
+    ...(current.chatEffort === task.chatEffort ? { chatEffort: item.effort } : {}),
+  };
+}
+
 function pipelineHandoff(messages: ChatMessage[]): string {
   return messages.filter((m) => (m.role === "assistant" || m.role === "user") && m.body.trim()).slice(-16)
     .map((m) => `${m.role}: ${m.body}`).join("\n\n").slice(-32_000);

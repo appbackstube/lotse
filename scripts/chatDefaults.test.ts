@@ -21,5 +21,10 @@ assert.equal(chatConfigurationError("model-a", "high", models, true), null);
 assert.match(chatConfigurationError("model-a", "medium", models, true)!, /not supported/);
 assert.match(chatConfigurationError("missing", "high", models, true)!, /unavailable/);
 assert.match(chatConfigurationError("model-a", "high", [], false)!, /not available yet/);
+for (const efforts of [undefined, []]) {
+  const unknown = [{ model: "unknown", displayName: "Unknown", supportedReasoningEfforts: efforts }];
+  assert.deepEqual(modelEfforts("unknown", unknown), ["low", "medium", "high", "xhigh"]);
+  assert.equal(chatConfigurationError("unknown", "high", unknown, true), null);
+}
 assert.deepEqual(normalizeChatModelFavorites(["gpt-6-luna", "gpt-6-luna", "bad model", 42, "~openai/other"]), ["gpt-6-luna", "~openai/other"]);
 assert.deepEqual(normalizeChatModelFavorites({ model: "gpt-6-luna" }), []);

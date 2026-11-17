@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { normalizePipelines, pipelineError, pipelineQueue, pipelineTurn, validPipelineMessage, type Pipeline } from "../src/pipelines.ts";
+import { normalizePipelines, pipelineChatConfig, pipelineError, pipelineQueue, pipelineTurn, validPipelineMessage, type Pipeline } from "../src/pipelines.ts";
 import { normalizeTask } from "../src/tasks.ts";
 import { loadChatQueues, moveQueuedMessage } from "../src/chatQueue.ts";
 import { fileStore } from "../src/fileStore.ts";
@@ -17,6 +17,11 @@ assert.equal(configuredQueue[0].model, task.chatModel);
 assert.equal(configuredQueue[0].effort, task.chatEffort);
 assert.equal(configuredQueue[2].model, "review-model");
 assert.equal(configuredQueue[2].effort, "high");
+assert.deepEqual(pipelineChatConfig(task, task, configuredQueue[2]), { chatModel: "review-model", chatEffort: "high" });
+assert.deepEqual(pipelineChatConfig(task, { ...task, chatModel: "manual-model", chatEffort: "low" }, configuredQueue[2]), {});
+assert.deepEqual(pipelineChatConfig(task, { ...task, chatModel: "manual-model" }, configuredQueue[2]), { chatEffort: "high" });
+assert.deepEqual(pipelineChatConfig({ ...task, chatAgent: configuredReviewer }, task, configuredQueue[2]), {});
+assert.deepEqual(pipelineChatConfig(task, task, queue[2]), {});
 const configuredOwner = { ...owner, modelConfig: { model: "owner-model", effort: "high" as const } };
 const manuallyConfiguredTask = { ...task, chatAgent: configuredOwner, chatModel: "manual-model", chatEffort: "low" as const };
 const manualQueue = pipelineQueue(pipeline, [configuredOwner, configuredReviewer], manuallyConfiguredTask);
