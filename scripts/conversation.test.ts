@@ -1,176 +1,235 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { RealtimeConversation, idleVoice, type VoiceSnapshot } from "../src/conversation.ts";
+import { RealtimeConversation, idleVoice, type VoiceSnapshot, type VoiceDelegation } from "../src/conversation.ts";
+import { conversationVoice } from "../src/conversationVoices.ts";
+import { watchConversationPlayback } from "../src/conversationPlayback.ts";
 
-const tick = () => new Promise<void>(resolve => setImmediate(resolve));
-function harness(options: { microphone?: () => Promise<MediaStream>; transcript?: (text: string) => Promise<boolean> } = {}) {
+function harness() {
   let snapshot: VoiceSnapshot = idleVoice;
-  let connects = 0;
-  const sent: any[] = [];
-  const transcripts: string[] = [];
+  const sent: Record<string, any>[] = [];
+  const requests: Omit<VoiceDelegation, "workspaceKey">[] = [];
+  let onPlayback: ((active: boolean, time: number) => void) | undefined;
+  let playbackWatchStopped = false;
   const track = { enabled: true, stopped: false, onended: null, stop() { this.stopped = true; } };
   const stream = { getTracks: () => [track], getAudioTracks: () => [track] } as unknown as MediaStream;
-  const channel = { readyState: "open", onopen: null as any, onmessage: null as any, onclose: null as any,
+  const channel = { readyState: "open", onmessage: null as any, onclose: null as any,
     send: (text: string) => sent.push(JSON.parse(text)), close() { this.readyState = "closed"; this.onclose?.(); } };
-  const peer = { closed: false, connectionState: "connected", addTrack() {}, createDataChannel: () => channel,
-    createOffer: async () => ({ type: "offer", sdp: "v=0\r\nsynthetic" }), setLocalDescription: async () => {}, setRemoteDescription: async () => {}, close() { this.closed = true; } };
+  const peer = { closed: false, ontrack: null as any, connectionState: "connected", iceGatheringState: "complete", localDescription: { sdp: "v=0\r\noffer" }, addTrack() {}, createDataChannel: () => channel,
+    createOffer: async () => ({ type: "offer", sdp: "v=0\r\noffer" }), setLocalDescription: async () => {}, setRemoteDescription: async () => {}, close() { this.closed = true; } };
   const audio = { muted: false, paused: false, srcObject: null, pause() { this.paused = true; }, play: async () => {} };
-  const voice = new RealtimeConversation({
-    microphone: options.microphone ?? (async () => stream), peer: () => peer as unknown as RTCPeerConnection,
-    audio: () => audio as unknown as HTMLAudioElement, connect: async () => { ++connects; return "v=0\r\nanswer"; },
-    transcript: async text => { transcripts.push(text); return options.transcript ? options.transcript(text) : true; },
-    changed: value => { snapshot = value; },
-  });
+  const voice = new RealtimeConversation({ microphone: async () => stream, peer: () => peer as unknown as RTCPeerConnection,
+    audio: () => audio as unknown as HTMLAudioElement, connect: async () => "v=0\r\nanswer",
+    watchPlayback: (_stream, report) => { onPlayback = report; return () => { playbackWatchStopped = true; }; },
+    delegate: async request => { requests.push(request); return true; }, changed: value => { snapshot = value; } });
   const event = (value: object) => channel.onmessage({ data: JSON.stringify(value) });
-  const open = () => { channel.readyState = "open"; channel.onopen(); };
-  const start = async () => { await voice.start(); open(); };
-  return { voice, start, open, event, sent, transcripts, stream, track, peer, audio, get state() { return snapshot; }, get connects() { return connects; } };
+  const backend = (delegation: string, value: object) => event({ type: "response.event", delegation_id: delegation, event: value });
+  const call = (delegation: string, response: string, id: string, args: string, name = "workspace_agent") => {
+    event({ type: "session.delegation.created", delegation: { id: delegation, target: "responses", response_id: response } });
+    backend(delegation, { type: "response.created", response: { id: response } });
+    backend(delegation, { type: "response.output_item.done", item: { type: "function_call", call_id: id, name, arguments: args } });
+    backend(delegation, { type: "response.completed", response: { id: response } });
+  };
+  const start = async () => { await voice.start(); event({ type: "session.started" }); };
+  const stop = () => { voice.stop(); if (channel.readyState === "open") event({ type: "session.closed" }); };
+  return { voice, event, backend, call, start, stop, sent, requests, track, stream, peer, audio, channel,
+    level: (active: boolean, time: number) => onPlayback?.(active, time), get playbackWatchStopped() { return playbackWatchStopped; }, get state() { return snapshot; } };
 }
 
-test("replies arriving during connection setup are spoken in order after the channel opens", async () => {
-  let resolve!: (stream: MediaStream) => void;
-  const h = harness({ microphone: () => new Promise(done => { resolve = done; }) });
-  h.voice.speak("Idle reply");
-  const pending = h.voice.start();
+test("voice selection has a supported default", () => {
+  assert.equal(conversationVoice(null), "marin");
+  assert.equal(conversationVoice("invalid"), "marin");
+  assert.equal(conversationVoice("cedar"), "cedar");
+});
+
+test("overlapping speakers retain both transcripts through errors and reset on restart", async () => {
+  const h = harness(); await h.start();
+  const delta = (speaker: "input" | "output", text: string) => h.event({ type: `session.${speaker}_transcript.delta`, start_ms: 10, end_ms: 20, delta: text });
+  delta("input", "Change the button");
+  delta("output", "Sure");
+  delta("input", " color to blue");
+  delta("output", ", I can help.");
+  assert.equal(h.state.transcript, "User: Change the button color to blue\nAssistant: Sure, I can help.");
+  h.event({ type: "error" });
+  assert.equal(h.state.phase, "idle");
+  assert.match(h.state.transcript, /User: Change the button color to blue/);
+  assert.match(h.state.transcript, /Assistant: Sure, I can help\./);
+  await h.start();
   try {
-    h.voice.speak("First reply");
-    resolve(h.stream); await pending;
-    h.voice.speak("Second reply");
-    assert.equal(h.sent.length, 0);
-    h.open();
-    assert.equal(h.sent.length, 1);
-    assert.ok(h.sent[0].response.instructions.includes("First reply"));
-    h.event({ type: "response.created", response: { id: "first" } });
-    h.event({ type: "response.done", response: { id: "first", status: "completed" } });
-    h.event({ type: "output_audio_buffer.stopped", response_id: "first" });
-    assert.equal(h.sent.length, 2);
-    assert.ok(h.sent[1].response.instructions.includes("Second reply"));
-  } finally { h.voice.stop(); }
+    delta("output", "New session");
+    assert.equal(h.state.transcript, "Assistant: New session");
+    delta("input", "x".repeat(2100));
+    assert.equal(h.state.transcript, `User: ${"x".repeat(2000)}\nAssistant: New session`);
+  } finally { h.stop(); }
 });
 
-for (const ending of ["stop", "failure"] as const) {
-  test(`${ending} during connection discards buffered replies before restarting`, async () => {
-    const h = harness();
-    await h.voice.start();
-    h.voice.speak("Discard this pending reply");
-    if (ending === "stop") h.voice.stop();
-    else h.event({ type: "error" });
-    h.voice.speak("Discard this idle reply");
-    try {
-      await h.start();
-      assert.equal(h.sent.length, 0);
-      h.voice.speak("New reply");
-      assert.equal(h.sent.length, 1);
-      assert.ok(h.sent[0].response.instructions.includes("New reply"));
-    } finally { h.voice.stop(); }
-  });
-}
-
-test("ending during microphone permission releases a late stream without connecting", async () => {
-  let resolve!: (stream: MediaStream) => void;
-  const h = harness({ microphone: () => new Promise(done => { resolve = done; }) });
-  const pending = h.voice.start();
-  h.voice.stop(); resolve(h.stream); await pending;
-  assert.equal(h.track.stopped, true); assert.equal(h.connects, 0); assert.equal(h.state.phase, "idle");
-});
-
-test("only final transcripts are delivered, once and in spoken order", async () => {
+test("completed function calls start once and only matching results continue", async () => {
   const h = harness(); await h.start();
   try {
-    h.event({ type: "input_audio_buffer.committed", item_id: "first" });
-    h.event({ type: "input_audio_buffer.committed", item_id: "second" });
-    h.event({ type: "conversation.item.input_audio_transcription.delta", item_id: "first", delta: "partial" });
-    assert.deepEqual(h.transcripts, []);
-    h.event({ type: "conversation.item.input_audio_transcription.completed", item_id: "second", transcript: "Second." });
-    await tick(); assert.deepEqual(h.transcripts, []);
-    h.event({ type: "conversation.item.input_audio_transcription.completed", item_id: "first", transcript: "First." });
-    await tick(); assert.deepEqual(h.transcripts, ["First.", "Second."]);
-    h.event({ type: "input_audio_buffer.committed", item_id: "first" });
-    h.event({ type: "conversation.item.input_audio_transcription.completed", item_id: "first", transcript: "First." });
-    await tick(); assert.deepEqual(h.transcripts, ["First.", "Second."]);
-  } finally { h.voice.stop(); }
+    h.event({ type: "session.delegation.created", delegation: { id: "d1", target: "responses" } });
+    h.backend("d1", { type: "response.created", response: { id: "r1" } });
+    const item = { type: "function_call", call_id: "c1", name: "workspace_agent", arguments: JSON.stringify({ task: "Check the workspace", needs_clarification: false }) };
+    h.backend("d1", { type: "response.function_call_arguments.done", arguments: item.arguments });
+    h.backend("d1", { type: "response.output_item.done", item });
+    h.backend("d1", { type: "response.output_item.done", item });
+    assert.equal(h.requests.length, 0);
+    h.backend("d1", { type: "response.completed", response: { id: "r1", output: [] } });
+    h.backend("d1", { type: "response.completed", response: { id: "r1" } });
+    assert.equal(h.requests.length, 1);
+    const request = h.requests[0];
+    assert.equal(request.context, "Check the workspace");
+    const reply = { id: "reply", context: "workspace", sessionId: request.sessionId, delegationId: request.delegationId, responseId: request.responseId, callId: request.callId, text: "Verified result", kind: "result" as const };
+    h.voice.deliver({ ...reply, sessionId: "other" });
+    h.voice.deliver({ ...reply, delegationId: "other" });
+    h.voice.deliver({ ...reply, responseId: "other" });
+    h.voice.deliver({ ...reply, callId: "other" });
+    assert.equal(h.sent.filter(event => event.type === "response.item.create").length, 0);
+    h.voice.deliver({ ...reply, kind: "progress" });
+    assert.ok(h.sent.some(event => event.type === "session.thinking.append" && event.delegation_id === null));
+    h.voice.deliver(reply); h.voice.deliver(reply);
+    assert.deepEqual(h.sent.find(event => event.type === "response.item.create")?.item, { type: "function_call_output", call_id: "c1", output: "Verified result" });
+    assert.equal(h.sent.filter(event => event.type === "response.item.create").length, 1);
+    assert.equal(h.sent.filter(event => event.type === "response.create").length, 1);
+    assert.equal(request.isCurrent(), false);
+  } finally { h.stop(); }
 });
 
-test("speech waits until pending input was sent and replies wait until playback ends", async () => {
+test("malformed, ambiguous, blocked and unknown calls never start work", async () => {
   const h = harness(); await h.start();
   try {
-    h.event({ type: "input_audio_buffer.committed", item_id: "input" });
-    h.voice.speak("First reply"); assert.equal(h.sent.length, 0);
-    h.event({ type: "conversation.item.input_audio_transcription.completed", item_id: "input", transcript: "Question" });
-    await tick();
-    h.voice.speak("Second reply");
-    assert.equal(h.sent.filter(e => e.type === "response.create").length, 1);
-    assert.deepEqual(h.sent[0].response.input, []);
-    assert.equal(h.sent[0].response.conversation, "none");
-    h.event({ type: "response.created", response: { id: "r1" } });
-    h.event({ type: "output_audio_buffer.started" });
-    h.event({ type: "response.done", response: { id: "r1", status: "completed" } });
-    assert.equal(h.sent.filter(e => e.type === "response.create").length, 1);
-    h.event({ type: "output_audio_buffer.stopped" });
-    assert.equal(h.sent.filter(e => e.type === "response.create").length, 2);
-  } finally { h.voice.stop(); }
+    h.call("d1", "r1", "c1", "not json");
+    h.call("d2", "r2", "c2", JSON.stringify({ task: "Fix it", needs_clarification: true }));
+    h.call("d3", "r3", "c3", JSON.stringify({ task: "", needs_clarification: false }));
+    h.call("d4", "r4", "c4", JSON.stringify({ task: "Check it", needs_clarification: false }), "other_tool");
+    h.call("d6", "r6", "c6", JSON.stringify({ task: "Fix it.", needs_clarification: false }));
+    h.voice.setWorking(true, true);
+    h.call("d5", "r5", "c5", JSON.stringify({ task: "Check it", needs_clarification: false }));
+    assert.equal(h.requests.length, 0);
+    assert.equal(h.sent.filter(event => event.type === "response.item.create").length, 6);
+    assert.ok(h.sent.filter(event => event.type === "response.item.create").every(event => event.item.output.includes("not started")));
+    assert.equal(h.sent.filter(event => event.type === "response.create").length, 6);
+  } finally { h.stop(); }
 });
 
-test("speaking over the agent immediately mutes audio, cancels output and drops queued speech", async () => {
+test("duplicate call IDs never start twice and continuation waits for every result", async () => {
   const h = harness(); await h.start();
   try {
-    h.voice.speak("Reply"); h.voice.speak("Old queued reply");
-    h.event({ type: "response.created", response: { id: "old" } });
-    h.event({ type: "input_audio_buffer.speech_started" });
-    assert.equal(h.audio.muted, true);
-    assert.ok(h.sent.some(e => e.type === "response.cancel" && e.response_id === "old"));
-    assert.ok(h.sent.some(e => e.type === "output_audio_buffer.clear"));
-    h.event({ type: "response.done", response: { id: "old", status: "cancelled" } });
-    h.event({ type: "output_audio_buffer.cleared" });
-    h.event({ type: "input_audio_buffer.speech_stopped" });
-    assert.equal(h.sent.filter(e => e.type === "response.create").length, 1);
-  } finally { h.voice.stop(); }
+    h.event({ type: "session.delegation.created", delegation: { id: "d", target: "responses" } });
+    h.backend("d", { type: "response.created", response: { id: "r" } });
+    const item = { type: "function_call", call_id: "c", name: "workspace_agent", arguments: JSON.stringify({ task: "Inspect the workspace", needs_clarification: false }) };
+    h.backend("d", { type: "response.output_item.done", item });
+    h.backend("d", { type: "response.output_item.done", item: { ...item, call_id: "unclear", arguments: "{}" } });
+    h.backend("d", { type: "response.completed", response: { id: "r" } });
+    assert.equal(h.requests.length, 1);
+    assert.equal(h.sent.filter(event => event.type === "response.create").length, 0);
+    const request = h.requests[0];
+    h.voice.deliver({ id: "result", context: "workspace", sessionId: request.sessionId, delegationId: "d", responseId: "r", callId: "c", text: "Done", kind: "result" });
+    assert.equal(h.sent.filter(event => event.type === "response.item.create").length, 2);
+    assert.equal(h.sent.filter(event => event.type === "response.create").length, 1);
+    h.call("other", "other-response", "c", item.arguments);
+    assert.equal(h.requests.length, 1);
+  } finally { h.stop(); }
 });
 
-test("interruption before response.created still cancels the late response", async () => {
+test("overlapping responses cannot be attributed to the wrong call", async () => {
   const h = harness(); await h.start();
-  try {
-    h.voice.speak("Reply"); h.voice.interrupt();
-    h.event({ type: "response.created", response: { id: "late" } });
-    assert.ok(h.sent.some(e => e.type === "response.cancel" && e.response_id === "late"));
-  } finally { h.voice.stop(); }
+  h.event({ type: "session.delegation.created", delegation: { id: "d", target: "responses" } });
+  h.backend("d", { type: "response.created", response: { id: "first" } });
+  h.backend("d", { type: "response.created", response: { id: "second" } });
+  assert.equal(h.state.phase, "idle");
+  assert.match(h.state.error, /response conflict/);
+  assert.equal(h.requests.length, 0);
+  assert.equal(h.track.stopped, true);
+  h.stop();
 });
 
-test("late playback events from an interrupted reply cannot advance a newer reply", async () => {
+test("closing voice invalidates pending calls without cancelling agent work", async () => {
   const h = harness(); await h.start();
-  try {
-    h.voice.speak("Old reply");
-    h.event({ type: "response.created", response: { id: "old" } });
-    h.voice.interrupt(); h.voice.speak("New reply");
-    h.event({ type: "response.done", response: { id: "old", status: "cancelled" } });
-    h.event({ type: "response.created", response: { id: "new" } });
-    h.voice.speak("Following reply");
-    h.event({ type: "response.done", response: { id: "new", status: "completed" } });
-    h.event({ type: "output_audio_buffer.cleared", response_id: "old" });
-    assert.equal(h.sent.filter(e => e.type === "response.create").length, 2);
-    h.event({ type: "output_audio_buffer.stopped", response_id: "new" });
-    assert.equal(h.sent.filter(e => e.type === "response.create").length, 3);
-  } finally { h.voice.stop(); }
+  h.call("d", "r", "c", JSON.stringify({ task: "Inspect the workspace", needs_clarification: false }));
+  const request = h.requests[0];
+  assert.equal(request.isCurrent(), true);
+  h.stop();
+  assert.equal(request.isCurrent(), false);
+  h.voice.deliver({ id: "late", context: "workspace", sessionId: request.sessionId, delegationId: "d", responseId: "r", callId: "c", text: "Late result", kind: "result" });
+  assert.equal(h.sent.filter(event => event.type === "response.item.create").length, 0);
 });
 
-test("pending chat questions block voice submission and keep the recognized text", async () => {
+test("mute, speech interruption and ending are independent from agent work", async () => {
   const h = harness(); await h.start();
-  h.event({ type: "input_audio_buffer.committed", item_id: "input" });
-  h.voice.setWorking(true, true); assert.equal(h.track.enabled, false);
-  h.event({ type: "conversation.item.input_audio_transcription.completed", item_id: "input", transcript: "Yes" });
-  await tick();
-  assert.deepEqual(h.transcripts, []); assert.equal(h.state.transcript, "Yes");
-  assert.equal(h.state.phase, "idle"); assert.ok(h.state.error); assert.equal(h.track.stopped, true);
-});
-
-test("failed delivery preserves transcript and closes every resource", async () => {
-  const h = harness({ transcript: async () => false }); await h.start();
   h.voice.setMuted(true); assert.equal(h.track.enabled, false);
   h.voice.setMuted(false); assert.equal(h.track.enabled, true);
-  h.event({ type: "input_audio_buffer.committed", item_id: "input" });
-  h.event({ type: "conversation.item.input_audio_transcription.completed", item_id: "input", transcript: "Keep me" });
-  await tick();
-  assert.equal(h.state.transcript, "Keep me"); assert.ok(h.state.error);
-  assert.equal(h.track.stopped, true); assert.equal(h.peer.closed, true); assert.equal(h.audio.paused, true);
-  assert.equal(h.audio.srcObject, null); assert.equal(h.state.phase, "idle");
+  h.voice.interrupt(); assert.equal(h.audio.muted, true); assert.equal(h.state.outputPaused, true);
+  h.voice.resumeAudio(); assert.equal(h.audio.muted, false);
+  h.voice.setWorking(true, true);
+  assert.equal(h.track.enabled, true);
+  assert.ok(h.sent.some(event => event.type === "session.thinking.append" && String(event.content).includes("respond in the chat")));
+  h.stop(); assert.ok(h.sent.some(event => event.type === "session.close"));
+});
+
+test("interrupt stays muted through current audio and resumes after an output pause and new activity", async () => {
+  const h = harness(); await h.start();
+  h.peer.ontrack({ streams: [h.stream] });
+  h.voice.interrupt();
+  h.event({ type: "session.output_transcript.delta", start_ms: 1, end_ms: 2, delta: "Late old output" });
+  assert.equal(h.audio.muted, true);
+  h.level(true, 0); h.level(false, 100); h.level(false, 1099); h.level(true, 1100);
+  assert.equal(h.audio.muted, true);
+  h.level(false, 1200); h.level(false, 2200);
+  assert.equal(h.audio.muted, true);
+  h.level(true, 2250);
+  assert.equal(h.audio.muted, false);
+  assert.equal(h.state.outputPaused, false);
+  h.voice.interrupt(); h.level(true, 2300);
+  assert.equal(h.audio.muted, true);
+  h.stop();
+  assert.equal(h.playbackWatchStopped, true);
+  h.level(true, 5000);
+  assert.equal(h.state.phase, "idle");
+});
+
+test("playback monitor measures the output and releases its audio graph", async () => {
+  const original = Object.getOwnPropertyDescriptor(globalThis, "AudioContext");
+  let level = 0;
+  let closed = false;
+  let disconnected = 0;
+  const node = () => ({ connect() {}, disconnect() { ++disconnected; } });
+  Object.defineProperty(globalThis, "AudioContext", { configurable: true, value: class {
+    state = "running";
+    destination = {};
+    createMediaStreamSource() { return node(); }
+    createAnalyser() { return { ...node(), fftSize: 512, getFloatTimeDomainData(samples: Float32Array) { samples.fill(level); } }; }
+    createGain() { return { ...node(), gain: { value: 1 } }; }
+    async resume() {}
+    async close() { closed = true; }
+  } });
+  const observed: boolean[] = [];
+  try {
+    const stop = watchConversationPlayback({} as MediaStream, active => observed.push(active));
+    await new Promise(resolve => setTimeout(resolve, 70));
+    level = 0.1;
+    await new Promise(resolve => setTimeout(resolve, 70));
+    stop();
+    assert.deepEqual(observed.slice(0, 2), [false, true]);
+    assert.equal(closed, true);
+    assert.equal(disconnected, 3);
+  } finally {
+    if (original) Object.defineProperty(globalThis, "AudioContext", original);
+    else Reflect.deleteProperty(globalThis, "AudioContext");
+  }
+});
+
+test("ending while microphone permission is pending releases the late stream", async () => {
+  let resolve!: (stream: MediaStream) => void;
+  const track = { stopCalled: false, stop() { this.stopCalled = true; } };
+  const voice = new RealtimeConversation({ microphone: () => new Promise(done => { resolve = done; }), peer: () => { throw Error("unexpected"); }, audio: () => { throw Error("unexpected"); }, connect: async () => "", delegate: async () => false, changed: () => {} });
+  const pending = voice.start(); voice.stop();
+  resolve({ getTracks: () => [track] } as unknown as MediaStream); await pending;
+  assert.equal(track.stopCalled, true);
+});
+
+test("a failed close command still releases microphone and connection", async () => {
+  const h = harness(); await h.start();
+  h.channel.send = () => { throw new Error("connection lost"); };
+  h.voice.stop();
+  assert.equal(h.track.stopped, true);
+  assert.equal(h.peer.closed, true);
 });

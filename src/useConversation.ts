@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { idleVoice, RealtimeConversation, type VoiceReply, type VoiceSnapshot } from "./conversation";
+import { idleVoice, RealtimeConversation, type VoiceDelegation, type VoiceReply, type VoiceSnapshot } from "./conversation";
+import { conversationVoice, conversationVoiceKey } from "./conversationVoices";
+import { fileStore } from "./fileStore";
+import { watchConversationPlayback } from "./conversationPlayback";
 
 export function useConversation({ available, context, running, blocked, replies, onSend }: {
   available: boolean; context: string; running: boolean; blocked: boolean;
-  replies: VoiceReply[]; onSend: (text: string) => Promise<boolean>;
+  replies: VoiceReply[]; onSend: (request: VoiceDelegation) => Promise<boolean>;
 }) {
   const [snapshot, setSnapshot] = useState<VoiceSnapshot>(idleVoice);
   const spokenIds = useRef(new Set(replies.map(reply => reply.id)));
@@ -25,8 +28,9 @@ export function useConversation({ available, context, running, blocked, replies,
       },
       peer: () => new RTCPeerConnection(),
       audio: () => new Audio(),
-      connect: sdp => invoke<string>("start_conversation", { sdp }),
-      transcript: text => onSendRef.current(text),
+      watchPlayback: watchConversationPlayback,
+      connect: sdp => invoke<string>("start_conversation", { sdp, voice: conversationVoice(fileStore.getItem(conversationVoiceKey)) }),
+      delegate: request => onSendRef.current({ ...request, workspaceKey: context }),
       changed: setSnapshot,
     });
     voice.setWorking(workingRef.current.running, workingRef.current.blocked);
@@ -37,7 +41,7 @@ export function useConversation({ available, context, running, blocked, replies,
     for (const reply of replies) {
       if (spokenIds.current.has(reply.id)) continue;
       spokenIds.current.add(reply.id);
-      if (reply.context === context) session.current?.speak(reply.text);
+      if (reply.context === context) session.current?.deliver(reply);
     }
     spokenIds.current = new Set(replies.map(reply => reply.id));
   }, [replies, context]);
@@ -48,5 +52,6 @@ export function useConversation({ available, context, running, blocked, replies,
     stop: () => session.current?.stop(),
     mute: () => session.current?.setMuted(!snapshot.muted),
     interrupt: () => session.current?.interrupt(),
+    resumeAudio: () => session.current?.resumeAudio(),
   };
 }
