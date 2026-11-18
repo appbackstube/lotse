@@ -22,8 +22,48 @@ function harness(options: { microphone?: () => Promise<MediaStream>; transcript?
     changed: value => { snapshot = value; },
   });
   const event = (value: object) => channel.onmessage({ data: JSON.stringify(value) });
-  const start = async () => { await voice.start(); channel.onopen(); };
-  return { voice, start, event, sent, transcripts, stream, track, peer, audio, get state() { return snapshot; }, get connects() { return connects; } };
+  const open = () => { channel.readyState = "open"; channel.onopen(); };
+  const start = async () => { await voice.start(); open(); };
+  return { voice, start, open, event, sent, transcripts, stream, track, peer, audio, get state() { return snapshot; }, get connects() { return connects; } };
+}
+
+test("replies arriving during connection setup are spoken in order after the channel opens", async () => {
+  let resolve!: (stream: MediaStream) => void;
+  const h = harness({ microphone: () => new Promise(done => { resolve = done; }) });
+  h.voice.speak("Idle reply");
+  const pending = h.voice.start();
+  try {
+    h.voice.speak("First reply");
+    resolve(h.stream); await pending;
+    h.voice.speak("Second reply");
+    assert.equal(h.sent.length, 0);
+    h.open();
+    assert.equal(h.sent.length, 1);
+    assert.ok(h.sent[0].response.instructions.includes("First reply"));
+    h.event({ type: "response.created", response: { id: "first" } });
+    h.event({ type: "response.done", response: { id: "first", status: "completed" } });
+    h.event({ type: "output_audio_buffer.stopped", response_id: "first" });
+    assert.equal(h.sent.length, 2);
+    assert.ok(h.sent[1].response.instructions.includes("Second reply"));
+  } finally { h.voice.stop(); }
+});
+
+for (const ending of ["stop", "failure"] as const) {
+  test(`${ending} during connection discards buffered replies before restarting`, async () => {
+    const h = harness();
+    await h.voice.start();
+    h.voice.speak("Discard this pending reply");
+    if (ending === "stop") h.voice.stop();
+    else h.event({ type: "error" });
+    h.voice.speak("Discard this idle reply");
+    try {
+      await h.start();
+      assert.equal(h.sent.length, 0);
+      h.voice.speak("New reply");
+      assert.equal(h.sent.length, 1);
+      assert.ok(h.sent[0].response.instructions.includes("New reply"));
+    } finally { h.voice.stop(); }
+  });
 }
 
 test("ending during microphone permission releases a late stream without connecting", async () => {

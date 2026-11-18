@@ -105,6 +105,7 @@ export class RealtimeConversation {
         clearTimeout(this.timer);
         this.connected = true;
         this.refresh();
+        this.nextReply();
       };
       channel.onclose = () => { if (epoch === this.epoch) this.fail("Voice connection closed. Start Talk again."); };
       channel.onerror = () => { if (epoch === this.epoch) this.fail("Voice connection failed. Start Talk again."); };
@@ -215,7 +216,7 @@ export class RealtimeConversation {
     }
   }
   speak(text: string) {
-    if (!this.connected || !text.trim()) return;
+    if ((!this.connected && this.snapshot.phase !== "connecting") || !text.trim()) return;
     // Keep audio prompts bounded; full code and long details remain in the agent chat.
     const spoken = text.replace(/```[\s\S]*?```/g, "\nCode is shown in the chat.\n").replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").trim();
     const chunks = spoken.match(/[\s\S]{1,3000}(?:\s|$)|[\s\S]{1,3000}/g) ?? [];

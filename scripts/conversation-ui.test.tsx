@@ -43,6 +43,7 @@ mockIPC(async (command, args: any) => {
 let channel: any;
 let track: any;
 let peer: any;
+let deferOpen = false;
 const audioEvents: any[] = [];
 Object.defineProperty(navigator.mediaDevices, "getUserMedia", { configurable: true, value: async () => {
   track = { enabled: true, stopped: false, stop() { this.stopped = true; } };
@@ -55,7 +56,7 @@ Object.assign(globalThis, { RTCPeerConnection: class {
   createDataChannel() { channel = { readyState: "open", close() {}, send: (text: string) => audioEvents.push(JSON.parse(text)) }; return channel; }
   async createOffer() { return { type: "offer", sdp: "v=0\r\nsynthetic offer" }; }
   async setLocalDescription() {}
-  async setRemoteDescription() { channel.onopen(); }
+  async setRemoteDescription() { if (!deferOpen) channel.onopen(); }
   close() { this.closed = true; }
 } });
 
@@ -111,8 +112,14 @@ try {
   await click(button("Mute microphone")); check(!track.enabled, "Mute must disable the microphone");
   await click(button("Switch to typing"));
   check(track.stopped && peer.closed && visible(draft) && draft.value === "Unfinished text draft", "Typing must release the connection and restore the draft");
+  deferOpen = true;
   await click(button("Start conversation"));
   check(!track.stopped, "Talk must reconnect after switching to typing");
+  const spokenBeforeOpen = audioEvents.filter(e => e.type === "response.create").length;
+  await act(async () => sends[1].events.onmessage({ type: "chat", payload: { requestId: "run", threadId: "thread", turnId: "turn", kind: "assistantMessageCompleted", finalText: "Reply while Talk connects." } })); await settle();
+  check(audioEvents.filter(e => e.type === "response.create").length === spokenBeforeOpen, "Connecting Talk must wait before speaking");
+  await act(async () => channel.onopen()); await settle();
+  check(audioEvents.filter(e => e.type === "response.create").length === spokenBeforeOpen + 1 && audioEvents.at(-1).response.instructions.includes("Reply while Talk connects."), "Talk must speak the reply received during connection setup");
   await click(button("Settings"));
   check(track.stopped && peer.closed, "Opening Settings must release microphone and connection");
   await click(button("Conversation"));
@@ -120,7 +127,7 @@ try {
   await click(button("Remove key and disable")); check(saves.at(-1) === null && !enabled, "Remove must disable Conversation");
   await click(button("Close settings")); check(!button("Start conversation"), "Talk must disappear when the key is removed");
   check(failures.length === 0, `Unexpected commands: ${failures.join(", ")}`);
-  document.getElementById("result")!.textContent = "PASS: key save/failure/remove, no frontend secret storage, compact Talk, transcript → workspace agent → voice, visible chat, draft preservation, mute and cleanup (simulated audio).";
+  document.getElementById("result")!.textContent = "PASS: key save/failure/remove, no frontend secret storage, compact Talk, transcript → workspace agent → voice, replies during connection setup, visible chat, draft preservation, mute and cleanup (simulated audio).";
 } catch (error) {
   document.getElementById("result")!.textContent = `FAIL: ${error instanceof Error ? error.stack : error}`;
 } finally { await act(async () => root.unmount()); }
