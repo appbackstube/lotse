@@ -4919,6 +4919,11 @@ function App() {
     if (task ? !!taskRunsRef.current[task.id] || taskStartingRef.current.has(task.id) : aiChatRunningRef.current) return;
     const key = task && repository ? taskQueueKey(repository.rootPath, task.id) : reviewQueueKey(reviewRef.current!);
     if (queueBusyRef.current.has(key) || chatQueuesRef.current[key]?.some((item) => item.pipeline)) return;
+    setApprovalReviewerOverrides((current) => {
+      const next = { ...current };
+      delete next[task?.id ?? "review"];
+      return next;
+    });
     for (const item of chatQueuesRef.current[key] ?? []) removeQueued(key, item.id, true);
     setVariablePrompt(null);
     setError("");

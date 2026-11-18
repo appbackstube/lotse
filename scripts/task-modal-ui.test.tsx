@@ -42,7 +42,7 @@ const storage: Record<string, string> = {
   "chaoticreview.task-board-tabs": JSON.stringify({ [repo.rootPath]: { [task.id]: "chat" } }),
 };
 if (agentsCheck) {
-  storage["chaoticreview.agents"] = JSON.stringify([{ id: "owner", title: "Product Owner", prompt: "Act as an Agile Product Owner." }]);
+  storage["chaoticreview.agents"] = JSON.stringify([{ id: "owner", title: "Product Owner", prompt: "Act as an Agile Product Owner.", approvalMode: "user" }]);
   storage["chaoticreview.chat-queues"] = JSON.stringify({ [JSON.stringify([repo.rootPath, "task", task.id])]: [{ id: "queued", body: "Old queued prompt", context: { mode: "auto", attachments: [] }, selection: null, mode: "default", model: "synthetic-default", effort: "low" }] });
 }
 const browserViews: any[] = [];
@@ -211,6 +211,23 @@ try {
     const event = async (payload: Record<string, unknown>) => {
       await act(async () => agentSend.events.onmessage({ type: "chat", payload: { requestId: "plan-check", threadId: "plan-thread", turnId: "plan-turn", ...payload } })); await settle();
     };
+    const checkApprovalAfterRoleSwitch = async (taskId?: string) => {
+      const approval = () => [...document.querySelectorAll<HTMLElement>('[aria-label="Approval mode"]')].find(visible)!;
+      const approvalLabel = () => approval().querySelector('[data-slot="select-value"]')?.textContent;
+      await choose("Product Owner");
+      await click(approval());
+      await click([...document.querySelectorAll<HTMLElement>('[role="option"]')].find((element) => visible(element) && element.textContent === "YOLO mode"));
+      await choose("Product Owner");
+      check(approvalLabel() === "YOLO mode", "Selecting the current role must preserve its composer override");
+      await choose("Agile Coach");
+      check(approvalLabel() === (taskId ? "YOLO mode" : "Approve for me"), "Switching roles must use the new role's saved approval mode");
+      await choose("Product Owner");
+      check(approvalLabel() === "Ask for approval", "Returning to a role must not restore a previous YOLO override");
+      await type([...document.querySelectorAll<HTMLTextAreaElement>('[aria-label="Review Agent message"]')].find(visible)!, "Verify approval after switching roles");
+      await click([...document.querySelectorAll<HTMLElement>('[aria-label="Send Review Agent message"]')].find(visible)!);
+      check(agentSend.approvalMode === "user" && agentSend.taskId === taskId, "The fresh conversation must send with the saved Ask for approval mode");
+      await event({ kind: "completed" });
+    };
     check(picker().textContent === "None", "Workspace must default to None");
     const model = document.querySelector('[aria-label="Model and effort"]')!.getBoundingClientRect();
     check(picker().getBoundingClientRect().left >= model.right, "Agent picker must sit to the right of model");
@@ -228,6 +245,7 @@ try {
     await click(button("Save"));
     check(JSON.parse(storage["chaoticreview.agents"]).length === 2 && JSON.parse(storage["chaoticreview.agents"])[1].approvalMode === "auto_review", "New agent and approval mode must be saved");
     await click(document.querySelector<HTMLElement>('[aria-label="Close agents"]')!);
+    await checkApprovalAfterRoleSwitch();
     await choose("Agile Coach");
     check(savedReview.chatAgent.prompt === "Act as an Agile Coach.", "Saved agent must be selectable");
     await type(document.querySelector<HTMLTextAreaElement>('[aria-label="Review Agent message"]')!, "Help me prioritize");
@@ -260,6 +278,9 @@ try {
     await choose("Product Owner");
     check(storedTask().chatAgent?.id === "owner" && !storedTask().chatMessages.length && storedTask().agentThreadId === null, "Switching task agents must clear history and thread");
     check(!chat().querySelector('[aria-label="Queued messages"]'), "Switching agents must discard old queued prompts");
+    await checkApprovalAfterRoleSwitch(task.id);
+    await choose("None");
+    await choose("Product Owner");
     await type(composer(), "Write acceptance criteria");
     await click(chat().querySelector<HTMLElement>('[aria-label="Send Review Agent message"]')!);
     check(agentSend.agentPrompt === "Act as an Agile Product Owner." && agentSend.agentThreadId === null && agentSend.taskId === task.id, "Task sends must include their selected role and start a fresh thread");
