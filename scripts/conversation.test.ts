@@ -41,6 +41,27 @@ test("voice selection has a supported default", () => {
   assert.equal(conversationVoice("cedar"), "cedar");
 });
 
+test("overlapping speakers retain both transcripts through errors and reset on restart", async () => {
+  const h = harness(); await h.start();
+  const delta = (speaker: "input" | "output", text: string) => h.event({ type: `session.${speaker}_transcript.delta`, start_ms: 10, end_ms: 20, delta: text });
+  delta("input", "Change the button");
+  delta("output", "Sure");
+  delta("input", " color to blue");
+  delta("output", ", I can help.");
+  assert.equal(h.state.transcript, "User: Change the button color to blue\nAssistant: Sure, I can help.");
+  h.event({ type: "error" });
+  assert.equal(h.state.phase, "idle");
+  assert.match(h.state.transcript, /User: Change the button color to blue/);
+  assert.match(h.state.transcript, /Assistant: Sure, I can help\./);
+  await h.start();
+  try {
+    delta("output", "New session");
+    assert.equal(h.state.transcript, "Assistant: New session");
+    delta("input", "x".repeat(2100));
+    assert.equal(h.state.transcript, `User: ${"x".repeat(2000)}\nAssistant: New session`);
+  } finally { h.stop(); }
+});
+
 test("completed function calls start once and only matching results continue", async () => {
   const h = harness(); await h.start();
   try {

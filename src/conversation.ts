@@ -32,6 +32,7 @@ export class RealtimeConversation {
   private timer?: ReturnType<typeof setTimeout>;
   private activityTimer?: ReturnType<typeof setTimeout>;
   private snapshot = { ...idleVoice };
+  private transcripts = { User: "", Assistant: "" };
   private sessionId = "";
   private connected = false;
   private blocked = false;
@@ -153,8 +154,9 @@ export class RealtimeConversation {
     } else if (event.type === "session.input_transcript.delta" || event.type === "session.output_transcript.delta") {
       if (!event.delta || !Number.isFinite(event.start_ms) || !Number.isFinite(event.end_ms) || event.start_ms! < 0 || event.end_ms! < event.start_ms!) return;
       const role = event.type === "session.input_transcript.delta" ? "User" : "Assistant";
-      const previous = this.snapshot.transcript.startsWith(`${role}: `) ? this.snapshot.transcript.slice(role.length + 2) : "";
-      this.update({ phase: role === "User" ? "hearing" : "speaking", transcript: `${role}: ${(previous + event.delta).slice(-2000)}` });
+      this.transcripts[role] = (this.transcripts[role] + event.delta).slice(-2000);
+      const transcript = Object.entries(this.transcripts).filter(([, text]) => text).map(([speaker, text]) => `${speaker}: ${text}`).join("\n");
+      this.update({ phase: role === "User" ? "hearing" : "speaking", transcript });
       clearTimeout(this.activityTimer);
       this.activityTimer = setTimeout(() => { if (this.connected) this.update({ phase: "listening" }); }, 2000);
     } else if (event.type === "session.delegation.created") {
@@ -213,7 +215,7 @@ export class RealtimeConversation {
     }
     void this.deps.delegate({ sessionId: this.sessionId, delegationId, responseId: response.id, callId: call.id, context: task, isCurrent }).then(accepted => {
       if (epoch === this.epoch && !accepted) this.finishCall(response, call, "The workspace agent did not start. Ask the user to check the chat and try again.");
-      else if (epoch === this.epoch && accepted && !call.finished) this.append("session.thinking.append", "The workspace agent started and is still working. Do not claim it has finished.");
+      else if (epoch === this.epoch && accepted && !call.finished) this.append("session.thinking.append", "The workspace request was accepted for active work or queued follow-up. Do not claim it has finished.");
     }).catch(() => {
       if (epoch === this.epoch) this.finishCall(response, call, "The workspace agent could not start. Ask the user to check the chat.");
     });
@@ -277,6 +279,7 @@ export class RealtimeConversation {
     this.connected = false;
     this.peer = undefined; this.channel = undefined; this.microphone = undefined; this.audio = undefined;
     this.seenEvents.clear(); this.delegations.clear(); this.responses.clear(); this.callIds.clear(); this.sessionId = "";
+    this.transcripts = { User: "", Assistant: "" };
     this.update({ ...idleVoice });
   }
 }

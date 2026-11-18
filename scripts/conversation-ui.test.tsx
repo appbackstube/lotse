@@ -13,6 +13,9 @@ let enabled = false;
 let failSave = false;
 let connects = 0;
 let holdSync = false;
+let failSteer = false;
+let completeDuringSteer = false;
+const steers: any[] = [];
 let releaseSync: (() => void) | undefined;
 const connectionVoices: string[] = [];
 const saves: (string | null)[] = [];
@@ -42,7 +45,13 @@ mockIPC(async (command, args: any) => {
   if (command === "save_review" && holdSync) { await new Promise<void>(resolve => { releaseSync = resolve; }); return; }
   if (["save_review", "set_mcp_context"].includes(command) || command.startsWith("plugin:window|")) return;
   if (command.startsWith("plugin:notification|")) return false;
-  if (command === "ai_chat_send") { sends.push(args); return { requestId: "run", threadId: "thread", turnId: "turn" }; }
+  if (command === "ai_chat_send") { sends.push(args); return { requestId: sends.length <= 2 ? "run" : `run-${sends.length}`, threadId: "thread", turnId: "turn" }; }
+  if (command === "ai_chat_steer") { if (failSteer) throw new Error("Synthetic steering failure"); steers.push(args);
+    if (completeDuringSteer) {
+      const event = (kind: string, finalText?: string) => sends.at(-1).events.onmessage({ type: "chat", payload: { requestId: args.requestId, threadId: "thread", turnId: "turn", kind, finalText } });
+      event("assistantMessageCompleted", "Result during steering"); event("completed");
+    }
+    return; }
   if (command === "ai_chat_cancel") { cancellations.push(args.requestId); return; }
   if (command === "agent_approve") { approvals.push(args); return true; }
   failures.push(command); throw new Error(`Unexpected conversation IPC: ${command}`);
@@ -122,9 +131,13 @@ try {
   await voiceCall("1", "Explain this workspace");
   check(sends.length === 1 && sends[0].prompt.includes("Explain this workspace"), "Delegation must reach the workspace agent");
   check(composer.textContent?.includes("working"), "Agent processing must have visible feedback");
+  await voiceCall("followup", "Use Cedar instead of Marin");
+  check(sends.length === 1 && steers.length === 1 && steers[0].requestId === "run" && steers[0].prompt.includes("Use Cedar instead of Marin"), "Spoken corrections must steer the active voice run");
   check(sends[0].chatContext.attachments.length === 0 && draft.value === "Unfinished text draft", "Voice must preserve unfinished typed content");
   await act(async () => sends[0].events.onmessage({ type: "approvalRequested", payload: { requestId: 42, title: "Allow action?", description: "Review this action", source: "agent", serverName: null } })); await settle();
   check(button("Deny") && button("Allow") && approvals.length === 0 && track.enabled, "Approvals remain in the chat and voice cannot answer them");
+  await voiceCall("blocked-followup", "Update the settings label");
+  check(steers.length === 1 && sends.length === 1, "Spoken follow-ups must not bypass a pending approval");
   await click(button("Deny"));
   check(approvals.length === 1 && approvals[0].requestId === 42 && approvals[0].approved === false, "Only the user's approval response is sent");
   await act(async () => sends[0].events.onmessage({ type: "approvalResolved", payload: { requestId: 42 } })); await settle();
@@ -139,6 +152,7 @@ try {
   check(cancellations.length === 0, "Interrupting voice or declining stop must not cancel work");
   await act(async () => sends[0].events.onmessage({ type: "chat", payload: { requestId: "run", threadId: "thread", turnId: "turn", kind: "completed" } })); await settle();
   check(audioEvents.some(e => e.type === "response.item.create" && e.item.call_id === "call-1" && e.item.output.includes("This is the workspace reply.")), "Only completed agent results reach the matching call");
+  check(audioEvents.some(e => e.type === "response.item.create" && e.item.call_id === "call-followup" && e.item.output.includes("This is the workspace reply.")), "A steered follow-up must receive the matching run result too");
   await voiceCall("2", "Fix it", true);
   check(sends.length === 1 && audioEvents.some(e => e.type === "response.item.create" && e.item.call_id === "call-2" && e.item.output.includes("clarify")), "An unclear request must ask for clarification without starting work");
   holdSync = true;
@@ -158,6 +172,42 @@ try {
   check(cancellations.length === 1, "Ending Talk must not issue another agent cancellation");
   await act(async () => sends[1].events.onmessage({ type: "chat", payload: { requestId: "run", threadId: "thread", turnId: "turn", kind: "cancelled" } })); await settle();
   check(track.stopped && peer.closed && visible(draft) && draft.value === "Unfinished text draft", "Typing must release the connection and restore the draft");
+  // Talk can join a typed run, steer it, and retain further requests when steering fails.
+  await change(draft, "Inspect the settings"); await click(button("Send Review Agent message"));
+  check(sends.length === 3, "Typed work must start before Talk");
+  await change(draft, "Keep this typed draft");
+  await click(button("Start conversation"));
+  await voiceCall("typed-followup", "Use Cedar for the settings preview");
+  check(steers.at(-1).requestId === "run-3" && sends.length === 3, "Talk must steer an existing typed run");
+  failSteer = true;
+  await voiceCall("queued-followup", "Check the voice selector after the preview");
+  check(button("Delete queued message") && sends.length === 3, "A failed steer must retain the spoken request in the queue");
+  await voiceCall("deleted-followup", "Check the microphone label");
+  await click([...document.querySelectorAll<HTMLElement>('button[aria-label="Delete queued message"]')].at(-1)!);
+  check(audioEvents.some(e => e.type === "response.item.create" && e.item.call_id === "call-deleted-followup" && e.item.output.includes("removed")), "Deleting a queued follow-up must finish its own voice call");
+  failSteer = false;
+  const chatEvent = async (index: number, kind: string, finalText?: string) => {
+    await act(async () => sends[index].events.onmessage({ type: "chat", payload: { requestId: `run-${index + 1}`, threadId: "thread", turnId: "turn", kind, finalText } })); await settle();
+  };
+  await chatEvent(2, "assistantMessageCompleted", "Typed run result");
+  await chatEvent(2, "completed"); await settle();
+  check(sends.length === 4 && sends[3].prompt.includes("Check the voice selector after the preview"), "Queued voice work must start after the typed run completes");
+  check(audioEvents.some(e => e.type === "response.item.create" && e.item.call_id === "call-typed-followup" && e.item.output.includes("Typed run result")), "Typed-run follow-up must receive that run's result");
+  check(!audioEvents.some(e => e.type === "response.item.create" && e.item.call_id === "call-queued-followup"), "Queued follow-up must not receive the previous run's result");
+  await chatEvent(3, "assistantMessageCompleted", "Queued run result"); await chatEvent(3, "completed");
+  check(audioEvents.some(e => e.type === "response.item.create" && e.item.call_id === "call-queued-followup" && e.item.output.includes("Queued run result")), "Queue dispatch must retain the voice delegation IDs");
+  await voiceCall("race-start", "Check the conversation labels");
+  completeDuringSteer = true;
+  await voiceCall("race-followup", "Also check the mute label");
+  completeDuringSteer = false;
+  check(audioEvents.some(e => e.type === "response.item.create" && e.item.call_id === "call-race-followup" && e.item.output.includes("Result during steering")), "A run finishing before steer acknowledgement must still answer the follow-up");
+  check(sends.length === 5 && !button("Delete queued message"), "An acknowledged steer must not run again from the queue");
+  await voiceEvent({ type: "session.input_transcript.delta", start_ms: 200, end_ms: 210, delta: "Change the button" });
+  await voiceEvent({ type: "session.output_transcript.delta", start_ms: 210, end_ms: 220, delta: "Sure" });
+  await voiceEvent({ type: "session.input_transcript.delta", start_ms: 220, end_ms: 230, delta: " color to blue" });
+  await voiceEvent({ type: "error" }); await voiceEvent({ type: "session.closed" });
+  await click(button("Copy transcript to composer"));
+  check(draft.value.includes("Keep this typed draft") && draft.value.includes("User: Change the button color to blue") && draft.value.includes("Assistant: Sure"), "Copy after an error must retain overlapping transcripts and the typed draft");
   await click(button("Start conversation"));
   await click(button("Settings"));
   await voiceEvent({ type: "session.closed" });
@@ -168,7 +218,7 @@ try {
   await click(button("Remove key and disable")); check(saves.at(-1) === null && !enabled, "Remove must disable Conversation");
   await click(button("Close settings")); check(!button("Start conversation"), "Talk must disappear when the key is removed");
   check(failures.length === 0, `Unexpected commands: ${failures.join(", ")}`);
-  document.getElementById("result")!.textContent = "PASS: key and voice settings, simulated GPT-Live delegation and completed result, draft preservation, interruption, mute and cleanup.";
+  document.getElementById("result")!.textContent = "PASS: key and voice settings, simulated GPT-Live delegation, typed/voice steering, queued result attribution, transcript recovery, draft preservation, interruption, mute and cleanup.";
 } catch (error) {
   document.getElementById("result")!.textContent = `FAIL: ${error instanceof Error ? error.stack : error}`;
 } finally { await act(async () => root.unmount()); }
