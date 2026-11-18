@@ -2,7 +2,9 @@ import { isChatUpload } from "./chatAttachments";
 import {
   Children,
   Fragment,
+  Suspense,
   isValidElement,
+  lazy,
   memo,
   type MouseEvent,
   type PointerEvent as ReactPointerEvent,
@@ -128,8 +130,7 @@ import "@xterm/xterm/css/xterm.css";
 import "@mdxeditor/editor/style.css";
 import "./App.css";
 import { fileStore } from "./fileStore";
-import { agentChatConfig, agentsStorageKey, defaultAgentStorageKey, newAgent, normalizeAgents, switchChatAgent, type ChatAgent } from "./agents";
-import { AgentsDialog } from "./components/AgentsDialog";
+import { agentChatConfig, agentsStorageKey, approvalForAgent, approvalReviewerLabels, defaultAgentStorageKey, newAgent, normalizeAgents, switchChatAgent, type ApprovalOverride, type ApprovalReviewer, type ChatAgent } from "./agents";
 import { ModelPicker } from "./components/ModelPicker";
 import { AgentAttentionStack, type AgentAttentionRequest } from "./components/AgentAttentionStack";
 import { useGitHubInbox } from "./useGitHubInbox";
@@ -189,6 +190,7 @@ import type {
 } from "./types";
 import { branchPrefixStorageKey, loadBranchPrefix, saveBranchPrefix, taskNewBranchName, taskColors, taskStorageKey, customFieldsStorageKey, filterVisibleTasks, hasTaskCustomFieldLineBreaks, loadCloseKanbanModalOnOutsideClick, loadCollapsedTaskIds, loadOpenNewTaskInDrawer, loadTaskCustomFields, loadTaskLocationDefault, loadTaskView, loadTasks, mergeMcpTaskUpdates, moveTask, moveTaskCustomField, moveTaskProjected, moveTaskToBoardIndex, moveTaskWithinStatus, normalizeTask, removeTaskCustomFieldValues, saveCloseKanbanModalOnOutsideClick, saveCollapsedTaskIds, saveOpenNewTaskInDrawer, saveTaskCustomFields, saveTaskLocationDefault, saveTaskView, saveTasks, timestampTaskUpdates, taskAssetAttachments, taskBoardStatus, taskCustomFieldUrl, taskListMetadata, taskMcpContext, taskLocationFields, taskStartEditable, taskStartSelected, taskSubtreeIds, toggleTaskCommentCheckbox, type TaskBoardStatus, type TaskLocation, type TaskView } from "./tasks";
 
+const AgentsDialog = lazy(() => import("./components/AgentsDialog").then((module) => ({ default: module.AgentsDialog })));
 const message = (reason: unknown) =>
   reason instanceof Error ? reason.message : String(reason);
 
@@ -224,8 +226,6 @@ const autoClearChatAfterCommitStorageKey = "chaoticreview.auto-clear-chat-after-
 const autoFetchPullOnBranchSwitchStorageKey = "chaoticreview.auto-fetch-pull-on-branch-switch";
 const approvalReviewerDefaultStorageKey = "chaoticreview.approval-reviewer-default";
 const boardTabStorageKey = "chaoticreview.task-board-tabs";
-type ApprovalReviewer = "user" | "auto_review" | "yolo";
-const approvalReviewerLabels = { user: "Ask for approval", auto_review: "Approve for me", yolo: "YOLO mode" };
 type BoardTab = "detail" | "changes" | "draw" | "sandbox" | "browser";
 type TaskDetailsTab = "details" | "changes" | "draw" | "sandbox" | "browser";
 type NotificationTarget = { windowLabel: string; repositoryRoot: string; taskId: string | null };
@@ -2195,7 +2195,7 @@ function App() {
   const [boardFolderError, setBoardFolderError] = useState("");
   const [boardTab, setBoardTab] = useState<BoardTab>("detail");
   const [approvalReviewerDefault, setApprovalReviewerDefault] = useState<ApprovalReviewer>(storedApprovalReviewerDefault);
-  const [approvalReviewerOverrides, setApprovalReviewerOverrides] = useState<Record<string, ApprovalReviewer>>({});
+  const [approvalReviewerOverrides, setApprovalReviewerOverrides] = useState<Record<string, ApprovalOverride>>({});
   const [boardAddingSubtaskId, setBoardAddingSubtaskId] = useState<string | null>(null);
   const [boardDrawHost, setBoardDrawHost] = useState<HTMLDivElement | null>(null);
   const [boardSandboxHost, setBoardSandboxHost] = useState<HTMLDivElement | null>(null);
@@ -4127,6 +4127,7 @@ function App() {
   const startChatTurn = async (request: {
     threadId: string | null;
     chatAgent?: ChatAgent | null;
+    pipeline?: boolean;
     model: string;
     effort: ChatEffort;
     mode: AiChatMode;
@@ -4142,7 +4143,7 @@ function App() {
     }, onEvent: (event: AgentTurnEvent) => void) => {
     await syncMcpContextRef.current();
     if (request.beforeStart && !request.beforeStart()) throw new Error("The voice request was not started because the conversation or workspace changed.");
-    return invoke<AiChatAccepted>("ai_chat_send", { input: { baseOid: comparison!.baseOid, mode: comparison!.mode, baseRef: comparison!.baseRef, compareRef: comparison!.compareRef, snapshotId: comparison!.snapshotId, agentThreadId: request.threadId, model: request.model, effort: request.effort, collaborationMode: request.mode, goal: request.mode === "default" ? request.goalSettings ?? defaultChatGoal : defaultChatGoal, prompt: request.prompt, userRules, agentPrompt: request.chatAgent?.prompt ?? "", chatContext: request.context, comments: review!.comments, allowLongPrompt: request.allowLongPrompt, taskId: request.taskId, taskLocation: request.taskLocation, taskTitle: request.taskTitle, taskDescription: request.taskDescription, approvalMode: approvalReviewerOverrides[request.taskId ?? "review"] ?? approvalReviewerDefault }, events: new Channel<AgentTurnEvent>(onEvent) });
+    return invoke<AiChatAccepted>("ai_chat_send", { input: { baseOid: comparison!.baseOid, mode: comparison!.mode, baseRef: comparison!.baseRef, compareRef: comparison!.compareRef, snapshotId: comparison!.snapshotId, agentThreadId: request.threadId, model: request.model, effort: request.effort, collaborationMode: request.mode, goal: request.mode === "default" ? request.goalSettings ?? defaultChatGoal : defaultChatGoal, prompt: request.prompt, userRules, agentPrompt: request.chatAgent?.prompt ?? "", chatContext: request.context, comments: review!.comments, allowLongPrompt: request.allowLongPrompt, taskId: request.taskId, taskLocation: request.taskLocation, taskTitle: request.taskTitle, taskDescription: request.taskDescription, approvalMode: approvalForAgent(request.chatAgent, approvalReviewerOverrides[request.taskId ?? "review"], approvalReviewerDefault, request.pipeline) }, events: new Channel<AgentTurnEvent>(onEvent) });
   };
 
   const sendAiChat = async (promptOverride?: string, requestContext = chatRequestContext, modeOverride?: AiChatMode, configurationOverride?: ChatDefaults[AiChatMode], queuedItem?: QueuedChatMessage, onAccepted?: (accepted: AiChatAccepted) => void, beforeStart?: () => boolean): Promise<boolean> => {
@@ -4493,6 +4494,7 @@ function App() {
         threadId: pipelineRequest ? pipelineRequest.threadId : task.agentThreadId,
         goalSettings: !schedule && !queuedItem?.pipeline ? normalizeChatGoal(task.chatGoal) : defaultChatGoal,
         chatAgent: pipelineRequest ? pipelineRequest.agent : task.chatAgent,
+        pipeline: !!pipelineRequest,
         model: queuedItem?.model ?? configuredTask.chatModel,
         effort: queuedItem?.effort ?? configuredTask.chatEffort,
         mode,
@@ -4509,6 +4511,11 @@ function App() {
         await invoke("ai_chat_cancel", { requestId: accepted.requestId });
         throw new Error("Repository changed before the agent started.");
       }
+      if (pipelineRequest?.agent?.approvalMode) setApprovalReviewerOverrides((current) => {
+        const next = { ...current };
+        delete next[task.id];
+        return next;
+      });
       const stoppedBeforeAccepted = !!queuedItem?.pipeline && !chatQueuesRef.current[taskQueueKey(root, task.id)]?.some((item) => item.id === queuedItem.id);
       acceptedRequestId = accepted.requestId;
       updateTaskAtRoot(root, task.id, (current) => ({
@@ -5317,7 +5324,8 @@ function App() {
     return id ? { id, query: searchSource.query, request: searchSource.request } : undefined;
   }, [searchSource, taskMode, selectedTaskId]);
   const taskVisualSessionOpen = !!selectedTask && taskMode && !settingsOpen && !zenMode && (!boardMode || inlineTaskMode || boardDrawerOpen);
-  const activeApprovalReviewer = approvalReviewerOverrides[taskMode ? selectedTask?.id ?? "" : "review"] ?? approvalReviewerDefault;
+  const activeApprovalAgent = taskMode ? selectedTask?.chatAgent : review?.chatAgent;
+  const activeApprovalReviewer = approvalForAgent(activeApprovalAgent, approvalReviewerOverrides[taskMode ? selectedTask?.id ?? "" : "review"], approvalReviewerDefault);
   const selectedTaskHasPendingChanges = !!selectedTask && taskPendingChanges?.taskId === selectedTask.id && taskPendingChanges.location === selectedTask.location && taskPendingChanges.pending;
   const activeTaskTerminalKey = terminalMounted && terminalOpen && taskMode && !settingsOpen && !zenMode && repository && selectedTask
     && (selectedTask.location === "workspace" || selectedTask.worktree)
@@ -5408,7 +5416,7 @@ function App() {
     execute: async (request, active) => {
       const toolKeys: Record<string, string[]> = {
         ...pipelineToolKeys,
-        get_agents: ["query"], get_agent: ["agentId"], create_agent: ["title", "prompt", "modelConfig"], update_agent: ["agentId", "title", "prompt", "modelConfig"],
+        get_agents: ["query"], get_agent: ["agentId"], create_agent: ["title", "prompt", "modelConfig", "approvalMode"], update_agent: ["agentId", "title", "prompt", "modelConfig", "approvalMode"],
         create_playbook: ["title", "description", "prompt", "variables"], update_playbook: ["playbookId", "title", "description", "prompt", "variables"],
         get_playbooks: ["query"], get_playbook: ["playbookId"], run_task_playbook: ["taskId", "playbookId", "values"], get_tasks: ["query", "status"], add_task: metadataKeys, update_task_comment: ["taskId", "commentId", "body"], get_github_notifications: [], get_task: ["taskId"], get_task_execution: ["taskId"], create_task: metadataKeys, update_task: ["taskId", ...metadataKeys], add_task_comment: ["taskId", "body"], delete_task: ["taskId"], start_task_run: ["taskId", "prompt", "startPoint", "mode"], stop_task_run: ["taskId"], update_task_queue: ["taskId", "paused", "removeMessageIds"], get_task_start_context: [] };
       if (!Object.prototype.hasOwnProperty.call(toolKeys, request.name)) throw new Error("Unknown task control tool.");
@@ -6693,7 +6701,7 @@ function App() {
             onResetConfig={() => taskMode && selectedTask ? updateTask(selectedTask.id, (task) => ({ ...task, chatModel: chatDefaults[task.chatMode].model, chatEffort: chatDefaults[task.chatMode].effort })) : updateReviewChatConfig(chatDefaults[aiChatMode])}
             onDismissError={() => setError("")}
             onZenModeChange={setZenMode}
-            onApprovalReviewerChange={(value) => setApprovalReviewerOverrides((current) => ({ ...current, [taskMode ? selectedTask?.id ?? "" : "review"]: value }))}
+            onApprovalReviewerChange={(value) => setApprovalReviewerOverrides((current) => ({ ...current, [taskMode ? selectedTask?.id ?? "" : "review"]: { mode: value, agent: activeApprovalAgent ?? null } }))}
             onSend={sendComposerMessage}
             onVoiceSend={sendVoiceMessage}
             voiceRunId={reviewRunQueueKeyRef.current === activeQueueKey ? aiChatTurnRef.current?.requestId : undefined}
@@ -6783,7 +6791,7 @@ function App() {
       </aside>}
       </div>
 
-      {agentsOpen && <AgentsDialog agents={agents} models={chatModels} modelsLoaded={modelsLoaded} modelsStatus={modelsStatus} onChange={setAgents} onClose={() => setAgentsOpen(false)} onConfirm={setConfirmation} />}
+      {agentsOpen && <Suspense fallback={null}><AgentsDialog agents={agents} models={chatModels} modelsLoaded={modelsLoaded} modelsStatus={modelsStatus} onChange={setAgents} onClose={() => setAgentsOpen(false)} onConfirm={setConfirmation} /></Suspense>}
       {playbooksOpen && (
         <Dialog open onOpenChange={(open) => !open && setPlaybooksOpen(false)}>
           <DialogContent showCloseButton={false} className="ios-sheet flex h-[min(630px,88vh)] w-[min(980px,94vw)] !max-w-none flex-col overflow-hidden rounded-xl border border-[#294536] bg-[#0B110E] p-0 shadow-2xl shadow-black/60">

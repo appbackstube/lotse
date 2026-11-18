@@ -11,7 +11,7 @@ const pipeline: Pipeline = { id: "build", title: "Build & review", description: 
 ] };
 const task = normalizeTask({ id: "task", title: "Task", chatAgent: owner, agentThreadId: "existing" })!;
 const queue = pipelineQueue(pipeline, [owner, reviewer], task);
-const configuredReviewer = { ...reviewer, modelConfig: { model: "review-model", effort: "high" as const } };
+const configuredReviewer = { ...reviewer, approvalMode: "yolo" as "yolo" | "user", modelConfig: { model: "review-model", effort: "high" as const } };
 const configuredQueue = pipelineQueue(pipeline, [owner, configuredReviewer], task);
 assert.equal(configuredQueue[0].model, task.chatModel);
 assert.equal(configuredQueue[0].effort, task.chatEffort);
@@ -132,4 +132,6 @@ console.log('PASS pipeline tool validation, atomic edits, durable exact-run outc
 const uncertainCancellation = { ...record, stopRequested: true, messages: record.messages.map((m, i) => i === 0 ? { ...m, status: 'running' as const } : m) };
 assert.equal(observePipelineRun(uncertainCancellation, { ...state, queueIds: [] }).status, 'paused', 'Reload must not confirm an unobserved cancellation');
 configuredReviewer.modelConfig.model = 'Changed later';
+configuredReviewer.approvalMode = 'user';
 assert.equal(configuredQueue[2].pipeline!.agent!.modelConfig!.model, 'review-model', 'Execution must deeply copy role settings');
+assert.equal(configuredQueue[2].pipeline!.agent!.approvalMode, 'yolo', 'Execution must keep the role approval snapshot');

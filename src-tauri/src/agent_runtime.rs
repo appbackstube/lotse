@@ -347,7 +347,7 @@ impl ChatMode {
         }
     }
 }
-#[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalMode {
     #[default]

@@ -3,7 +3,7 @@ import { Check, Plus, Save, Trash2, X } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "./ui/dialog";
 import { Input } from "./ui/input";
 import { Textarea } from "./ui/textarea";
-import { newAgent, normalizeAgent, type ChatAgent } from "../agents";
+import { approvalReviewerLabels, newAgent, normalizeAgent, type ApprovalReviewer, type ChatAgent } from "../agents";
 import { chatConfigurationError, modelEfforts, type ChatEffort, type ChatModel } from "../chatDefaults";
 import { ModelPicker } from "./ModelPicker";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
@@ -62,6 +62,12 @@ export function AgentsDialog({ agents, models, modelsLoaded, modelsStatus, onCha
           <form id="agent-form" onSubmit={(event) => { event.preventDefault(); save(); }} className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
             <label className="block text-xs font-bold text-[#7C9B88]">Title<Input value={draft.title} maxLength={200} onChange={(event) => { setDraft({ ...draft, title: event.currentTarget.value }); setSaved(false); }} placeholder="Agile Product Owner" className="mt-2" /></label>
             <label className="block text-xs font-bold text-[#7C9B88]">Prompt<Textarea value={draft.prompt} maxLength={20_000} onChange={(event) => { setDraft({ ...draft, prompt: event.currentTarget.value }); setSaved(false); }} placeholder="Act as an Agile Product Owner. Help clarify goals, prioritize the backlog, and write clear acceptance criteria." className="mt-2 min-h-64 resize-y font-normal" /></label>
+            <div className="space-y-2"><span className="text-xs font-bold text-[#7C9B88]">Approval mode</span>
+              <Select value={draft.approvalMode ?? "default"} onValueChange={(value) => { if (value === "default" || value === "user" || value === "auto_review" || value === "yolo") { setDraft({ ...draft, approvalMode: value === "default" ? undefined : value }); setSaved(false); } }}>
+                <SelectTrigger className="h-9 w-full border-[#294536] bg-[#050807] text-[#E8FFF0]" aria-label="Agent approval mode"><SelectValue>{(value) => value === "default" ? "Use default" : approvalReviewerLabels[value as ApprovalReviewer]}</SelectValue></SelectTrigger>
+                <SelectContent className="ios-select-content"><SelectItem value="default">Use default</SelectItem><SelectItem value="user">Ask for approval</SelectItem><SelectItem value="auto_review">Approve for me</SelectItem><SelectItem value="yolo" title="Full access without approval prompts">YOLO mode</SelectItem></SelectContent>
+              </Select>
+            </div>
             <div className="space-y-3">
               <div className="flex items-center justify-between"><span className="text-xs font-bold text-[#7C9B88]">Model and effort</span>
                 {draft.modelConfig ? <button type="button" className="quiet-button h-8" onClick={() => { setDraft(({ modelConfig: _config, ...agent }) => agent); setSaved(false); }}>Remove</button> :

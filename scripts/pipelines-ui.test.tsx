@@ -13,8 +13,8 @@ import App from "../src/App";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const repo = { rootPath: "/synthetic-settings", name: "Settings preview", currentBranch: "main", hasOrigin: true };
-const agent = { id: "owner", title: "Product Owner", prompt: "Clarify goals." };
-const reviewer = { id: "reviewer", title: "Reviewer", prompt: "Review changes.", modelConfig: { model: "review-model", effort: "high" as const } };
+const agent = { id: "owner", title: "Product Owner", prompt: "Clarify goals.", approvalMode: "auto_review" as const };
+const reviewer = { id: "reviewer", title: "Reviewer", prompt: "Review changes.", approvalMode: "yolo" as const, modelConfig: { model: "review-model", effort: "high" as const } };
 const pipeline: Pipeline = { id: "build", title: "Build & review", description: "A clear plan, implementation, then review.", steps: [
   { id: "plan", title: "Plan & implement", agentId: agent.id, messages: ["Inspect the task.", "Implement the plan."] },
   { id: "review", title: "Review", agentId: reviewer.id, messages: ["Review the result.", "Summarize the review."] },
@@ -101,9 +101,12 @@ try {
   await fileStore.flush();
   check(JSON.parse(storage[pipelinesStorageKey])[0].steps.length === 2, 'Designer edits must persist');
   await click(button('Close settings')); await click(button('Tasks')); await click(button('Existing task'));
+  await click(document.querySelector<HTMLElement>('[aria-label="Approval mode"]'));
+  await click([...document.querySelectorAll<HTMLElement>('[role="option"]')].find((element) => visible(element) && element.textContent === 'Ask for approval'));
   await start();
   check(sends.length === 1 && sends[0].prompt === 'Inspect the task.', 'Plus menu must start the first message');
   check(sends[0].agentPrompt === agent.prompt && sends[0].agentThreadId === 'existing-thread', 'Same role must reuse the thread');
+  check(sends[0].approvalMode === 'auto_review', 'The first pipeline role must use its approval mode');
   check(queue().length === 4, 'The in-flight message must stay durable until completion');
   await click(button('Pause')); await event(0, 'assistantMessageCompleted', { finalText: 'Plan ready.' }); await event(0, 'completed');
   check(sends.length === 1 && queue().length === 3, 'Pausing waits for current response, then stops');
@@ -114,6 +117,7 @@ try {
   await event(2, 'assistantMessageCompleted', { finalText: 'Implementation verified.' }); await event(2, 'completed');
   check(sends.length === 4 && sends[3].agentPrompt === reviewer.prompt && sends[3].agentThreadId === null, 'Role switch must start a fresh reviewer thread');
   check(sends[3].model === 'review-model' && sends[3].effort === 'high', 'A pipeline role switch must use the role model and effort');
+  check(sends[3].approvalMode === 'yolo' && storedTask().chatAgent.approvalMode === 'yolo', 'The reviewer mode must reach execution and persist with the role');
   check(storedTask().chatModel === 'review-model' && storedTask().chatEffort === 'high', 'A pipeline role switch must update the task chat configuration');
   check(button('Model and effort')?.textContent?.includes('Review model') && button('Model and effort')?.textContent?.includes('High'), 'The task chat must display the selected pipeline role configuration');
   check(sends[3].prompt.includes('Implementation verified.') && sends[3].prompt.includes('Plan ready.'), 'Handoff must include previous results');
@@ -129,6 +133,7 @@ try {
   await event(3, 'completed');
   await click(button('Resume'));
   check(sends[4].model === 'review-model' && sends[4].effort === 'high', 'Queued pipeline messages must keep their saved configuration');
+  check(sends[4].approvalMode === 'yolo', 'Every queued message must retain the role approval mode');
   check(storedTask().chatModel === 'gpt-5.6-terra' && storedTask().chatEffort === 'low', 'A repeated pipeline role must not overwrite manual chat settings');
   await event(4, 'completed'); check(!queue().length && !document.querySelector('.pipeline-run-card'), 'Completion must clear the pipeline');
   await edit('Review Agent message', 'Follow up manually.'); await click(button('Send Review Agent message'));

@@ -53,6 +53,7 @@ mockConvertFileSrc("macos");
 mockIPC(async (command, args: any) => {
   if (command === "task_control_active") return pending.has(args.operationId) && args.repositoryRoot === repo.rootPath;
   if (command === "task_control_ack") { acknowledgements.push(args); pending.delete(args.operationId); return; }
+  if (command === "conversation_settings") return { enabled: false };
   if (command === "task_sandbox_supported") return true;
   if (command === "save_task_sandbox") {
     check(args.repositoryRoot === repo.rootPath, "Sandbox saved to the wrong repository");
@@ -189,8 +190,9 @@ try {
   check(!roles.error && roles.result.length === 1 && roles.result[0].id === savedAgent.id && !("prompt" in roles.result[0]), "Workspace cannot search saved agents");
   const readRole = await request(null, "get_agent", { agentId: savedAgent.id });
   check(!readRole.error && readRole.result.prompt === savedAgent.prompt, "Workspace cannot read saved agent prompts");
-  const createdRole = await request(null, "create_agent", { title: "Reviewer", prompt: "Review changes", modelConfig: { model: "model-a", effort: "high" } });
-  check(!createdRole.error && JSON.parse(storage["chaoticreview.agents"]).some((agent: any) => agent.id === createdRole.result.id), "Workspace agent creation not persisted");
+  const createdRole = await request(null, "create_agent", { title: "Reviewer", prompt: "Review changes", modelConfig: { model: "model-a", effort: "high" }, approvalMode: "yolo" });
+  check(!createdRole.error && JSON.parse(storage["chaoticreview.agents"]).some((agent: any) => agent.id === createdRole.result.id && agent.approvalMode === "yolo"), "Workspace agent creation not persisted");
+  check((await request(null, "update_agent", { agentId: createdRole.result.id, approvalMode: "invalid" })).error, "Invalid approval modes must be rejected");
   const createdTemplate = await request(null, "create_playbook", { title: "Audit", prompt: "Audit {{AREA}}", variables: [{ name: "AREA", label: "Which area?", type: "singleLine" }] });
   check(!createdTemplate.error && JSON.parse(storage["chaoticreview.review-playbooks"]).some((playbook: any) => playbook.id === createdTemplate.result.id), "Workspace playbook creation not persisted");
   const changedTemplate = await request(null, "update_playbook", { playbookId: createdTemplate.result.id, description: "Created by workspace" });
@@ -254,7 +256,7 @@ try {
   const taskRoles = await request(first.id, "get_agents", {});
   check(!taskRoles.error && taskRoles.result.length === 2, "Task cannot list saved agents");
   const taskRole = await request(first.id, "get_agent", { agentId: createdRole.result.id });
-  check(!taskRole.error && taskRole.result.prompt === "Review changes", "Task cannot read a saved agent");
+  check(!taskRole.error && taskRole.result.prompt === "Review changes" && taskRole.result.approvalMode === "yolo", "Task cannot read a saved agent");
   const updatedRole = await request(first.id, "update_agent", { agentId: savedAgent.id, prompt: "Prioritize goals" });
   check(!updatedRole.error && updatedRole.result.title === savedAgent.title && JSON.parse(storage["chaoticreview.agents"])[0].prompt === "Prioritize goals", "Task agent edit not persisted");
   check(storedTasks()[0].chatAgent.prompt === savedAgent.prompt, "Saved-role edit changed an existing task chat role");
