@@ -19,9 +19,9 @@ export function agentMetadata(original: ChatAgent, args: Record<string, unknown>
   const prompt = requiredText("prompt" in args ? args.prompt : original.prompt, "Prompt");
   if (args.modelConfig !== undefined && args.modelConfig !== null) argumentsFor(args.modelConfig, ["model", "effort"]);
   const candidate = { ...original, title: "title" in args ? title : original.title, prompt: "prompt" in args ? prompt : original.prompt,
-    ...("modelConfig" in args ? { modelConfig: args.modelConfig } : {}) };
+    ...("modelConfig" in args ? { modelConfig: args.modelConfig } : {}), ...("approvalMode" in args ? { approvalMode: args.approvalMode } : {}) };
   const agent = normalizeAgent(candidate);
-  if (!agent) throw new Error("Model configuration must contain a valid model and effort, or be null to remove it.");
+  if (!agent) throw new Error("Invalid model configuration or approval mode.");
   return agent;
 }
 export function playbookMetadata(original: Playbook, args: Record<string, unknown>): Playbook {

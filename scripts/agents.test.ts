@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { newAgent, normalizeAgent, normalizeAgents, switchChatAgent } from "../src/agents.ts";
+import { approvalForAgent, newAgent, normalizeAgent, normalizeAgents, switchChatAgent } from "../src/agents.ts";
 import { normalizeTask } from "../src/tasks.ts";
 import { carryReviewChat } from "../src/chatTimeline.ts";
 import type { ReviewSession } from "../src/types.ts";
@@ -28,6 +28,17 @@ assert.equal(task.chatMessages.length, 1);
 assert.equal(switchChatAgent(switched, null).chatAgent, null);
 
 const configuredRole = { ...agent, modelConfig: { model: "provider/model-a", effort: "high" as const } };
+for (const mode of ["user", "auto_review", "yolo"] as const) {
+  const role = { ...configuredRole, approvalMode: mode };
+  assert.deepEqual(normalizeAgent(JSON.parse(JSON.stringify(role))), role);
+  assert.equal(approvalForAgent(role, undefined, "user"), mode);
+  assert.equal(approvalForAgent(role, { agent: role, mode: "user" }, "auto_review"), "user");
+  assert.equal(approvalForAgent(role, { agent: role, mode: "user" }, "auto_review", true), mode);
+}
+assert.equal(normalizeAgent({ ...agent, approvalMode: "invalid" }), null);
+assert.deepEqual(normalizeAgent({ ...agent, approvalMode: null }), agent);
+assert.equal(approvalForAgent(agent, undefined, "auto_review"), "auto_review");
+assert.equal(approvalForAgent(configuredRole, { agent: { ...agent, approvalMode: "yolo" }, mode: "yolo" }, "user"), "user");
 assert.deepEqual(normalizeAgent(JSON.parse(JSON.stringify(configuredRole))), configuredRole);
 assert.deepEqual(normalizeAgent({ ...configuredRole, modelConfig: null }), agent);
 assert.equal(normalizeAgent({ ...configuredRole, modelConfig: { model: "bad model", effort: "high" } }), null);

@@ -12,6 +12,7 @@ pub(super) fn tools() -> Vec<Value> {
     let mut agent = json!({"title":{"type":"string","minLength":1,"maxLength":200},"prompt":{"type":"string","minLength":1,"maxLength":20000}});
     let mut playbook = agent.clone();
     agent["modelConfig"] = json!({"type":["object","null"],"additionalProperties":false,"required":["model","effort"],"properties":{"model":{"type":"string","minLength":1,"maxLength":100},"effort":{"type":"string","enum":["low","medium","high","xhigh"]}}});
+    agent["approvalMode"] = json!({"type":["string","null"],"enum":["user","auto_review","yolo",null],"description":"Role approval mode; null uses the default. Existing chats keep their role snapshot."});
     let mut agent_update = agent.clone();
     agent_update["agentId"] = id.clone();
     playbook["description"] = text.clone();
@@ -269,6 +270,11 @@ mod tests {
             }
         }
         assert!(validate_arguments("create_agent", &json!({"title":"Role","prompt":"Help"})).is_ok());
+        for mode in [json!("user"), json!("auto_review"), json!("yolo"), Value::Null] {
+            assert!(validate_arguments("create_agent", &json!({"title":"Role","prompt":"Help","approvalMode":mode})).is_ok());
+        }
+        let agent_tool = tools.iter().find(|tool| tool["name"] == "update_agent").unwrap();
+        assert_eq!(agent_tool["inputSchema"]["properties"]["approvalMode"]["enum"], json!(["user", "auto_review", "yolo", null]));
         for (name, args) in [
             ("create_task", json!({"title":"Custom status", "status":"custom-qa"})),
             ("get_tasks", json!({"status":"custom-qa"})),

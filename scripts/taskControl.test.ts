@@ -71,6 +71,11 @@ assert.equal(taskSummary(task).url, `#task=${task.id}`);
 
 const role = { id: "owner", title: "Owner", prompt: "Clarify goals" };
 const roleWithModel = agentMetadata(role, { modelConfig: { model: "provider/model", effort: "low" } });
+const roleWithApproval = agentMetadata(roleWithModel, { approvalMode: "yolo" });
+assert.equal(roleWithApproval.approvalMode, "yolo");
+assert.equal(agentMetadata(roleWithApproval, { title: "Changed" }).approvalMode, "yolo");
+assert.equal(agentMetadata(roleWithApproval, { approvalMode: null }).approvalMode, undefined);
+assert.throws(() => agentMetadata(role, { approvalMode: "unknown" }));
 assert.deepEqual(roleWithModel.modelConfig, { model: "provider/model", effort: "low" });
 assert.deepEqual(agentMetadata(roleWithModel, { title: "New name" }).modelConfig, roleWithModel.modelConfig);
 assert.equal(agentMetadata(roleWithModel, { modelConfig: null }).modelConfig, undefined);

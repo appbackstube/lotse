@@ -908,6 +908,8 @@ struct ChatAgent {
     prompt: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     model_config: Option<AgentModelConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    approval_mode: Option<agent_runtime::ApprovalMode>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -8332,11 +8334,18 @@ mod tests {
             "repoPath":"/tmp/repo", "baseOid":"a".repeat(40), "comments":[]
         })).unwrap();
         assert!(review.chat_agent.is_none());
-        review.chat_agent = Some(ChatAgent { id: "owner".into(), title: "Product Owner".into(), prompt: "Act as a Product Owner.".into(), model_config: Some(AgentModelConfig { model: "model-a".into(), effort: "high".into() }) });
+        review.chat_agent = Some(ChatAgent { id: "owner".into(), title: "Product Owner".into(), prompt: "Act as a Product Owner.".into(), model_config: Some(AgentModelConfig { model: "model-a".into(), effort: "high".into() }), approval_mode: Some(agent_runtime::ApprovalMode::AutoReview) });
         assert!(validate_review(&review, Path::new("/tmp/repo")).is_ok());
         let saved = serde_json::to_value(&review).unwrap();
         assert_eq!(saved["chatAgent"]["prompt"], "Act as a Product Owner.");
         assert_eq!(saved["chatAgent"]["modelConfig"]["model"], "model-a");
+        assert_eq!(saved["chatAgent"]["approvalMode"], "auto_review");
+        let mut legacy = saved.clone();
+        legacy["chatAgent"].as_object_mut().unwrap().remove("approvalMode");
+        assert!(serde_json::from_value::<ReviewSession>(legacy).unwrap().chat_agent.unwrap().approval_mode.is_none());
+        let mut invalid = saved.clone();
+        invalid["chatAgent"]["approvalMode"] = serde_json::json!("invalid");
+        assert!(serde_json::from_value::<ReviewSession>(invalid).is_err());
         let mut loaded: ReviewSession = serde_json::from_value(saved).unwrap();
         loaded.chat_agent.as_mut().unwrap().prompt = "x".repeat(20_001);
         assert!(validate_review(&loaded, Path::new("/tmp/repo")).is_err());
