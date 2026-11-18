@@ -22,6 +22,8 @@ Enable Talk in Settings → Conversation with an OpenAI API key. The key remains
 
 Talk can continue while the workspace agent works. A clear model-interpreted request starts the agent without an additional confirmation; the interpretation can be inaccurate, and unclear requests require clarification. Agent questions and configured approvals remain in the chat and must be answered by the user. Interrupt voice mutes local playback, not agent work; after a detected output pause, playback resumes when audio starts again. The pause is an estimate, not proof of a new reply; if detection is unavailable, use Resume audio. End stops the voice connection, not agent work. Stop agent work is a separate action. Browser audio processing requests echo cancellation and noise suppression, but its effect and the naturalness of conversation require real-device audio testing. Rebuild and restart the native app after updating the voice backend.
 
+Talk splits context appends into small UTF-8 fragments to stay below GPT-Live's 500-token limit per append, while preserving the bounded workspace history. Rejected client commands show known protocol labels without exposing raw provider messages. A correlated invalid-command error keeps Talk connected; backend configuration errors and uncorrelated errors stop the local session with a neutral explanation. These errors alone do not establish an access or billing problem.
+
 ## Task statuses
 
 Use **Settings → Tasks → Task statuses** to add or rename statuses, reorder them by dragging or using the arrow buttons, and choose the default for new tasks. Settings belong to the current repository. The same names and order appear in List, Kanban, Gantt and task status menus; changing the default does not move existing tasks.

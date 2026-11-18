@@ -77,6 +77,73 @@ test("voice receives current history at connection and when saved chat changes",
   } finally { h.stop(); }
 });
 
+test("large workspace history and Unicode progress stay within the Live append budget without losing text", async () => {
+  const h = harness();
+  const messages: ChatMessage[] = Array.from({ length: 8 }, (_, index) => ({ id: String(index), role: index % 2 ? "assistant" : "user", body: `Message ${index}: ${'ä漢😀\n"\\'.repeat(500)}`, createdAt: "", selection: null, snapshotId: null, suggestions: [], contexts: [] }));
+  h.voice.setHistory(messages);
+  await h.start();
+  try {
+    const appends = () => h.sent.filter(event => /session\.(instructions|thinking|commentary)\.append/.test(event.type));
+    const parts = appends();
+    assert.ok(parts.length > 1, "A main-sized history must not be sent as one oversized append");
+    assert.ok(parts.every(event => new TextEncoder().encode(event.content).length <= 480));
+    assert.ok(parts.every(event => event.delegation_id === null));
+    assert.equal(new Set(parts.map(event => event.event_id)).size, parts.length);
+    const rejoin = (events: Record<string, any>[]) => events.map(event => event.content.replace(/^Context fragment \d+\/\d+ \(read in order\):\n/, "")).join("");
+    const history = rejoin(parts);
+    assert.ok(history.endsWith(voiceHistory(messages)), "All bounded history, roles and escaped text must survive fragmentation");
+    assert.match(history, /untrusted data/);
+    const before = h.sent.length;
+    h.voice.setHistory(messages);
+    assert.equal(h.sent.length, before, "An unchanged history must not be resent");
+    h.call("d", "r", "c", JSON.stringify({ task: "Inspect the workspace", needs_clarification: false }));
+    const request = h.requests[0];
+    const text = "😀漢ä".repeat(400);
+    const previous = appends().length;
+    h.voice.deliver({ id: "progress", context: "workspace", sessionId: request.sessionId, delegationId: "d", responseId: "r", callId: "c", kind: "progress", text });
+    const progress = appends().slice(previous);
+    assert.ok(progress.length > 1);
+    assert.ok(progress.every(event => new TextEncoder().encode(event.content).length <= 480));
+    assert.equal(rejoin(progress), text);
+  } finally { h.stop(); }
+});
+
+test("a rejected client command reports safe protocol details without ending Talk or invalidating work", async () => {
+  const h = harness(); await h.start();
+  try {
+    h.call("d", "r", "c", JSON.stringify({ task: "Inspect the workspace", needs_clarification: false }));
+    const request = h.requests[0];
+    h.voice.interrupt();
+    const command = h.sent.at(-1)!;
+    h.event({ type: "error", error: { type: "invalid_request_error", code: "unknown_parameter", client_event_id: command.event_id, message: "synthetic-sensitive-provider-message", param: "synthetic-sensitive-parameter" } });
+    assert.equal(h.state.phase, "listening");
+    assert.equal(h.track.stopped, false);
+    assert.equal(h.peer.closed, false);
+    assert.equal(request.isCurrent(), true);
+    assert.match(h.state.error, /unknown_parameter; invalid_request_error; session.instructions.append/);
+    assert.doesNotMatch(h.state.error, /synthetic-sensitive|billing|access/i);
+    assert.ok(!h.sent.some(event => event.type === "session.close"));
+    h.voice.deliver({ id: "result", context: "workspace", sessionId: request.sessionId, delegationId: "d", responseId: "r", callId: "c", kind: "result", text: "Verified result" });
+    assert.ok(h.sent.some(event => event.type === "response.item.create" && event.item.output === "Verified result"));
+  } finally { h.stop(); }
+});
+
+test("backend validation and uncorrelated errors stop safely without inventing access or billing causes", async () => {
+  for (const error of [
+    { code: "responses_validation_failed", type: "invalid_request_error", client_event_id: "startup" },
+    { code: null },
+    { code: "synthetic-sensitive-code", type: "synthetic-sensitive-type", message: "synthetic-sensitive-message" },
+  ]) {
+    const h = harness(); await h.start();
+    h.event({ type: "error", error });
+    assert.equal(h.state.phase, "idle");
+    assert.equal(h.track.stopped, true);
+    assert.doesNotMatch(h.state.error, /synthetic-sensitive|billing|access/i);
+    if (error.code === "responses_validation_failed") assert.match(h.state.error, /backend configuration.*responses_validation_failed/);
+    h.stop();
+  }
+});
+
 test("overlapping speakers retain both transcripts through errors and reset on restart", async () => {
   const h = harness(); await h.start();
   const delta = (speaker: "input" | "output", text: string) => h.event({ type: `session.${speaker}_transcript.delta`, start_ms: 10, end_ms: 20, delta: text });
