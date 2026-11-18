@@ -75,7 +75,7 @@ export function pipelineQueue(pipeline: Pipeline, agents: ChatAgent[], task: Rep
     return step.messages.map((body) => ({
       id: crypto.randomUUID(), body: body.trim(), context: { mode: "auto" as const, attachments: [] }, selection: null,
       mode: "default" as const, ...configuration,
-      pipeline: { runId, title: pipeline.title, stepTitle: step.title, stepIndex, stepCount: pipeline.steps.length, position: position++, total, agent: agent ? { ...agent } : null },
+      pipeline: { runId, title: pipeline.title, stepTitle: step.title, stepIndex, stepCount: pipeline.steps.length, position: position++, total, agent: agent ? structuredClone(agent) : null },
     }));
   });
 }
