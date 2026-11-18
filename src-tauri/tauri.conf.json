@@ -23,7 +23,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data: https://github.com/user-attachments/ https://private-user-images.githubusercontent.com https://user-images.githubusercontent.com https://camo.githubusercontent.com https://github-production-user-asset-6210df.s3.amazonaws.com; media-src asset: http://asset.localhost; frame-src asset: http://asset.localhost http://127.0.0.1:*; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost",
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data: https://github.com/user-attachments/ https://private-user-images.githubusercontent.com https://user-images.githubusercontent.com https://camo.githubusercontent.com https://github-production-user-asset-6210df.s3.amazonaws.com; media-src 'self' blob: asset: http://asset.localhost; frame-src asset: http://asset.localhost http://127.0.0.1:*; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost",
       "assetProtocol": { "enable": true, "scope": ["$APPDATA/chat-images/**", "$APPDATA/task-assets/**", "$APPDATA/task-assets/*/*/.thumbnails/*.png"] }
     }
   },
@@ -40,6 +40,10 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "macOS": {
+      "infoPlist": "Info.plist",
+      "entitlements": "Entitlements.plist"
+    }
   }
 }

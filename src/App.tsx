@@ -20,6 +20,9 @@ import { createPortal, flushSync } from "react-dom";
 import { useTaskFieldDraft } from "./useTaskFieldDraft";
 import { readTaskDrawing } from "./taskDrawing";
 import { applyTaskSandboxUpdate } from "./taskSandbox";
+import { ConversationSettings, type ConversationSettingsValue } from "./components/ConversationSettings";
+import { useConversation } from "./useConversation";
+import type { VoiceReply } from "./conversation";
 import { WebsiteCredentialsSettings } from "./components/WebsiteCredentialsSettings";
 import { PipelineDesigner } from "./components/PipelineDesigner";
 import { loadPipelines, pipelineChatConfig, pipelineError, pipelineQueue, pipelinesStorageKey, pipelineTurn, type Pipeline } from "./pipelines";
@@ -70,6 +73,10 @@ import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from "@/compone
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import {
+  AudioLines,
+  Keyboard,
+  Mic,
+  MicOff,
   ArrowUp,
   ArrowDown,
   Blocks,
@@ -1075,7 +1082,15 @@ function AiChatPanel({
   taskSelected = true,
   active = true,
   searchMessage,
+  conversationEnabled = false,
+  conversationContext = "",
+  voiceReplies = [],
+  onVoiceSend,
 }: {
+  conversationEnabled?: boolean;
+  conversationContext?: string;
+  voiceReplies?: VoiceReply[];
+  onVoiceSend?: (text: string) => Promise<boolean>;
   messages: ChatMessage[];
   draft: string;
   running: boolean;
@@ -1157,6 +1172,10 @@ function AiChatPanel({
   active?: boolean;
   searchMessage?: { id: string; query: string; request: number };
 }) {
+  const voiceBlocked = !!agentInput || !!agentApproval || !!variablePrompt;
+  const voice = useConversation({ available: conversationEnabled && active && !taskMode && !!comparison, context: conversationContext,
+    running, blocked: voiceBlocked, replies: voiceReplies, onSend: onVoiceSend ?? onSend });
+  const voiceLabel = voiceBlocked ? "Respond in the chat to continue" : voice.muted ? "Microphone off" : ({ idle: "", connecting: "Connecting…", listening: "Listening", transcribing: "Recognizing speech…", working: "Agent is working…", speaking: "Speaking" })[voice.phase];
   const scrollRef = useRef<HTMLDivElement>(null);
   const followChatRef = useRef(true);
   useEffect(() => {
@@ -1234,7 +1253,7 @@ function AiChatPanel({
 
   const pipeline = queuedMessages.find((item) => item.pipeline)?.pipeline;
   const manualMessages = queuedMessages.filter((item) => !item.pipeline);
-  const emptyCenteredChat = centered && !messages.length && !running && !queuedMessages.length && !variablePrompt && !agentInput && !agentApproval;
+  const emptyCenteredChat = !voice.active && centered && !messages.length && !running && !queuedMessages.length && !variablePrompt && !agentInput && !agentApproval;
   const availableFavoriteModels = favoriteModels.filter((id) => models.some((entry) => entry.model === id));
 
   return (
@@ -1252,9 +1271,9 @@ function AiChatPanel({
           <DropdownMenuTrigger className="task-modal-icon ml-auto" aria-label="Chat actions" title="Chat actions"><Ellipsis size={18} /></DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-52">
             <DropdownMenuItem onClick={() => onZenModeChange(true)}><Maximize2 size={14} /> Enter Zen Mode</DropdownMenuItem>
-            <DropdownMenuItem disabled={running || (!messages.length && !queuedMessages.length)} onClick={onClear} aria-label="Clear Agent Chat conversation"><RotateCcw size={14} /> Clear conversation</DropdownMenuItem>
+            <DropdownMenuItem disabled={running || (!messages.length && !queuedMessages.length)} onClick={() => { voice.stop(); onClear(); }} aria-label="Clear Agent Chat conversation"><RotateCcw size={14} /> Clear conversation</DropdownMenuItem>
           </DropdownMenuContent>
-        </DropdownMenu> : <div className="ml-auto flex items-center">{(!!messages.length || !!queuedMessages.length) && <button type="button" onClick={onClear} disabled={running} className="quiet-button h-7 px-2 disabled:opacity-40" aria-label="Clear Agent Chat conversation">
+        </DropdownMenu> : <div className="ml-auto flex items-center">{(!!messages.length || !!queuedMessages.length) && <button type="button" onClick={() => { voice.stop(); onClear(); }} disabled={running} className="quiet-button h-7 px-2 disabled:opacity-40" aria-label="Clear Agent Chat conversation">
           Clear
         </button>}
         <button
@@ -1353,7 +1372,12 @@ function AiChatPanel({
               </DropdownMenuContent></DropdownMenu>
           </div>)}
         </div>}
-        <div className={`ios-chat-composer mx-auto w-full max-w-[960px] ${dragging ? "ios-chat-composer-dropping" : ""}`}>
+        {voice.error && <div role="alert" className="conversation-error mx-auto w-full max-w-[960px]">{voice.error}{voice.transcript && <><p>{voice.transcript}</p><button type="button" onClick={() => { const text = [composerDraft.trim(), voice.transcript].filter(Boolean).join("\n\n"); setComposerDraft(text); onDraftChange(text); }}>Copy transcript to composer</button></>}</div>}
+        {voice.active && <div className="ios-chat-composer conversation-composer mx-auto w-full max-w-[960px]" aria-label="Voice composer">
+          <div className="conversation-status"><AudioLines size={32} className={voice.phase === "speaking" ? "conversation-speaking" : ""} /><div><strong role="status">{voiceLabel}</strong><p>{voice.transcript || (voiceBlocked ? "The microphone is paused." : "Your chat stays here. Speak naturally.")}</p></div></div>
+          <div className="conversation-controls"><button type="button" className="ios-chat-add-image" aria-label="Switch to typing" onClick={voice.stop}><Keyboard size={18} /></button><span className="conversation-disclosure">AI voice · OpenAI</span><span className="flex-1" />{voice.phase === "speaking" && <button type="button" className="quiet-button" onClick={voice.interrupt}>Interrupt</button>}<button type="button" className="quiet-button" aria-label={voice.muted ? "Unmute microphone" : "Mute microphone"} aria-pressed={voice.muted} disabled={voice.phase === "connecting" || voiceBlocked} onClick={voice.mute}>{voice.muted ? <MicOff size={17} /> : <Mic size={17} />}</button><button type="button" className="accent-button" onClick={voice.stop}><X size={15} /> End</button>{running && <button type="button" className="quiet-button" aria-label="Stop Review Agent response" onClick={onCancel}><Square size={14} /></button>}</div>
+        </div>}
+        <div hidden={voice.active} className={`ios-chat-composer mx-auto w-full max-w-[960px] ${dragging ? "ios-chat-composer-dropping" : ""}`}>
           <ChatUploads images={images} removable onRemove={onRemoveImage} />
           <ChatAssetNames attachments={taskAssets.filter((asset) => selectedAssetIds.includes(asset.id)).map((asset) => ({ kind: "taskAsset", id: asset.id, name: asset.name, image: asset.image }))} />
           <Textarea
@@ -1457,6 +1481,7 @@ function AiChatPanel({
               {mode === "plan" && <button type="button" className="ios-chat-plan-toggle" aria-label="Disable Plan mode" aria-pressed="true" title="Disable Plan mode" disabled={running || (taskMode && !taskSelected)} onClick={() => onModeChange("default")}>Plan <span>On</span></button>}
               {goalSettings.enabled && <ChatGoalSettings value={goalSettings} disabled={running || (taskMode && !taskSelected)} onChange={onGoalSettingsChange} />}
             </div>
+            {!taskMode && conversationEnabled && <button type="button" className="quiet-button conversation-start" disabled={!comparison || sendPending || voiceBlocked || !!configurationError} onClick={voice.start} aria-label="Start conversation"><AudioLines size={16} /> Talk</button>}
             {running ? (
               <><button type="button" disabled={!canSend} onClick={send} className="accent-button ml-auto !size-[30px] shrink-0 !p-0 disabled:opacity-40" aria-label="Queue Review Agent message" title="Queue message"><ArrowUp size={14} /></button><button
                 type="button"
@@ -2175,6 +2200,9 @@ function App() {
   const [taskGridWidth, setTaskGridWidth] = useState(window.innerWidth);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => new Set());
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [conversationSettings, setConversationSettings] = useState<ConversationSettingsValue>({ enabled: false });
+  const [voiceReplies, setVoiceReplies] = useState<VoiceReply[]>([]);
+  useEffect(() => { void invoke<ConversationSettingsValue>("conversation_settings").then(setConversationSettings).catch(() => {}); }, []);
   const [settingsPage, setSettingsPage] = useState<SettingsPage>("general");
   const [pomodoroSettings, setPomodoroSettings] = useState(() => {
     try { return normalizePomodoroSettings(JSON.parse(fileStore.getItem(pomodoroSettingsKey) ?? "null")); }
@@ -2911,6 +2939,10 @@ function App() {
   };
 
   const handleMainChatEvent = (update: AiChatEvent) => {
+    if (update.kind === "assistantMessageCompleted" && update.finalText?.trim() && reviewRunQueueKeyRef.current) {
+      const reply = { id: crypto.randomUUID(), text: update.finalText, context: reviewRunQueueKeyRef.current };
+      setVoiceReplies(current => [...current.slice(-49), reply]);
+    }
     if (update.kind !== "assistantDelta") flushAiChatDeltas();
     if (update.kind === "modelRerouted") { if (update.label) setAiChatServerModel(update.label); return; }
     if (update.kind === "status") { if (update.label) setAiChatStatus(update.label); return; }
@@ -4595,6 +4627,21 @@ function App() {
     }
   };
 
+  const sendVoiceMessage = async (draft: string): Promise<boolean> => {
+    const current = reviewRef.current;
+    const key = activeQueueKey;
+    const prompt = draft.trim();
+    if (taskMode || !current || !comparison || !key || reviewQueueKey(current) !== key || agentUserInput || inlineAgentApproval || variablePrompt || !prompt || prompt.length > 20_000) return false;
+    const item: QueuedChatMessage = { id: crypto.randomUUID(), body: prompt, context: { mode: "auto", attachments: [] }, selection, mode: aiChatMode, model: aiChatModel, effort: aiChatEffort };
+    // Spoken input must not consume an unfinished text draft or its attachments.
+    if (!aiChatRunningRef.current && !chatQueuesRef.current[key]?.length) return sendAiChat(prompt, item.context, item.mode, undefined, item);
+    changeQueue(key, items => [...items, item]);
+    if (aiChatTurnRef.current && reviewRunQueueKeyRef.current === key && !chatQueuesRef.current[key]?.some(entry => entry.pipeline)) {
+      await steerQueued(key, item.id);
+    }
+    return true;
+  };
+
   const answerTaskQuestion = async (taskId: string, answers: Record<string, string>) => {
     const input = taskRunsRef.current[taskId]?.input;
     if (!input || input.questions.some((question) => !(answers[question.id] ?? "").trim())) return;
@@ -5800,6 +5847,7 @@ function App() {
               </div>
             </section>
           </div>
+          {settingsPage === "conversation" && <div data-settings-page="conversation"><ConversationSettings onChange={setConversationSettings} /></div>}
           <div hidden={settingsPage !== "agent"} data-settings-page="agent">
             <section className="mt-10">
               <h2 className="mb-4 text-[17px] font-semibold text-[#E8FFF0]">Defaults & personalization</h2>
@@ -6452,6 +6500,10 @@ function App() {
             onZenModeChange={setZenMode}
             onApprovalReviewerChange={(value) => setApprovalReviewerOverrides((current) => ({ ...current, [taskMode ? selectedTask?.id ?? "" : "review"]: value }))}
             onSend={sendComposerMessage}
+            onVoiceSend={sendVoiceMessage}
+            conversationEnabled={conversationSettings.enabled && !settingsOpen && workspaceMode === "workspace"}
+            conversationContext={activeQueueKey ?? ""}
+            voiceReplies={voiceReplies}
             queuedMessages={activeQueueKey ? chatQueues[activeQueueKey] ?? [] : []}
             queuePaused={activeQueueKey ? pausedQueueKeys.has(activeQueueKey) : false}
             canSteerQueued={taskMode ? !!selectedTaskRun : reviewRunQueueKeyRef.current === activeQueueKey}
