@@ -4,9 +4,11 @@ import { idleVoice, RealtimeConversation, type VoiceDelegation, type VoiceReply,
 import { conversationVoice, conversationVoiceKey } from "./conversationVoices";
 import { fileStore } from "./fileStore";
 import { watchConversationPlayback } from "./conversationPlayback";
+import type { ChatMessage } from "./types";
 
-export function useConversation({ available, context, running, blocked, replies, onSend }: {
+export function useConversation({ available, context, messages, running, blocked, replies, onSend }: {
   available: boolean; context: string; running: boolean; blocked: boolean;
+  messages: ChatMessage[];
   replies: VoiceReply[]; onSend: (request: VoiceDelegation) => Promise<boolean>;
 }) {
   const [snapshot, setSnapshot] = useState<VoiceSnapshot>(idleVoice);
@@ -37,6 +39,7 @@ export function useConversation({ available, context, running, blocked, replies,
     session.current = voice;
     return () => { voice.stop(); session.current = null; };
   }, [available, context]);
+  useEffect(() => { session.current?.setHistory(messages); }, [messages, available, context]);
   useEffect(() => {
     for (const reply of replies) {
       if (spokenIds.current.has(reply.id)) continue;

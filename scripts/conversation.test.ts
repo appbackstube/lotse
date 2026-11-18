@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { RealtimeConversation, idleVoice, type VoiceSnapshot, type VoiceDelegation } from "../src/conversation.ts";
+import { RealtimeConversation, idleVoice, voiceHistory, type VoiceSnapshot, type VoiceDelegation } from "../src/conversation.ts";
+import type { ChatMessage } from "../src/types.ts";
 import { conversationVoice } from "../src/conversationVoices.ts";
 import { watchConversationPlayback } from "../src/conversationPlayback.ts";
 
@@ -39,6 +40,41 @@ test("voice selection has a supported default", () => {
   assert.equal(conversationVoice(null), "marin");
   assert.equal(conversationVoice("invalid"), "marin");
   assert.equal(conversationVoice("cedar"), "cedar");
+});
+
+test("workspace history keeps recent text in order and excludes non-text data", () => {
+  const message = (id: string, role: ChatMessage["role"], body: string): ChatMessage => ({ id, role, body, createdAt: "", selection: null, snapshotId: null, suggestions: [], contexts: [] });
+  const messages = [message("old", "user", "old"), ...Array.from({ length: 8 }, (_, index) => message(String(index), index % 2 ? "assistant" : "user", `message ${index} ${"x".repeat(3000)}`)), message("empty", "assistant", " ")];
+  const history = voiceHistory(messages);
+  const parsed = JSON.parse(history);
+  assert.ok(history.length <= 12000);
+  assert.ok(parsed.length < messages.length);
+  assert.equal(parsed.at(-1).role, "assistant");
+  assert.equal(parsed.at(-1).text.length, 2000);
+  assert.deepEqual(Object.keys(parsed.at(-1)), ["role", "text"]);
+  assert.deepEqual(JSON.parse(voiceHistory([message("1", "user", "hello"), message("2", "assistant", "world")])), [{ role: "user", text: "hello" }, { role: "assistant", text: "world" }]);
+});
+
+test("voice receives current history at connection and when saved chat changes", async () => {
+  const message = (body: string): ChatMessage => ({ id: "1", role: "user", body, createdAt: "", selection: null, snapshotId: null, suggestions: [], contexts: [] });
+  const h = harness();
+  h.voice.setHistory([message("before connection")]);
+  await h.voice.start();
+  h.voice.setHistory([message("while connecting")]);
+  assert.equal(h.sent.length, 0);
+  h.event({ type: "session.started" });
+  try {
+    const snapshots = () => h.sent.filter(event => event.type === "session.instructions.append" && event.content.includes("workspace chat history"));
+    assert.equal(snapshots().length, 1);
+    assert.match(snapshots()[0].content, /while connecting/);
+    assert.doesNotMatch(snapshots()[0].content, /before connection/);
+    h.voice.setHistory([message("new message")]);
+    h.voice.setHistory([message("new message")]);
+    assert.equal(snapshots().length, 2);
+    assert.match(snapshots()[1].content, /new message/);
+    h.voice.setHistory([]);
+    assert.match(snapshots()[2].content, /\[\]$/);
+  } finally { h.stop(); }
 });
 
 test("overlapping speakers retain both transcripts through errors and reset on restart", async () => {

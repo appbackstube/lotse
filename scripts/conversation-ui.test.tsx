@@ -152,6 +152,7 @@ try {
   check(cancellations.length === 0, "Interrupting voice or declining stop must not cancel work");
   await act(async () => sends[0].events.onmessage({ type: "chat", payload: { requestId: "run", threadId: "thread", turnId: "turn", kind: "completed" } })); await settle();
   check(audioEvents.some(e => e.type === "response.item.create" && e.item.call_id === "call-1" && e.item.output.includes("This is the workspace reply.")), "Only completed agent results reach the matching call");
+  check(audioEvents.some(e => e.type === "session.instructions.append" && e.content.includes("This is the workspace reply.")), "Completed workspace messages must update the Talk history");
   check(audioEvents.some(e => e.type === "response.item.create" && e.item.call_id === "call-followup" && e.item.output.includes("This is the workspace reply.")), "A steered follow-up must receive the matching run result too");
   await voiceCall("2", "Fix it", true);
   check(sends.length === 1 && audioEvents.some(e => e.type === "response.item.create" && e.item.call_id === "call-2" && e.item.output.includes("clarify")), "An unclear request must ask for clarification without starting work");
@@ -162,6 +163,7 @@ try {
   holdSync = false; releaseSync!(); await settle();
   check(sends.length === 1, "Ending Talk while a handoff starts must prevent a late agent start");
   await click(button("Start conversation"));
+  check(audioEvents.at(-1)?.type === "session.instructions.append" && audioEvents.at(-1).content.includes("This is the workspace reply."), "A new Talk session must receive the existing workspace history");
   await voiceCall("4", "Check the next step");
   check(sends.length === 2, "A clear follow-up must start without an extra confirmation");
   await click(button("Stop workspace agent work")); await click(button("Stop work"));
