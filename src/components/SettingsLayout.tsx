@@ -1,5 +1,5 @@
 import { useRef, useState, type ReactNode } from "react";
-import { Bot, CircleHelp, FolderGit2, GitPullRequest, KeyRound, ListTodo, Plug, Route, Search, Settings, SlidersHorizontal, Timer, X } from "lucide-react";
+import { AudioLines, Bot, CircleHelp, FolderGit2, GitPullRequest, KeyRound, ListTodo, Plug, Route, Search, Settings, SlidersHorizontal, Timer, X } from "lucide-react";
 import { Input } from "./ui/input";
 import { Button } from "./ui/button";
 
@@ -8,6 +8,7 @@ const pages = [
   { id: "tasks", label: "Tasks", group: "Personal", icon: ListTodo, keywords: "kanban gantt list modal custom fields options statuses order default workflow" },
   { id: "pomodoro", label: "Pomodoro", group: "Personal", icon: Timer, keywords: "focus timer sessions breaks" },
   { id: "providers", label: "Model providers", group: "Agent", icon: SlidersHorizontal, keywords: "api keys openrouter global repository default credentials setup onboarding" },
+  { id: "conversation", label: "Conversation", group: "Agent", icon: AudioLines, keywords: "voice talk microphone openai realtime api key speech audio" },
   { id: "agent", label: "Agent preferences", group: "Agent", icon: Bot, keywords: "default agent role models favorites effort approval mode task location branch prefix commit user rules personalization" },
   { id: "pipelines", label: "Pipelines", group: "Agent", icon: Route, keywords: "automation workflow steps roles messages designer" },
   { id: "mcp", label: "MCP servers", group: "Connections", icon: Plug, keywords: "tools integrations figma slack oauth" },
