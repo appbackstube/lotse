@@ -19,12 +19,44 @@ export function voiceHistory(messages: ChatMessage[]): string {
 }
 
 type VoiceEvent = {
-  type: string; event_id?: string; delta?: string; start_ms?: number; end_ms?: number; offset_ms?: number;
+  type: string; event_id?: string; client_event_id?: string; delta?: string; start_ms?: number; end_ms?: number; offset_ms?: number;
   delegation_id?: string;
   delegation?: { id?: string; target?: string; response_id?: string };
   event?: { type?: string; response?: { id?: string }; item?: { type?: string; call_id?: string; name?: string; arguments?: string } };
-  error?: { code?: string };
+  error?: { code?: string | null; type?: string; client_event_id?: string; param?: string; message?: string };
 };
+
+// Live appends allow 500 tokens. A UTF-8 byte budget is conservative for its
+// byte-level tokenizer, including German, emoji and JSON escaping; chars / 4 isn't.
+function appendContents(content: string): string[] {
+  const encoder = new TextEncoder();
+  if (encoder.encode(content).length <= 480) return [content];
+  const chunks: string[] = [];
+  let chunk = "";
+  let bytes = 0;
+  for (const character of content) {
+    const size = encoder.encode(character).length;
+    if (bytes + size > 400) { chunks.push(chunk); chunk = ""; bytes = 0; }
+    chunk += character;
+    bytes += size;
+  }
+  if (chunk) chunks.push(chunk);
+  return chunks.map((text, index) => `Context fragment ${index + 1}/${chunks.length} (read in order):\n${text}`);
+}
+
+function voiceError(event: VoiceEvent, command?: string): string {
+  // Never show provider messages, arbitrary parameters or IDs: they can echo
+  // credentials or conversation content. Only known protocol labels are safe.
+  const codes = ["responses_validation_failed", "immutable_field_update", "unknown_parameter", "tool_outputs_required", "function_call_outputs_required"];
+  const types = ["invalid_request_error", "server_error", "authentication_error", "permission_error", "rate_limit_error"];
+  const code = codes.find(value => value === event.error?.code);
+  const type = types.find(value => value === event.error?.type);
+  const details = [code, type, command].filter(Boolean).join("; ");
+  const label = details ? ` (${details})` : "";
+  if (code === "responses_validation_failed") return `OpenAI rejected the Talk backend configuration${label}. Agent work continues in the chat. Restart Talk after the configuration is corrected.`;
+  if (command && type === "invalid_request_error") return `OpenAI rejected a Talk command${label}. Talk remains connected. Agent work continues in the chat.`;
+  return `OpenAI reported a Talk error${label}. Agent work continues in the chat. Start Talk again to reconnect.`;
+}
 type FunctionCall = { id: string; name: string; arguments: string; finished: boolean };
 type BackendResponse = { id: string; calls: FunctionCall[]; completed: boolean; continued: boolean };
 export type VoiceDependencies = {
@@ -51,6 +83,7 @@ export class RealtimeConversation {
   private connected = false;
   private blocked = false;
   private seenEvents = new Set<string>();
+  private pendingCommands = new Map<string, string>();
   private delegations = new Set<string>();
   private responses = new Map<string, BackendResponse>();
   private callIds = new Set<string>();
@@ -65,11 +98,17 @@ export class RealtimeConversation {
     this.snapshot = { ...this.snapshot, ...patch };
     this.deps.changed(this.snapshot);
   }
-  private send(event: object) {
-    if (this.connected && this.channel?.readyState === "open") this.channel.send(JSON.stringify(event));
+  private send<T extends { type: string; event_id?: string }>(event: T) {
+    if (this.connected && this.channel?.readyState === "open") {
+      if (event.event_id) {
+        this.pendingCommands.set(event.event_id, event.type);
+        if (this.pendingCommands.size > 256) this.pendingCommands.delete(this.pendingCommands.keys().next().value!);
+      }
+      this.channel.send(JSON.stringify(event));
+    }
   }
   private append(type: "session.thinking.append" | "session.commentary.append" | "session.instructions.append", content: string, delegationId: string | null = null) {
-    this.send({ type, event_id: crypto.randomUUID(), delegation_id: delegationId, content });
+    for (const fragment of appendContents(content)) this.send({ type, event_id: crypto.randomUUID(), delegation_id: delegationId, content: fragment });
   }
   setHistory(messages: ChatMessage[]) {
     const history = voiceHistory(messages);
@@ -170,6 +209,9 @@ export class RealtimeConversation {
   private receive(event: VoiceEvent) {
     if (event.event_id && this.seenEvents.has(event.event_id)) return;
     if (event.event_id) this.seenEvents.add(event.event_id);
+    const clientEventId = event.error?.client_event_id ?? event.client_event_id;
+    const command = clientEventId ? this.pendingCommands.get(clientEventId) : undefined;
+    if (clientEventId) this.pendingCommands.delete(clientEventId);
     if (event.type === "session.started") {
       clearTimeout(this.timer);
       this.connected = true;
@@ -193,7 +235,9 @@ export class RealtimeConversation {
       this.connected = false;
       this.fail("Voice session ended. Agent work continues in the chat.");
     } else if (event.type === "error") {
-      this.fail("OpenAI reported a voice error. Check access and billing, then restart Talk.");
+      const error = voiceError(event, command);
+      if (this.connected && command && event.error?.type === "invalid_request_error" && event.error?.code !== "responses_validation_failed") this.update({ error });
+      else this.fail(error);
     }
   }
   private receiveBackend(envelope: VoiceEvent) {
@@ -261,7 +305,7 @@ export class RealtimeConversation {
     const call = response.calls.find(item => item.id === reply.callId);
     if (!call || call.finished) return;
     if (reply.kind === "result") this.finishCall(response, call, reply.text);
-    else this.append("session.thinking.append", reply.text.slice(0, 1200));
+    else this.append("session.thinking.append", Array.from(reply.text).slice(0, 1200).join(""));
   }
   interrupt() {
     if (!this.connected) return;
@@ -304,6 +348,7 @@ export class RealtimeConversation {
     this.connected = false;
     this.peer = undefined; this.channel = undefined; this.microphone = undefined; this.audio = undefined;
     this.seenEvents.clear(); this.delegations.clear(); this.responses.clear(); this.callIds.clear(); this.sessionId = "";
+    this.pendingCommands.clear();
     this.transcripts = { User: "", Assistant: "" };
     this.update({ ...idleVoice });
   }

@@ -125,6 +125,10 @@ try {
   const composer = document.querySelector<HTMLElement>('[aria-label="Voice composer"]')!;
   check(connects === 1 && composer && visible(composer) && composer.getBoundingClientRect().height < 200, `Talk must stay within composer size (connections=${connects}, height=${composer?.getBoundingClientRect().height}, alerts=${[...document.querySelectorAll('[role="alert"]')].map(e => e.textContent).join("; ")})`);
   check(!visible(draft) && composer.textContent?.includes("Listening"), "Connected Talk must replace the text composer");
+  const startupContext = audioEvents.at(-1);
+  await voiceEvent({ type: "error", error: { type: "invalid_request_error", code: "unknown_parameter", client_event_id: startupContext.event_id, message: "synthetic-sensitive-provider-message" } });
+  check(visible(composer) && !track.stopped && composer.textContent?.includes("Listening"), "A rejected startup context command must keep Talk connected");
+  check(document.querySelector('[role="alert"]')?.textContent?.includes("unknown_parameter") && !document.body.textContent?.includes("synthetic-sensitive-provider-message"), "The error must show safe protocol details without raw provider text");
   await voiceEvent({ type: "session.input_transcript.delta", start_ms: 10, end_ms: 90, delta: "Explain this workspace" });
   check(composer.textContent?.includes("Hearing you"), "Input must have visible feedback");
   check(sends.length === 0, "Conversation alone must not start an agent");
@@ -219,6 +223,7 @@ try {
   check(document.querySelector<HTMLInputElement>("#conversation-api-key")!.value === "", "Reopening Settings must keep the saved key hidden");
   await click(button("Remove key and disable")); check(saves.at(-1) === null && !enabled, "Remove must disable Conversation");
   await click(button("Close settings")); check(!button("Start conversation"), "Talk must disappear when the key is removed");
+  check(audioEvents.filter(e => /session\.(instructions|thinking|commentary)\.append/.test(e.type)).every(e => new TextEncoder().encode(e.content).length <= 480), "Every startup and updated context fragment must fit the conservative Live append budget");
   check(failures.length === 0, `Unexpected commands: ${failures.join(", ")}`);
   document.getElementById("result")!.textContent = "PASS: key and voice settings, simulated GPT-Live delegation, typed/voice steering, queued result attribution, transcript recovery, draft preservation, interruption, mute and cleanup.";
 } catch (error) {
