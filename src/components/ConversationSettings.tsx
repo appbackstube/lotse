@@ -53,7 +53,7 @@ export function ConversationSettings({ onChange }: { onChange: (settings: Conver
     <form onSubmit={event => { event.preventDefault(); if (key.trim()) void save(key.trim()); }}>
       <label htmlFor="conversation-api-key">OpenAI API key</label>
       <Input id="conversation-api-key" type="password" autoComplete="off" spellCheck={false} value={key} onChange={event => setKey(event.currentTarget.value)} placeholder={enabled ? "Enter a replacement key" : "Enter your OpenAI API key"} disabled={busy || !loaded} />
-      <p className="conversation-settings-help">Stored locally in ~/.lotse/credentials.json. Audio and conversation context are sent to OpenAI. GPT-Live is billed for connection time, including initialization; the Responses model and workspace agent are billed separately when used. Ending Talk does not stop agent work.</p>
+      <p className="conversation-settings-help">Stored locally in ~/.lotse/credentials.json. Audio and recent saved workspace chat text are sent to OpenAI during Talk. GPT-Live is billed for connection time, including initialization; the Responses model and workspace agent are billed separately when used. Ending Talk does not stop agent work.</p>
       <p className="conversation-settings-help">If the connection fails or is ended while connecting, its final closure and charges may be unconfirmed. Check your OpenAI usage.</p>
       <div className="flex items-center gap-2"><Button type="submit" disabled={busy || !loaded || !key.trim()}>{busy ? "Saving…" : enabled ? "Replace key" : "Save and enable"}</Button>{enabled && <Button type="button" variant="ghost" disabled={busy} onClick={() => void save(null)}>Remove key and disable</Button>}</div>
     </form>

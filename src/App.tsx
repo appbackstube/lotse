@@ -1179,7 +1179,7 @@ function AiChatPanel({
   searchMessage?: { id: string; query: string; request: number };
 }) {
   const voiceBlocked = !!agentInput || !!agentApproval || !!variablePrompt;
-  const voice = useConversation({ available: conversationEnabled && active && !taskMode && !!comparison, context: conversationContext,
+  const voice = useConversation({ available: conversationEnabled && active && !taskMode && !!comparison, context: conversationContext, messages,
     running, blocked: voiceBlocked, replies: voiceReplies, onSend: request => onVoiceSend?.(request) ?? Promise.resolve(false) });
   const [confirmStopVoiceWork, setConfirmStopVoiceWork] = useState<string | null>(null);
   useEffect(() => { setConfirmStopVoiceWork(null); }, [running, conversationContext, voiceRunId]);
