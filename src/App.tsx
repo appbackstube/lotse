@@ -153,7 +153,7 @@ import { applyChatEvent, carryReviewChat, finalizePlanOutput, persistedChatEntri
 import { diffChangeBlocks, isVeryLargeChangedFile, isVeryLargeDiff, isVeryLargePatch, parseUnifiedDiff, unchangedLineCount, type DiffChangeBlock } from "./diff";
 import { defaultTaskColumnRatios, resizeTaskColumn, taskColumnPixels, type TaskColumnRatios, type TaskDivider } from "./taskColumns";
 import { parseFileReference, type FileReference } from "./fileReference";
-import { movePlaybook, newPlaybook, normalizePlaybooks, playbookContent, preparePlaybookPrompt, renderPlaybookPrompt, type Playbook } from "./playbooks";
+import { newPlaybook, normalizePlaybooks, playbookContent, preparePlaybookPrompt, renderPlaybookPrompt, type Playbook } from "./playbooks";
 import type {
   AiChatAccepted,
   AiChatEvent,
@@ -190,7 +190,8 @@ import type {
 } from "./types";
 import { branchPrefixStorageKey, loadBranchPrefix, saveBranchPrefix, taskNewBranchName, taskColors, taskStorageKey, customFieldsStorageKey, filterVisibleTasks, hasTaskCustomFieldLineBreaks, loadCloseKanbanModalOnOutsideClick, loadCollapsedTaskIds, loadOpenNewTaskInDrawer, loadTaskCustomFields, loadTaskLocationDefault, loadTaskView, loadTasks, mergeMcpTaskUpdates, moveTask, moveTaskCustomField, moveTaskProjected, moveTaskToBoardIndex, moveTaskWithinStatus, normalizeTask, removeTaskCustomFieldValues, saveCloseKanbanModalOnOutsideClick, saveCollapsedTaskIds, saveOpenNewTaskInDrawer, saveTaskCustomFields, saveTaskLocationDefault, saveTaskView, saveTasks, timestampTaskUpdates, taskAssetAttachments, taskBoardStatus, taskCustomFieldUrl, taskListMetadata, taskMcpContext, taskLocationFields, taskStartEditable, taskStartSelected, taskSubtreeIds, toggleTaskCommentCheckbox, type TaskBoardStatus, type TaskLocation, type TaskView } from "./tasks";
 
-const AgentsDialog = lazy(() => import("./components/AgentsDialog").then((module) => ({ default: module.AgentsDialog })));
+const AgentsSettings = lazy(() => import("./components/AgentsSettings").then((module) => ({ default: module.AgentsSettings })));
+const PlaybooksSettings = lazy(() => import("./components/PlaybooksSettings").then((module) => ({ default: module.PlaybooksSettings })));
 const message = (reason: unknown) =>
   reason instanceof Error ? reason.message : String(reason);
 
@@ -2267,6 +2268,7 @@ function App() {
   const [runExitCode, setRunExitCode] = useState<number | null>(null);
   const [chatDefaults, setChatDefaults] = useState(storedChatDefaults);
   const [agents, setAgents] = useState<ChatAgent[]>(storedAgents);
+  const [agentDraft, setAgentDraft] = useState<ChatAgent>(() => ({ ...(agents[0] ?? newAgent()) }));
   const [pipelines, setPipelines] = useState<Pipeline[]>(loadPipelines);
   const [defaultAgentId, setDefaultAgentId] = useState(() => fileStore.getItem(defaultAgentStorageKey) ?? "");
   const defaultAgent = agents.find((agent) => agent.id === defaultAgentId) ?? null;
@@ -2369,11 +2371,9 @@ function App() {
   const [taskRuns, setTaskRuns] = useState<Record<string, TaskRun>>({});
   const [taskStartingIds, setTaskStartingIds] = useState<Set<string>>(() => new Set());
   const [newTaskDrafts, setNewTaskDrafts] = useState<Record<string, string>>({});
-  const [agentsOpen, setAgentsOpen] = useState(false);
   const [playbooks, setPlaybooks] = useState<Playbook[]>(storedPlaybooks);
-  const [selectedPlaybookId, setSelectedPlaybookId] = useState(playbooks[0]?.id ?? "");
   const [playbookDraft, setPlaybookDraft] = useState<Playbook>(() => ({ ...(playbooks[0] ?? newPlaybook()) }));
-  const [playbooksOpen, setPlaybooksOpen] = useState(false);
+  const [selectedPlaybookId, setSelectedPlaybookId] = useState(playbookDraft.id);
   const [playbookError, setPlaybookError] = useState("");
   const [playbookSaveNotice, setPlaybookSaveNotice] = useState("");
   const [variablePrompt, setVariablePrompt] = useState<{ playbook: Playbook; taskId: string | null } | null>(null);
@@ -3973,7 +3973,7 @@ function App() {
 
   const discardPlaybookDraft = (action: () => void) => {
     const saved = playbooks.find((playbook) => playbook.id === playbookDraft.id);
-    if (playbookContent(playbookDraft) === playbookContent(saved ?? newPlaybook())) return action();
+    if (playbookContent(playbookDraft) === playbookContent(saved ?? { ...newPlaybook(), id: playbookDraft.id })) return action();
     setConfirmation({
       title: "Discard unsaved changes?",
       description: "Your changes to this playbook have not been saved.",
@@ -4970,12 +4970,35 @@ function App() {
     }
   };
 
-  const openSettings = async (page: SettingsPage = "general") => {
+  const closeSettings = () => {
+    const savedAgent = agents.find((agent) => agent.id === agentDraft.id);
+    const savedPlaybook = playbooks.find((playbook) => playbook.id === playbookDraft.id);
+    const agentDirty = JSON.stringify(agentDraft) !== JSON.stringify(savedAgent ?? { id: agentDraft.id, title: "Untitled agent", prompt: "" });
+    const playbookDirty = playbookContent(playbookDraft) !== playbookContent(savedPlaybook ?? { ...newPlaybook(), id: playbookDraft.id });
+    if (!agentDirty && !playbookDirty) { setSettingsOpen(false); return; }
+    setConfirmation({
+      title: "Discard unsaved changes?",
+      description: "Your changes to agents or playbooks have not been saved.",
+      actionLabel: "Discard",
+      action: () => {
+        const nextAgent = savedAgent ?? agents[0] ?? newAgent();
+        const nextPlaybook = savedPlaybook ?? playbooks[0] ?? newPlaybook();
+        setAgentDraft({ ...nextAgent });
+        setPlaybookDraft({ ...nextPlaybook });
+        setSelectedPlaybookId(nextPlaybook.id);
+        setPlaybookError("");
+        setPlaybookSaveNotice("");
+        setSettingsOpen(false);
+      },
+    });
+  };
+
+  const openSettings = async (page: SettingsPage = "general", preserveTask = false) => {
     if (mcpServersSaving) return;
     setSettingsPage(page);
     setSettingsOpen(true);
     setExpandedMcpServer(null);
-    setBoardDrawerOpen(false);
+    if (!preserveTask) setBoardDrawerOpen(false);
     setAiSettingsError("");
     setMcpServersError("");
     setMcpServersSaved(false);
@@ -5905,7 +5928,7 @@ function App() {
           </>}
           <Button
             type="button"
-            onClick={() => settingsOpen ? setSettingsOpen(false) : void openSettings()}
+            onClick={() => settingsOpen ? closeSettings() : void openSettings()}
             aria-label="Settings"
             aria-pressed={settingsOpen}
             title="Settings"
@@ -5919,7 +5942,7 @@ function App() {
       <div className="flex min-h-0 flex-1">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       {settingsOpen && (
-        <SettingsLayout page={settingsPage} onPageChange={setSettingsPage} onClose={() => setSettingsOpen(false)} browserSupported={browserSupported}>
+        <SettingsLayout page={settingsPage} onPageChange={setSettingsPage} onClose={closeSettings} browserSupported={browserSupported}>
           <div hidden={settingsPage !== "general"} data-settings-page="general">
             <section className="mt-10">
               <h2 className="mb-4 text-[17px] font-semibold text-[#E8FFF0]">Notifications</h2>
@@ -5998,6 +6021,12 @@ function App() {
                 {field.type === "select" && <div className="space-y-2"><p className="text-xs font-semibold text-[#7C9B88]">Options</p>{field.options.map((option) => <div key={option.id} className="flex items-center gap-2"><Input key={`${option.id}:${option.label}`} defaultValue={option.label} maxLength={80} aria-label={`Option ${option.label}`} className="h-9 border-[#294536] bg-[#050807] text-[#E8FFF0]" onBlur={(event) => { const label = event.currentTarget.value.trim(); if (!label || field.options.some((other) => other.id !== option.id && other.label.toLowerCase() === label.toLowerCase())) { event.currentTarget.value = option.label; setCustomFieldError("Option names must be non-empty and unique within a field."); return; } if (label !== option.label) updateCustomFields(customFields.map((item) => item.id === field.id ? { ...item, options: item.options.map((entry) => entry.id === option.id ? { ...entry, label } : entry) } : item)); }} /><button type="button" className="quiet-button h-9 px-2 text-[#FB7185]" aria-label={`Delete option ${option.label}`} onClick={() => setConfirmation({ title: `Delete ${option.label}?`, description: "Tasks using this option will have an empty value in this field across every repository. This cannot be undone.", actionLabel: "Delete option", action: () => { if (clearCustomFieldValues(field.id, option.id)) updateCustomFields(customFields.map((item) => item.id === field.id ? { ...item, options: item.options.filter((entry) => entry.id !== option.id) } : item)); } })}><X size={14} /></button></div>)}<button type="button" className="quiet-button text-xs" onClick={() => { const labels = new Set(field.options.map((option) => option.label.toLowerCase())); let label = "New option"; for (let number = 2; labels.has(label.toLowerCase()); number++) label = `New option ${number}`; updateCustomFields(customFields.map((item) => item.id === field.id ? { ...item, options: [...item.options, { id: crypto.randomUUID(), label }] } : item)); }}><Plus size={13} /> Add option</button></div>}
               </div>)}</div>
             </section>
+          </div>
+          <div hidden={settingsPage !== "agents"} data-settings-page="agents">
+            {settingsPage === "agents" && <Suspense fallback={null}><AgentsSettings agents={agents} draft={agentDraft} setDraft={setAgentDraft} models={chatModels} modelsLoaded={modelsLoaded} modelsStatus={modelsStatus} onChange={setAgents} onConfirm={setConfirmation} /></Suspense>}
+          </div>
+          <div hidden={settingsPage !== "playbooks"} data-settings-page="playbooks">
+            {settingsPage === "playbooks" && <Suspense fallback={null}><PlaybooksSettings playbooks={playbooks} setPlaybooks={setPlaybooks} selectedPlaybookId={selectedPlaybookId} playbookDraft={playbookDraft} setPlaybookDraft={setPlaybookDraft} playbookError={playbookError} playbookSaveNotice={playbookSaveNotice} createPlaybook={createPlaybook} selectPlaybook={selectPlaybook} savePlaybook={savePlaybook} deletePlaybook={deletePlaybook} /></Suspense>}
           </div>
           <div hidden={settingsPage !== "pipelines"} data-settings-page="pipelines">
             <PipelineDesigner pipelines={pipelines} agents={agents} onChange={(next) => { setPipelines(next); fileStore.setJSON(pipelinesStorageKey, next); }} onConfirm={setConfirmation} />
@@ -6747,12 +6776,12 @@ function App() {
             agents={agents}
             chatAgent={(taskMode ? selectedTask?.chatAgent : review?.chatAgent) ?? null}
             onAgentChange={selectChatAgent}
-            onManageAgents={() => { setAgentsOpen(true); setSettingsOpen(false); }}
+            onManageAgents={() => { void openSettings("agents", true); }}
             playbooks={playbooks}
             canRunPlaybooks={!!comparison && !!review}
             variablePrompt={variablePrompt && (taskMode ? !!selectedTask && variablePrompt.taskId === selectedTask.id : variablePrompt.taskId === null) ? variablePrompt.playbook : null}
             onRunPlaybook={(playbook) => runPlaybook(playbook, taskMode ? selectedTask : null)}
-            onManagePlaybooks={() => { setPlaybooksOpen(true); setSettingsOpen(false); }}
+            onManagePlaybooks={() => { void openSettings("playbooks", true); }}
             onSubmitPlaybookValues={confirmVariablePrompt}
             onCancelPlaybook={() => setVariablePrompt(null)}
             taskSelected={!taskMode || !!selectedTask}
@@ -6773,7 +6802,7 @@ function App() {
         </div>}
       </div>
       </div>
-      <Dialog open={boardMode && !inlineTaskMode && boardDrawerOpen && !!selectedTask} onOpenChange={(open) => {
+      <Dialog open={boardMode && !inlineTaskMode && boardDrawerOpen && !settingsOpen && !!selectedTask} onOpenChange={(open) => {
         const finish = () => {
           if (!open) {
             if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
@@ -6796,133 +6825,6 @@ function App() {
       </aside>}
       </div>
 
-      {agentsOpen && <Suspense fallback={null}><AgentsDialog agents={agents} models={chatModels} modelsLoaded={modelsLoaded} modelsStatus={modelsStatus} onChange={setAgents} onClose={() => setAgentsOpen(false)} onConfirm={setConfirmation} /></Suspense>}
-      {playbooksOpen && (
-        <Dialog open onOpenChange={(open) => !open && setPlaybooksOpen(false)}>
-          <DialogContent showCloseButton={false} className="ios-sheet flex h-[min(630px,88vh)] w-[min(980px,94vw)] !max-w-none flex-col overflow-hidden rounded-xl border border-[#294536] bg-[#0B110E] p-0 shadow-2xl shadow-black/60">
-            <header className="flex h-[66px] shrink-0 items-center border-b border-[#294536] px-5">
-              <div>
-                <DialogTitle className="text-[17px] font-bold text-[#E8FFF0]">Playbooks</DialogTitle>
-                <DialogDescription className="mt-0.5 text-xs text-[#7C9B88]">Reusable prompts for Agent Chat</DialogDescription>
-              </div>
-              <div className="ml-auto flex items-center gap-2">
-                <button type="button" onClick={createPlaybook} className="quiet-button h-9">
-                  <Plus size={14} /> New playbook
-                </button>
-                <button type="button" onClick={() => setPlaybooksOpen(false)} className="grid size-9 place-items-center rounded-md text-[#7C9B88] hover:bg-[#294536] hover:text-white" aria-label="Close playbooks">
-                  <X size={16} />
-                </button>
-              </div>
-            </header>
-            <div className="grid min-h-0 flex-1 grid-cols-[265px_minmax(0,1fr)]">
-              <aside className="min-h-0 overflow-y-auto border-r border-[#294536] bg-[#0B110E] p-3" aria-label="Saved playbooks">
-                <div className="mb-2 px-2 text-[11px] font-bold uppercase tracking-[0.08em] text-[#7C9B88]">Saved playbooks</div>
-                <div className="space-y-1">
-                  {selectedPlaybookId === playbookDraft.id && !playbooks.some((playbook) => playbook.id === playbookDraft.id) && (
-                    <div className="flex w-full items-start gap-2.5 rounded-lg border border-[#294536] bg-[#183522] px-3 py-3 text-left">
-                      <Plus size={15} className="mt-0.5 shrink-0 text-[#A3FF12]" />
-                      <span className="min-w-0">
-                        <span className="block truncate text-sm font-bold text-[#E8FFF0]">{playbookDraft.title || "New playbook"}</span>
-                        <span className="mt-1 block truncate text-xs text-[#7C9B88]">Unsaved draft</span>
-                      </span>
-                    </div>
-                  )}
-                  {playbooks.map((playbook, index) => (
-                    <div key={playbook.id} className={`flex w-full items-start gap-2.5 rounded-lg border px-3 py-3 ${selectedPlaybookId === playbook.id ? "border-[#294536] bg-[#183522]" : "border-transparent hover:bg-[#111A15]"}`}>
-                      <button type="button" onClick={() => selectPlaybook(playbook)} className="flex min-w-0 flex-1 items-start gap-2.5 text-left">
-                        <Blocks size={15} className="mt-0.5 shrink-0 text-[#A3FF12]" />
-                        <span className="min-w-0">
-                          <span className="block truncate text-sm font-bold text-[#E8FFF0]">{playbook.title}</span>
-                          <span className="mt-1 block truncate text-xs text-[#7C9B88]">{playbook.description || "Custom Agent Chat prompt"}</span>
-                        </span>
-                      </button>
-                      <div className="flex shrink-0 flex-col gap-0.5">
-                        <button type="button" className="grid size-6 place-items-center rounded text-[#7C9B88] hover:bg-[#294536] hover:text-white disabled:opacity-30" aria-label={`Move ${playbook.title} up`} title="Move up" disabled={index === 0} onClick={() => setPlaybooks((current) => movePlaybook(current, playbook.id, -1))}><ArrowUp size={14} /></button>
-                        <button type="button" className="grid size-6 place-items-center rounded text-[#7C9B88] hover:bg-[#294536] hover:text-white disabled:opacity-30" aria-label={`Move ${playbook.title} down`} title="Move down" disabled={index === playbooks.length - 1} onClick={() => setPlaybooks((current) => movePlaybook(current, playbook.id, 1))}><ArrowDown size={14} /></button>
-                      </div>
-                    </div>
-                  ))}
-                  {!playbooks.length && (
-                    <div className="rounded-lg border border-dashed border-[#294536] px-3 py-8 text-center text-xs text-[#7C9B88]">
-                      No saved playbooks
-                    </div>
-                  )}
-                </div>
-              </aside>
-              <div className="flex min-h-0 flex-col bg-[#111A15]">
-                <div className="min-h-0 flex-1 overflow-y-auto p-6">
-                  <label className="block text-xs font-bold text-[#7C9B88]">
-                    Title
-                    <input
-                      value={playbookDraft.title}
-                      onChange={(event) => {
-                        const title = event.currentTarget.value;
-                        setPlaybookDraft((draft) => ({ ...draft, title }));
-                      }}
-                      maxLength={200}
-                      className="mt-2 h-10 w-full rounded-md border border-[#294536] bg-[#050807] px-3 text-sm font-semibold text-[#E8FFF0] outline-none focus:border-[#A3FF12]"
-                    />
-                  </label>
-                  <label className="mt-4 block text-xs font-bold text-[#7C9B88]">
-                    Short description <span className="font-normal">(optional)</span>
-                    <input
-                      value={playbookDraft.description}
-                      onChange={(event) => {
-                        const description = event.currentTarget.value;
-                        setPlaybookDraft((draft) => ({ ...draft, description }));
-                      }}
-                      maxLength={240}
-                      className="mt-2 h-10 w-full rounded-md border border-[#294536] bg-[#050807] px-3 text-sm text-[#E8FFF0] outline-none focus:border-[#A3FF12]"
-                    />
-                  </label>
-                  <label className="mt-4 block text-xs font-bold text-[#7C9B88]">
-                    Prompt
-                    <textarea
-                      value={playbookDraft.prompt}
-                      onChange={(event) => {
-                        const prompt = event.currentTarget.value;
-                        setPlaybookDraft((draft) => ({ ...draft, prompt }));
-                      }}
-                      maxLength={20_000}
-                      rows={9}
-                      className="mt-2 min-h-44 w-full resize-y rounded-md border border-[#294536] bg-[#050807] p-3 text-sm leading-6 text-[#E8FFF0] outline-none focus:border-[#A3FF12]"
-                    />
-                  </label>
-                  <div className="mt-4 rounded-md border border-[#294536] bg-[#0B110E] p-3">
-                    <div className="flex items-center justify-between text-xs font-bold text-[#7C9B88]"><span>Variables <span className="font-normal">(use as {"{{NAME}}"} in the prompt)</span></span><button type="button" onClick={() => setPlaybookDraft((draft) => ({ ...draft, variables: [...draft.variables, { id: crypto.randomUUID(), name: "", label: "", type: "singleLine" }] }))} className="text-[#A3FF12]">+ Variable</button></div>
-                    {playbookDraft.variables.map((variable) => <div key={variable.id} className="mt-3 flex flex-wrap items-end gap-2">
-                      <label className="text-xs text-[#7C9B88]">Name<input value={variable.name} onChange={(event) => { const name = event.currentTarget.value; setPlaybookDraft((draft) => ({ ...draft, variables: draft.variables.map((item) => item.id === variable.id ? { ...item, name } : item) })); }} placeholder="GOAL" className="mt-1 block h-9 w-32 rounded border border-[#294536] bg-[#050807] px-2 font-mono text-xs text-[#E8FFF0] outline-none focus:border-[#A3FF12]" /></label>
-                      <label className="min-w-36 flex-1 text-xs text-[#7C9B88]">Label<input value={variable.label} maxLength={200} onChange={(event) => { const label = event.currentTarget.value; setPlaybookDraft((draft) => ({ ...draft, variables: draft.variables.map((item) => item.id === variable.id ? { ...item, label } : item) })); }} placeholder="What should the agent focus on?" className="mt-1 block h-9 w-full rounded border border-[#294536] bg-[#050807] px-2 text-xs text-[#E8FFF0] outline-none focus:border-[#A3FF12]" /></label>
-                      <label className="text-xs text-[#7C9B88]">Type<select value={variable.type} onChange={(event) => { const type = event.currentTarget.value as typeof variable.type; setPlaybookDraft((draft) => ({ ...draft, variables: draft.variables.map((item) => item.id === variable.id ? { ...item, type } : item) })); }} className="mt-1 block h-9 rounded border border-[#294536] bg-[#050807] px-2 text-xs text-[#E8FFF0] outline-none focus:border-[#A3FF12]"><option value="singleLine">Single line</option><option value="multiLine">Multi line</option></select></label>
-                      <button type="button" onClick={() => setPlaybookDraft((draft) => ({ ...draft, variables: draft.variables.filter((item) => item.id !== variable.id) }))} className="h-9 px-1 text-xs text-[#fb7185]">Remove</button>
-                    </div>)}
-                    {playbookDraft.variables.length > 0 && <p className="mt-2 text-xs text-[#7C9B88]">Values are requested every time this playbook runs.</p>}
-                  </div>
-                  {playbookError && <p role="alert" className="mt-3 text-xs text-[#FB7185]">{playbookError}</p>}
-                  {playbookSaveNotice && <p role="status" aria-live="polite" className="mt-3 text-xs font-bold text-[#39FF88]">{playbookSaveNotice}</p>}
-                </div>
-                <footer className="flex h-16 shrink-0 items-center justify-between border-t border-[#294536] px-6">
-                  <div className="flex items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={deletePlaybook}
-                      disabled={!playbooks.some((playbook) => playbook.id === playbookDraft.id)}
-                      className="inline-flex h-9 items-center gap-1.5 rounded-md px-2 text-sm font-bold text-[#FB7185] hover:bg-[#3a1b24] disabled:cursor-not-allowed disabled:opacity-40"
-                    >
-                      <Trash2 size={14} /> Delete
-                    </button>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button type="button" onClick={savePlaybook} className="quiet-button h-9">
-                      {playbookSaveNotice ? <Check size={14} className="text-[#39FF88]" /> : <Save size={14} />} {playbookSaveNotice || "Save"}
-                    </button>
-                  </div>
-                </footer>
-              </div>
-            </div>
-          </DialogContent>
-        </Dialog>
-      )}
 
       {runOutputOpen && (
         <Dialog open onOpenChange={(open) => !open && setRunOutputOpen(false)}>

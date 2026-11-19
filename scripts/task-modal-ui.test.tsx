@@ -196,7 +196,7 @@ try {
   await initializeFileStore();
   await act(async () => (fixtureRoot = createRoot(document.getElementById("root")!)).render(<App />)); await settle();
   if (agentsCheck) {
-    const manager = () => document.querySelector<HTMLElement>('[aria-label="Close agents"]')!.closest<HTMLElement>('[role="dialog"]')!;
+    const manager = () => document.querySelector<HTMLElement>('[data-settings-page="agents"] [aria-label="Agent manager"]')!;
     const savedAgent = (name: string) => [...manager().querySelectorAll<HTMLButtonElement>("aside button")].find((item) => item.textContent?.trim() === name)!;
     const picker = () => [...document.querySelectorAll<HTMLButtonElement>('[aria-label="Agent role"]')].find(visible)!;
     const menuItem = (name: string) => [...document.querySelectorAll<HTMLButtonElement>('[data-slot="popover-content"] button')].find((item) => (item.querySelector(".truncate")?.textContent?.trim() ?? item.textContent?.trim()) === name)!;
@@ -234,7 +234,7 @@ try {
     await choose("Product Owner");
     check(savedReview?.chatAgent?.id === "owner" && savedReview.agentThreadId === null, "Workspace role must persist with a fresh thread");
     await click(picker()); await click(menuItem("Manage agents"));
-    check(manager().textContent?.includes("Agents"), "Manage agents must open the manager");
+    check(document.querySelector('[data-settings-page="agents"]:not([hidden])') && manager(), "Manage agents must open its settings page");
     await click(button("New agent"));
     await type(manager().querySelector<HTMLInputElement>("input")!, "Agile Coach");
     await click(button("Save"));
@@ -244,7 +244,7 @@ try {
     await click([...document.querySelectorAll<HTMLElement>('[role="option"]')].find((element) => visible(element) && element.textContent === "Approve for me"));
     await click(button("Save"));
     check(JSON.parse(storage["chaoticreview.agents"]).length === 2 && JSON.parse(storage["chaoticreview.agents"])[1].approvalMode === "auto_review", "New agent and approval mode must be saved");
-    await click(document.querySelector<HTMLElement>('[aria-label="Close agents"]')!);
+    await click(document.querySelector<HTMLElement>('[aria-label="Close settings"]')!);
     await checkApprovalAfterRoleSwitch();
     await choose("Agile Coach");
     check(savedReview.chatAgent.prompt === "Act as an Agile Coach.", "Saved agent must be selectable");
@@ -265,7 +265,7 @@ try {
     await click(manager().querySelector<HTMLElement>('[aria-label="Agent approval mode"]'));
     await click([...document.querySelectorAll<HTMLElement>('[role="option"]')].find((element) => visible(element) && element.textContent === "YOLO mode"));
     await click(button("Save"));
-    await click(document.querySelector<HTMLElement>('[aria-label="Close agents"]')!);
+    await click(document.querySelector<HTMLElement>('[aria-label="Close settings"]')!);
     check(savedReview.chatAgent.prompt === "Act as an Agile Coach." && savedReview.chatAgent.approvalMode === "auto_review" && savedReview.chatMessages.length === historyCount, "Editing a saved role must preserve ongoing chats");
     await choose("Agile Coach");
     check(savedReview.chatAgent.prompt === "Act as an Agile Coach. Focus on teams." && savedReview.chatAgent.approvalMode === "yolo" && !savedReview.chatMessages.length && savedReview.agentThreadId === null, "Selecting an edited role must apply it in a fresh conversation");
@@ -275,6 +275,12 @@ try {
     await click(document.querySelector<HTMLElement>(`[aria-label="Drag ${task.title}"]`)!);
     check(picker().textContent === "None" && storedTask().chatMessages.length > 0, "Tasks must have independent roles");
     check(chat().querySelector('[aria-label="Queued messages"]'), "Fixture must include a paused queued message");
+    await click(chat().querySelector<HTMLElement>('[aria-label="Add to chat"]')!);
+    await click(button("Playbook"));
+    await click(button("Manage playbooks"));
+    check(document.querySelector('[data-settings-page="playbooks"]:not([hidden])'), "Task chat must open playbook settings");
+    await click(document.querySelector<HTMLElement>('[aria-label="Close settings"]')!);
+    check(visible(chat()) && chat().querySelector('[aria-label="Queued messages"]'), "Closing settings must restore the same task and queue");
     await choose("Product Owner");
     check(storedTask().chatAgent?.id === "owner" && !storedTask().chatMessages.length && storedTask().agentThreadId === null, "Switching task agents must clear history and thread");
     check(!chat().querySelector('[aria-label="Queued messages"]'), "Switching agents must discard old queued prompts");
@@ -299,14 +305,14 @@ try {
     await click(picker()); await click(menuItem("Manage agents"));
     await click(savedAgent("Agile Coach"));
     await type(manager().querySelector<HTMLInputElement>("input")!, "Unsaved title");
-    await click(document.querySelector<HTMLElement>('[aria-label="Close agents"]')!);
+    await click(document.querySelector<HTMLElement>('[aria-label="Close settings"]')!);
     check(document.querySelector('[role="alertdialog"]'), "Unsaved changes must have a discard guard");
     await click(button("Discard"));
     await click(picker()); await click(menuItem("Manage agents"));
     await click(savedAgent("Agile Coach")); await click(button("Delete"));
     await click([...document.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')].find((item) => item.textContent?.trim() === "Delete")!);
     check(JSON.parse(storage["chaoticreview.agents"]).length === 1, "Deleting an agent must persist");
-    await click(document.querySelector<HTMLElement>('[aria-label="Close agents"]')!);
+    await click(document.querySelector<HTMLElement>('[aria-label="Close settings"]')!);
     document.getElementById("result")!.textContent = "PASS: agent picker placement, None defaults, manager creation/validation/save/delete/discard guard, workspace and task role prompts, persistence, fresh threads, cleared history/queues and disabled switching during runs.";
   } else if (notificationCheck) {
     const target = { windowLabel: "main", repositoryRoot: repo.rootPath, taskId: task.id };

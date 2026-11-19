@@ -19,6 +19,7 @@ const failures: string[] = [];
 const storage: Record<string, string> = {
   "chaoticreview.auth-onboarding-v1": "complete",
   "chaoticreview.agents": JSON.stringify([savedAgent, { id: "unavailable", title: "Unavailable agent", prompt: "Inspect the change", modelConfig: { model: "missing-model", effort: "high" } }]),
+  "chaoticreview.review-playbooks": JSON.stringify([{ id: "review-plan", title: "Review plan", description: "Reusable review", prompt: "Review {{GOAL}}", variables: [{ id: "goal", name: "GOAL", label: "What should be reviewed?", type: "singleLine" }] }]),
   "chaoticreview.default-agent": savedAgent.id,
   "chaoticreview.chat-model-favorites": JSON.stringify(["custom-model"]),
   [taskStorageKey(repo.rootPath)]: JSON.stringify([first]),
@@ -30,6 +31,7 @@ mockConvertFileSrc("macos");
 mockIPC(async (command, args: any) => {
   if (command === "task_sandbox_supported") return true;
   if (command === "task_browser_supported") return false;
+  if (command === "conversation_settings") return { enabled: false };
   if (command === "load_ai_settings") return { activeProvider: "openrouter", providers: [{ id: "openrouter", name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", envKey: "OPENROUTER_API_KEY" }], repositoryProviders: {}, ripgrepAvailable: true, mcpUrl: "" };
   if (command === "load_frontend_storage") return storage;
   if (command === "set_frontend_storage") {
@@ -92,7 +94,17 @@ try {
   await click(button("Save"));
   await fileStore.flush();
   check(JSON.parse(storage["chaoticreview.agents"])[0].modelConfig.model === "custom-model", "Agent model must be saved");
-  await click(button("Close agents"));
+  await click(button("Close settings"));
+  await click(button("Add to chat"));
+  await click(button("Playbook"));
+  await click(button("Manage playbooks"));
+  check(document.querySelector('[data-settings-page="playbooks"]:not([hidden])'), "Manage playbooks must open its settings page");
+  await click(button("Close settings"));
+  await click(button("Add to chat"));
+  await click(button("Playbook"));
+  await click([...document.querySelectorAll<HTMLElement>('button')].find((item) => visible(item) && item.textContent?.includes("Review plan") && item.textContent?.includes("Reusable review"))!);
+  check(document.body.textContent?.includes("What should be reviewed?"), "Saved playbooks must still request their variables in chat");
+  await click(button("Cancel"));
   await click(button("Agent role"));
   await click([...document.querySelectorAll<HTMLElement>('button')].find((item) => visible(item) && item.textContent?.includes("Product owner") && item.textContent?.includes("Clarify goals"))!);
   check(button("Model and effort").textContent?.includes("Custom model") && button("Model and effort").textContent?.includes("High"), "Selecting an updated role must apply its model and effort");

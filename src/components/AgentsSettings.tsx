@@ -1,6 +1,5 @@
-import { useState } from "react";
-import { Check, Plus, Save, Trash2, X } from "lucide-react";
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from "./ui/dialog";
+import { useState, type Dispatch, type SetStateAction } from "react";
+import { Check, Plus, Save, Trash2 } from "lucide-react";
 import { Input } from "./ui/input";
 import { Textarea } from "./ui/textarea";
 import { approvalReviewerLabels, newAgent, normalizeAgent, type ApprovalReviewer, type ChatAgent } from "../agents";
@@ -10,16 +9,16 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 
 type Confirmation = { title: string; description: string; actionLabel: string; action: () => void };
 
-export function AgentsDialog({ agents, models, modelsLoaded, modelsStatus, onChange, onClose, onConfirm }: {
+export function AgentsSettings({ agents, draft, setDraft, models, modelsLoaded, modelsStatus, onChange, onConfirm }: {
   agents: ChatAgent[];
+  draft: ChatAgent;
+  setDraft: Dispatch<SetStateAction<ChatAgent>>;
   models: ChatModel[];
   modelsLoaded: boolean;
   modelsStatus: string;
   onChange: (agents: ChatAgent[]) => void;
-  onClose: () => void;
   onConfirm: (confirmation: Confirmation) => void;
 }) {
-  const [draft, setDraft] = useState(() => ({ ...(agents[0] ?? newAgent()) }));
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
   const existing = agents.find((agent) => agent.id === draft.id);
@@ -43,13 +42,12 @@ export function AgentsDialog({ agents, models, modelsLoaded, modelsStatus, onCha
       onChange(next); select(next[0] ?? newAgent());
     } });
   };
-  return <Dialog open onOpenChange={(open) => { if (!open) discard(onClose); }}>
-    <DialogContent showCloseButton={false} className="ios-sheet flex h-[min(630px,88vh)] w-[min(980px,94vw)] !max-w-none flex-col overflow-hidden rounded-xl border border-[#294536] bg-[#0B110E] p-0 shadow-2xl shadow-black/60">
-      <header className="flex min-h-[66px] shrink-0 items-center gap-3 border-b border-[#294536] px-5 py-3">
-        <div className="min-w-0"><DialogTitle className="text-[17px] font-bold text-[#E8FFF0]">Agents</DialogTitle><DialogDescription className="mt-0.5 text-xs text-[#7C9B88]">Reusable roles for Agent Chat. Select a role in the chat to apply it.</DialogDescription></div>
-        <div className="ml-auto flex shrink-0 items-center gap-2"><button type="button" onClick={() => discard(() => select(newAgent()))} className="quiet-button h-9"><Plus size={14} /> New agent</button><button type="button" onClick={() => discard(onClose)} className="grid size-9 place-items-center rounded-md text-[#7C9B88] hover:bg-[#294536] hover:text-white" aria-label="Close agents"><X size={16} /></button></div>
+  return <section aria-label="Agent manager" className="flex min-h-[500px] flex-col overflow-hidden rounded-xl border border-[#294536] bg-[#0B110E]">
+      <header className="flex min-h-[66px] shrink-0 flex-wrap items-center gap-3 border-b border-[#294536] px-5 py-3">
+        <p className="min-w-0 text-xs text-[#7C9B88]">Reusable roles for Agent Chat. Select a role in the chat to apply it.</p>
+        <div className="ml-auto flex shrink-0 items-center gap-2"><button type="button" onClick={() => discard(() => select(newAgent()))} className="quiet-button h-9"><Plus size={14} /> New agent</button></div>
       </header>
-      <div className="grid min-h-0 flex-1 grid-cols-[minmax(140px,27%)_minmax(0,1fr)]">
+      <div className="grid min-h-0 flex-1 grid-cols-1 sm:grid-cols-[minmax(140px,27%)_minmax(0,1fr)]">
         <aside className="min-h-0 overflow-y-auto border-r border-[#294536] p-3" aria-label="Saved agents">
           <div className="mb-2 px-2 text-[11px] font-bold uppercase tracking-[0.08em] text-[#7C9B88]">Saved agents</div>
           <div className="space-y-1">
@@ -89,6 +87,5 @@ export function AgentsDialog({ agents, models, modelsLoaded, modelsStatus, onCha
           <footer className="flex shrink-0 items-center justify-between border-t border-[#294536] px-5 py-4"><button type="button" onClick={remove} disabled={!existing} className="quiet-button h-9 text-[#FB7185] disabled:opacity-40"><Trash2 size={14} /> Delete</button><button type="submit" form="agent-form" className="quiet-button h-9">{saved ? <Check size={14} /> : <Save size={14} />}{saved ? "Saved" : "Save"}</button></footer>
         </div>
       </div>
-    </DialogContent>
-  </Dialog>;
+  </section>;
 }
