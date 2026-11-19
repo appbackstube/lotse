@@ -69,6 +69,8 @@ AI setup uses model providers with API keys or environment variables. OpenRouter
 
 ## Task performance and storage
 
+In Settings under Agent, **New branch start** chooses a repository-specific starting point for new New Branch tasks: the current workspace, a local branch, or a remote branch. The default is to choose per task. Each task can override its start before it runs; changing the setting does not alter existing tasks. If a saved branch disappears, it remains selected and must be changed before the task can start.
+
 Task data is stored per repository under `repository-tasks/<SHA-256 of root path>.json` in app data. Startup migrates the previous combined task entry only after all repository files have been saved; existing repository files take precedence. Task saves coalesce for 300 ms before serialization, and explicit flushes complete before native close and agent dispatch. MCP context updates coalesce for 150 ms and flush before a code-agent turn starts.
 
 Task-agent text updates are batched once per animation frame and flushed before tool, approval and completion events. Column deletion menus reuse subtree sets built in linear time. File snapshots stream through 64 KB buffers; each untracked file is read once per task refresh, sharing the comparison and pending-change hashes.
