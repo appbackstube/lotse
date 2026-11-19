@@ -2,6 +2,8 @@
 
 Detailed behavior, integration setup, storage, testing, and release notes for contributors and advanced users. Start with the [project overview and quick start](../README.md). Commands and file paths below are relative to the repository root unless stated otherwise.
 
+Manage reusable roles and prompts under Settings → Agents and Settings → Playbooks. The chat menus link directly to these pages. Drafts stay available when switching settings pages; closing Settings asks before discarding unsaved changes.
+
 ## Warning checks
 
 Run `npm run lint`, `npm run typecheck`, `npm test`, `npm run check:rust`, and `cargo test --manifest-path src-tauri/Cargo.toml --lib`. The web build also runs lint/type checks and rejects JavaScript chunks over 500 kB. React 19.2 or newer is required for effect events; TypeScript tests use `tsx` without suppressing Node warnings.
@@ -82,6 +84,8 @@ AI setup uses model providers with API keys or environment variables. OpenRouter
 
 
 ## Task performance and storage
+
+In Settings under Agent, **New branch start** chooses a repository-specific starting point for new New Branch tasks: the current workspace, a local branch, or a remote branch. The default is to choose per task. Each task can override its start before it runs; changing the setting does not alter existing tasks. If a saved branch disappears, it remains selected and must be changed before the task can start.
 
 Task data is stored per repository under `repository-tasks/<SHA-256 of root path>.json` in app data. Startup migrates the previous combined task entry only after all repository files have been saved; existing repository files take precedence. Task saves coalesce for 300 ms before serialization, and explicit flushes complete before native close and agent dispatch. MCP context updates coalesce for 150 ms and flush before a code-agent turn starts.
 

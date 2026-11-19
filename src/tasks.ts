@@ -113,6 +113,20 @@ export function toggleTaskCommentCheckbox(body: string, offset: number): string 
 export type TaskLocation = RepositoryTask["location"] | "existing";
 
 export const branchPrefixStorageKey = (root: string) => `chaoticreview.branch-prefix:${root}`;
+export const defaultBranchStartStorageKey = (root: string) => `chaoticreview.default-branch-start:${root}`;
+export type DefaultBranchStart = { kind: "workspace" } | { kind: "branch" | "remote"; branch: string };
+
+export function loadDefaultBranchStart(root: string): DefaultBranchStart | null {
+  const value = fileStore.getItem(defaultBranchStartStorageKey(root));
+  if (value === "workspace") return { kind: "workspace" };
+  if (value?.startsWith("branch:") && value.length > 7) return { kind: "branch", branch: value.slice(7) };
+  if (value?.startsWith("remote:") && value.length > 7) return { kind: "remote", branch: value.slice(7) };
+  return null;
+}
+
+export function saveDefaultBranchStart(root: string, start: DefaultBranchStart | null) {
+  fileStore.setItem(defaultBranchStartStorageKey(root), !start ? "" : start.kind === "workspace" ? "workspace" : `${start.kind}:${start.branch}`);
+}
 
 export function loadBranchPrefix(root: string): string {
   return fileStore.getItem(branchPrefixStorageKey(root)) ?? "feature/";
@@ -137,10 +151,10 @@ export function saveTaskLocationDefault(location: TaskLocation) {
   fileStore.setItem(locationStorageKey, location);
 }
 
-export function taskLocationFields(location: TaskLocation): Pick<RepositoryTask, "location" | "worktreeStart"> {
+export function taskLocationFields(location: TaskLocation, defaultStart: DefaultBranchStart | null = null): Pick<RepositoryTask, "location" | "worktreeStart"> {
   return {
     location: location === "existing" ? "worktree" : location,
-    worktreeStart: location === "existing" ? { kind: "existing", branch: "" } : null,
+    worktreeStart: location === "existing" ? { kind: "existing", branch: "" } : location === "worktree" && defaultStart ? { ...defaultStart } : null,
   };
 }
 

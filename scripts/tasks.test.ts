@@ -45,7 +45,20 @@ assert.equal(normalizeTask({ ...task, sandboxHtml: 123 })?.sandboxHtml, undefine
 assert.equal(normalizeTask({ ...task, sandboxHtml: " " })?.sandboxHtml, undefined);
 assert.equal(normalizeTask({ ...task, sandboxHtml: "é".repeat(524289) })?.sandboxHtml, undefined);
 assert.equal(mergeMcpTaskUpdates([sandboxTask], [{ ...task, title: "Renamed" }])[0].sandboxHtml, sandboxTask.sandboxHtml);
-const { branchPrefixStorageKey, loadBranchPrefix, saveBranchPrefix, taskNewBranchName } = await import("../src/tasks.ts");
+const { branchPrefixStorageKey, defaultBranchStartStorageKey, loadDefaultBranchStart, saveDefaultBranchStart, loadBranchPrefix, saveBranchPrefix, taskNewBranchName } = await import("../src/tasks.ts");
+assert.equal(loadDefaultBranchStart("/repo"), null);
+for (const start of [{ kind: "workspace" as const }, { kind: "branch" as const, branch: "main" }, { kind: "remote" as const, branch: "origin/main" }]) {
+  saveDefaultBranchStart("/repo", start);
+  assert.deepEqual(loadDefaultBranchStart("/repo"), start);
+  assert.deepEqual(taskLocationFields("worktree", loadDefaultBranchStart("/repo")), { location: "worktree", worktreeStart: start });
+  assert.deepEqual(taskLocationFields("workspace", start), { location: "workspace", worktreeStart: null });
+  assert.deepEqual(taskLocationFields("existing", start), { location: "worktree", worktreeStart: { kind: "existing", branch: "" } });
+  assert.equal(loadDefaultBranchStart("/other"), null);
+}
+values.set(defaultBranchStartStorageKey("/repo"), "branch:");
+assert.equal(loadDefaultBranchStart("/repo"), null);
+saveDefaultBranchStart("/repo", null);
+assert.equal(loadDefaultBranchStart("/repo"), null);
 assert.equal(loadBranchPrefix("/repo"), "feature/");
 saveBranchPrefix("/repo", "fix/");
 assert.equal(fileStore.getItem(branchPrefixStorageKey("/repo")), "fix/");
