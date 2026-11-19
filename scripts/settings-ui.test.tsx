@@ -5,6 +5,7 @@ import { mockConvertFileSrc, mockWindows } from "@tauri-apps/api/mocks";
 import { mockIPC } from "./mockTauri";
 import { emit } from "@tauri-apps/api/event";
 import { fileStore, initializeFileStore } from "../src/fileStore";
+import { usageStorageKey } from "../src/usage";
 import { agentsStorageKey, defaultAgentStorageKey } from "../src/agents";
 import { normalizeTask, taskStorageKey } from "../src/tasks";
 import { loadTaskStatuses, taskStatusStorageKey } from "../src/taskStatuses";
@@ -16,6 +17,7 @@ const agent = { id: "owner", title: "Product Owner", prompt: "Clarify goals." };
 const storage: Record<string, string> = {
   "chaoticreview.auth-onboarding-v1": "complete",
   [agentsStorageKey]: JSON.stringify([agent]),
+  [usageStorageKey]: JSON.stringify([{ id: "recent", kind: "run", at: Date.now() - 86_400_000, agent: { id: "owner", title: "Product Owner" }, model: "model-a", playbook: { id: "book", title: "Review" } }, { id: "older", kind: "run", at: Date.now() - 14 * 86_400_000, agent: { id: "owner", title: "Product Owner" }, model: "model-a" }]),
   [taskStorageKey(repo.rootPath)]: JSON.stringify([normalizeTask({ id: "existing", title: "Existing task" })]),
 };
 mockWindows("main"); mockConvertFileSrc("macos");
@@ -57,6 +59,13 @@ try {
   check(active()?.textContent?.includes("System notifications") && !active()?.textContent?.includes("Provider ID"), "General must contain its own controls");
   check(nav("General")?.getAttribute("aria-current") === "page", "Selected page missing accessible state");
   check(document.querySelectorAll('.settings-nav-group').length === 4, "Settings must have meaningful navigation groups");
+  await click(nav("Usage"));
+  check(active()?.textContent?.includes("Product Owner") && active()?.textContent?.includes("model runs"), "Usage must display the stored run breakdown");
+  await click([...active()!.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Playbooks"));
+  check(active()?.querySelector("tbody")?.textContent?.includes("Review"), "Playbook breakdown must be selectable");
+  const usagePeriod = active()!.querySelector<HTMLSelectElement>("select")!;
+  await act(async () => { usagePeriod.value = "7"; usagePeriod.dispatchEvent(new Event("change", { bubbles: true })); }); await settle();
+  check(active()?.querySelectorAll(".usage-card strong")[0].textContent === "1", "Period must filter the overview");
   await click(nav("Pomodoro"));
   const focus = document.querySelector<HTMLInputElement>('input[name="focus"]')!;
   await change(focus, "37");

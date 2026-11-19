@@ -6,6 +6,7 @@ import type { ChatEffort } from "./chatDefaults.ts";
 export type QueuedChatMessage = {
   id: string;
   pipeline?: PipelineMessage;
+  playbook?: { id: string; title: string };
   body: string;
   coordinationPath?: string[];
   context: ChatRequestContext;
@@ -26,6 +27,7 @@ export function loadChatQueues(): ChatQueues {
       !!item && typeof item.id === "string" && typeof item.body === "string" && item.context?.mode === "auto" && Array.isArray(item.context.attachments)
       && (item.coordinationPath === undefined || Array.isArray(item.coordinationPath) && item.coordinationPath.every((id: unknown) => typeof id === "string"))
       && (item.pipeline === undefined || validPipelineMessage(item.pipeline))
+      && (item.playbook === undefined || !!item.playbook && typeof item.playbook.id === "string" && typeof item.playbook.title === "string")
       && (item.mode === "default" || item.mode === "plan") && typeof item.model === "string" && typeof item.effort === "string") : []]));
   } catch { return {}; }
 }

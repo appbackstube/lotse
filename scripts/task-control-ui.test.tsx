@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { mockConvertFileSrc, mockWindows } from "@tauri-apps/api/mocks";
-import { mockIPC } from "./mockTauri";
+import { mockIPC, usageEvents } from "./mockTauri";
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { Window } from "@tauri-apps/api/window";
 import { fileStore, initializeFileStore } from "../src/fileStore";
@@ -340,6 +340,7 @@ try {
   check(badPlaybook.error && sends.length === 3, "Missing playbook variables started work");
   const playbook = await request(first.id, "run_task_playbook", { taskId: third.id, playbookId: "changelog", values: { VERSION: "1.0", DETAILS: "Saved canonical prompt" } });
   check(!playbook.error && sends.at(-1).prompt === "Update changelog for 1.0.\nSaved canonical prompt", "Saved playbook was not rendered and run");
+  check(usageEvents.some((event) => event.kind === "run" && event.playbook?.id === "changelog" && event.model === sends.at(-1).model), "Accepted delegated playbook start must record usage");
   const resumed = await request(first.id, "update_task_queue", { taskId: second.id, paused: false });
   check(!resumed.error && sends.length === 5 && sends[4].prompt === "Follow-up while running", "Coordinator cannot resume a stopped task queue");
   const paused = await request(first.id, "update_task_queue", { taskId: second.id, paused: true });
