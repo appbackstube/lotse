@@ -2,6 +2,8 @@
 
 Detailed behavior, integration setup, storage, testing, and release notes for contributors and advanced users. Start with the [project overview and quick start](../README.md). Commands and file paths below are relative to the repository root unless stated otherwise.
 
+Manage reusable roles and prompts under Settings → Agents and Settings → Playbooks. The chat menus link directly to these pages. Drafts stay available when switching settings pages; closing Settings asks before discarding unsaved changes.
+
 ## Warning checks
 
 Run `npm run lint`, `npm run typecheck`, `npm test`, `npm run check:rust`, and `cargo test --manifest-path src-tauri/Cargo.toml --lib`. The web build also runs lint/type checks and rejects JavaScript chunks over 500 kB. React 19.2 or newer is required for effect events; TypeScript tests use `tsx` without suppressing Node warnings.
