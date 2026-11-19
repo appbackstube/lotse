@@ -2269,6 +2269,16 @@ function App() {
   const [chatDefaults, setChatDefaults] = useState(storedChatDefaults);
   const [agents, setAgents] = useState<ChatAgent[]>(storedAgents);
   const [agentDraft, setAgentDraft] = useState<ChatAgent>(() => ({ ...(agents[0] ?? newAgent()) }));
+  const [agentDraftSources, setAgentDraftSources] = useState(agents);
+  if (agentDraftSources !== agents) {
+    const previous = agentDraftSources.find((agent) => agent.id === agentDraft.id);
+    // Refresh only untouched saved roles; keep new roles and local edits intact.
+    if (previous && JSON.stringify(agentDraft) === JSON.stringify(previous)) {
+      const current = agents.find((agent) => agent.id === agentDraft.id) ?? agents[0] ?? newAgent();
+      setAgentDraft({ ...current });
+    }
+    setAgentDraftSources(agents);
+  }
   const [pipelines, setPipelines] = useState<Pipeline[]>(loadPipelines);
   const [defaultAgentId, setDefaultAgentId] = useState(() => fileStore.getItem(defaultAgentStorageKey) ?? "");
   const defaultAgent = agents.find((agent) => agent.id === defaultAgentId) ?? null;
