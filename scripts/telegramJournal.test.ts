@@ -1,0 +1,22 @@
+import assert from "node:assert/strict";
+import { addTelegramEntry, advanceTelegramOffset, changeTelegramPhase, readTelegramJournal, telegramJournalKey } from "../src/telegramJournal.ts";
+import { fileStore } from "../src/fileStore.ts";
+import type { QueuedChatMessage } from "../src/chatQueue.ts";
+
+const item: QueuedChatMessage = { id: "telegram-1", body: "Hello", context: { mode: "auto", attachments: [] }, selection: null, mode: "default", model: "test", effort: "low" };
+const empty = { offset: 0, entries: [] };
+const queued = addTelegramEntry(empty, { updateId: 1, workspaceKey: "workspace", item, phase: "queued" });
+assert.equal(addTelegramEntry(queued, { updateId: 1, workspaceKey: "other", item, phase: "queued" }), queued);
+const starting = changeTelegramPhase(queued, 1, "starting");
+assert.equal(starting.entries[0].phase, "starting");
+assert.throws(() => changeTelegramPhase(empty, 1, "done"), /history is missing/);
+assert.equal(advanceTelegramOffset(starting, 2).entries.length, 1);
+assert.equal(advanceTelegramOffset(changeTelegramPhase(starting, 1, "done"), 2).entries.length, 0);
+assert.throws(() => advanceTelegramOffset({ offset: 2, entries: [] }, 1));
+assert.notEqual(telegramJournalKey("repo-a", "id"), telegramJournalKey("repo-b", "id"));
+const original = fileStore.getItem;
+fileStore.getItem = () => "not json";
+assert.throws(() => readTelegramJournal("invalid"), /could not be read/);
+fileStore.getItem = () => JSON.stringify(starting);
+assert.equal(readTelegramJournal("valid").entries[0].phase, "starting");
+fileStore.getItem = original;
