@@ -28,6 +28,8 @@ import { ConversationSettings, type ConversationSettingsValue } from "./componen
 import { useConversation } from "./useConversation";
 import type { VoiceDelegation, VoiceReply } from "./conversation";
 import { WebsiteCredentialsSettings } from "./components/WebsiteCredentialsSettings";
+import { UsageSettings } from "./components/UsageSettings";
+import { recordUsage, type UsageItem } from "./usage";
 import { PipelineDesigner } from "./components/PipelineDesigner";
 import { getPipeline, pipelineMetadata, pipelineToolKeys } from "./pipelineControl";
 import { loadPipelineRuns, newPipelineRun, observePipelineRun, removePipelineRuns, savePipelineRun, updatePipelineMessage } from "./pipelineRuns";
@@ -4237,13 +4239,16 @@ function App() {
     taskDescription?: string;
     beforeStart?: () => boolean;
     telegramConnectionId?: string;
+    playbook?: UsageItem;
     }, onEvent: (event: AgentTurnEvent) => void) => {
     await syncMcpContextRef.current();
     if (request.beforeStart && !request.beforeStart()) throw new Error("The voice request was not started because the conversation or workspace changed.");
-    return invoke<AiChatAccepted>("ai_chat_send", { input: { baseOid: comparison!.baseOid, mode: comparison!.mode, baseRef: comparison!.baseRef, compareRef: comparison!.compareRef, snapshotId: comparison!.snapshotId, agentThreadId: request.threadId, model: request.model, effort: request.effort, collaborationMode: request.mode, goal: request.mode === "default" ? request.goalSettings ?? defaultChatGoal : defaultChatGoal, prompt: request.prompt, userRules, agentPrompt: request.chatAgent?.prompt ?? "", chatContext: request.context, comments: review!.comments, allowLongPrompt: request.allowLongPrompt, taskId: request.taskId, taskLocation: request.taskLocation, taskTitle: request.taskTitle, taskDescription: request.taskDescription, approvalMode: approvalForAgent(request.chatAgent, approvalReviewerOverrides[request.taskId ?? "review"], approvalReviewerDefault, request.pipeline), telegramConnectionId: request.telegramConnectionId }, events: new Channel<AgentTurnEvent>(onEvent) });
+    const accepted = await invoke<AiChatAccepted>("ai_chat_send", { input: { baseOid: comparison!.baseOid, mode: comparison!.mode, baseRef: comparison!.baseRef, compareRef: comparison!.compareRef, snapshotId: comparison!.snapshotId, agentThreadId: request.threadId, model: request.model, effort: request.effort, collaborationMode: request.mode, goal: request.mode === "default" ? request.goalSettings ?? defaultChatGoal : defaultChatGoal, prompt: request.prompt, userRules, agentPrompt: request.chatAgent?.prompt ?? "", chatContext: request.context, comments: review!.comments, allowLongPrompt: request.allowLongPrompt, taskId: request.taskId, taskLocation: request.taskLocation, taskTitle: request.taskTitle, taskDescription: request.taskDescription, approvalMode: approvalForAgent(request.chatAgent, approvalReviewerOverrides[request.taskId ?? "review"], approvalReviewerDefault, request.pipeline), telegramConnectionId: request.telegramConnectionId }, events: new Channel<AgentTurnEvent>(onEvent) });
+    void recordUsage({ id: accepted.requestId, kind: "run", at: Date.now(), agent: request.chatAgent ? { id: request.chatAgent.id, title: request.chatAgent.title } : { id: "unassigned", title: "No agent" }, model: request.model, playbook: request.playbook }).catch((reason) => setError(`Usage could not be saved: ${message(reason)}`));
+    return accepted;
   };
 
-  const sendAiChat = async (promptOverride?: string, requestContext = chatRequestContext, modeOverride?: AiChatMode, configurationOverride?: ChatDefaults[AiChatMode], queuedItem?: QueuedChatMessage, onAccepted?: (accepted: AiChatAccepted) => void, beforeStart?: () => boolean): Promise<boolean> => {
+  const sendAiChat = async (promptOverride?: string, requestContext = chatRequestContext, modeOverride?: AiChatMode, configurationOverride?: ChatDefaults[AiChatMode], queuedItem?: QueuedChatMessage, onAccepted?: (accepted: AiChatAccepted) => void, beforeStart?: () => boolean, playbook?: UsageItem): Promise<boolean> => {
     const turnMode = modeOverride ?? aiChatMode;
     const prompt = (promptOverride ?? aiChatDraft).trim();
     const currentReview = reviewRef.current;
@@ -4304,6 +4309,7 @@ function App() {
         context: requestContext,
         telegramConnectionId: queuedItem?.telegram?.connectionId,
         beforeStart,
+        playbook: queuedItem?.playbook ?? playbook,
       }, (event) => { if (runReady) dispatchEvent(event); else earlyEvents.push(event); });
       acceptedRequestId = result.requestId;
       aiChatTurnRef.current = result;
@@ -4524,7 +4530,7 @@ function App() {
     updateTask(task.id, (current) => ({ ...current, attachments: [], chatMessages: [], planReady: false, agentThreadId: null }));
   };
 
-  const sendTaskMessage = async (task: RepositoryTask, mode = task.chatMode, promptOverride?: string, queuedItem?: QueuedChatMessage, schedule?: PromptSchedule): Promise<boolean> => {
+  const sendTaskMessage = async (task: RepositoryTask, mode = task.chatMode, promptOverride?: string, queuedItem?: QueuedChatMessage, schedule?: PromptSchedule, playbook?: UsageItem): Promise<boolean> => {
     if (taskGitAction) { setError("Wait for the task Git operation to finish before starting an agent."); return false; }
     const prompt = (promptOverride ?? taskDrafts[task.id] ?? "").trim();
     const selectedAssets = taskAssetAttachments(task, taskAssetSelections[task.id] ?? []);
@@ -4603,6 +4609,7 @@ function App() {
         taskLocation: task.location,
         taskTitle: task.title,
         taskDescription: task.description,
+        playbook: queuedItem?.playbook ?? playbook,
       }, onTaskEvent);
       createdWorktree = false;
       if (repositoryRef.current?.rootPath !== runRepositoryRoot) {
@@ -4661,7 +4668,7 @@ function App() {
     finally { startingPipelineRef.current.delete(task.id); taskStartingRef.current.delete(task.id); setTaskStartingIds((current) => { const next = new Set(current); next.delete(task.id); return next; }); }
   };
 
-  const sendComposerMessage = async (draft: string): Promise<boolean> => {
+  const sendComposerMessage = async (draft: string, playbook?: UsageItem): Promise<boolean> => {
     const task = taskMode ? tasksRef.current.find((item) => item.id === selectedTaskId) : null;
     const key = activeQueueKey;
     if (!comparison || !review || !key || (taskMode && !task)) return false;
@@ -4672,8 +4679,8 @@ function App() {
     if (task && attachments.length > 12) { setError("Attach up to 12 items per message."); return false; }
     if (task?.location === "worktree" && !task.worktree && !taskStartSelected(task.worktreeStart)) { setError("Choose the Worktree start point before starting this task."); return false; }
     const running = task ? !!taskRunsRef.current[task.id] || taskStartingRef.current.has(task.id) : aiChatRunningRef.current;
-    if (!running && !chatQueuesRef.current[key]?.length) return task ? sendTaskMessage(task, task.chatMode, draft) : sendAiChat(draft);
-    const item: QueuedChatMessage = { id: crypto.randomUUID(), body: prompt, context: { mode: "auto", attachments }, selection, mode: task?.chatMode ?? aiChatMode, model: task?.chatModel ?? aiChatModel, effort: task?.chatEffort ?? aiChatEffort };
+    if (!running && !chatQueuesRef.current[key]?.length) return task ? sendTaskMessage(task, task.chatMode, draft, undefined, undefined, playbook) : sendAiChat(draft, undefined, undefined, undefined, undefined, undefined, undefined, playbook);
+    const item: QueuedChatMessage = { id: crypto.randomUUID(), body: prompt, context: { mode: "auto", attachments }, selection, mode: task?.chatMode ?? aiChatMode, model: task?.chatModel ?? aiChatModel, effort: task?.chatEffort ?? aiChatEffort, playbook };
     const imagePaths = attachments.flatMap((attachment) => isChatUpload(attachment) ? [attachment.path] : []);
     if (!task && imagePaths.length) {
       try { await invoke("retain_task_images", { paths: imagePaths }); }
@@ -5109,7 +5116,7 @@ function App() {
       return false;
     }
     if (taskId && !tasksRef.current.some((task) => task.id === taskId)) return false;
-    return sendComposerMessage(prompt);
+    return sendComposerMessage(prompt, { id: playbook.id, title: playbook.title });
   };
 
   const runPlaybook = (playbook: Playbook, task: RepositoryTask | null) => {
@@ -5164,6 +5171,7 @@ function App() {
     if (task ? !!taskRunsRef.current[task.id] || taskStartingRef.current.has(task.id) : aiChatRunningRef.current) return;
     const key = task && repository ? taskQueueKey(repository.rootPath, task.id) : reviewQueueKey(reviewRef.current!);
     if (queueBusyRef.current.has(key) || chatQueuesRef.current[key]?.some((item) => item.pipeline)) return;
+    if (agent) void recordUsage({ id: crypto.randomUUID(), kind: "role", at: Date.now(), agent: { id: agent.id, title: agent.title } }).catch((reason) => setError(`Usage could not be saved: ${message(reason)}`));
     setApprovalReviewerOverrides((current) => {
       const next = { ...current };
       delete next[task?.id ?? "review"];
@@ -5871,7 +5879,7 @@ function App() {
           task = getTask(tasksRef.current, task.id);
         }
         const key = taskQueueKey(request.repositoryRoot, task.id);
-        const item: QueuedChatMessage = { id: request.operationId, body: prompt, coordinationPath: [...coordinationPath, task.id], context: { mode: "auto", attachments: [] }, selection: null, mode: (args.mode as AiChatMode) ?? task.chatMode, model: task.chatModel, effort: task.chatEffort };
+        const item: QueuedChatMessage = { id: request.operationId, body: prompt, coordinationPath: [...coordinationPath, task.id], context: { mode: "auto", attachments: [] }, selection: null, mode: (args.mode as AiChatMode) ?? task.chatMode, model: task.chatModel, effort: task.chatEffort, playbook: playbook ? { id: playbook.id, title: playbook.title } : undefined };
         const wasPaused = pausedQueueKeysRef.current.has(key);
         // Keep uncertain or cancelled submissions from dispatching when another turn completes.
         setQueuePaused(key, true);
@@ -6269,6 +6277,9 @@ function App() {
           </div>
           <div hidden={settingsPage !== "agents"} data-settings-page="agents">
             {settingsPage === "agents" && <Suspense fallback={null}><AgentsSettings agents={agents} draft={agentDraft} setDraft={setAgentDraft} models={chatModels} modelsLoaded={modelsLoaded} modelsStatus={modelsStatus} onChange={setAgents} onConfirm={setConfirmation} /></Suspense>}
+          </div>
+          <div hidden={settingsPage !== "usage"} data-settings-page="usage">
+            {settingsPage === "usage" && <UsageSettings />}
           </div>
           <div hidden={settingsPage !== "playbooks"} data-settings-page="playbooks">
             {settingsPage === "playbooks" && <Suspense fallback={null}><PlaybooksSettings playbooks={playbooks} setPlaybooks={setPlaybooks} selectedPlaybookId={selectedPlaybookId} playbookDraft={playbookDraft} setPlaybookDraft={setPlaybookDraft} playbookError={playbookError} playbookSaveNotice={playbookSaveNotice} createPlaybook={createPlaybook} selectPlaybook={selectPlaybook} savePlaybook={savePlaybook} deletePlaybook={deletePlaybook} /></Suspense>}

@@ -7,6 +7,7 @@ export type QueuedChatMessage = {
   id: string;
   telegram?: { connectionId: string; journalId: string; updateId: number; repositoryRoot: string };
   pipeline?: PipelineMessage;
+  playbook?: { id: string; title: string };
   body: string;
   coordinationPath?: string[];
   context: ChatRequestContext;
@@ -28,6 +29,7 @@ export function loadChatQueues(): ChatQueues {
       && (item.telegram === undefined || typeof item.telegram.connectionId === "string" && typeof item.telegram.journalId === "string" && Number.isSafeInteger(item.telegram.updateId) && item.telegram.updateId >= 0 && typeof item.telegram.repositoryRoot === "string")
       && (item.coordinationPath === undefined || Array.isArray(item.coordinationPath) && item.coordinationPath.every((id: unknown) => typeof id === "string"))
       && (item.pipeline === undefined || validPipelineMessage(item.pipeline))
+      && (item.playbook === undefined || !!item.playbook && typeof item.playbook.id === "string" && typeof item.playbook.title === "string")
       && (item.mode === "default" || item.mode === "plan") && typeof item.model === "string" && typeof item.effort === "string") : []]));
   } catch { return {}; }
 }

@@ -222,6 +222,29 @@ fn set_frontend_storage(app: AppHandle, window: WebviewWindow, key: String, valu
     Ok(())
 }
 
+#[tauri::command]
+fn append_usage_event(app: AppHandle, event: Value) -> Result<(), String> {
+    let id = event.get("id").and_then(Value::as_str).filter(|id| !id.is_empty() && id.len() <= 200).ok_or("Invalid usage event")?;
+    if !matches!(event.get("kind").and_then(Value::as_str), Some("run" | "role")) || !event.get("at").is_some_and(Value::is_number) {
+        return Err("Invalid usage event".into());
+    }
+    let _guard = FRONTEND_STORAGE_LOCK.lock().map_err(|error| error.to_string())?;
+    let path = frontend_storage_file(&app)?;
+    let mut storage = read_frontend_storage(&path)?;
+    let key = "chaoticreview.usage";
+    let mut events: Vec<Value> = match storage.values.get(key) {
+        Some(value) => serde_json::from_str(value).map_err(|error| format!("Invalid usage history: {error}"))?,
+        None => Vec::new(),
+    };
+    if events.iter().any(|entry| entry.get("id").and_then(Value::as_str) == Some(id)) { return Ok(()); }
+    events.push(event);
+    let value = serde_json::to_string(&events).map_err(|error| error.to_string())?;
+    storage.values.insert(key.into(), value.clone());
+    write_frontend_storage(&path, &storage)?;
+    let _ = app.emit("frontend-storage-changed", serde_json::json!({ "key": key, "value": value, "source": "usage" }));
+    Ok(())
+}
+
 fn copy_directory(source: &Path, destination: &Path) -> Result<(), String> {
     fs::create_dir_all(destination).map_err(|error| error.to_string())?;
     for entry in fs::read_dir(source).map_err(|error| error.to_string())? {
@@ -6720,6 +6743,7 @@ pub fn run() {
             github::github_render_image,
             load_frontend_storage,
             set_frontend_storage,
+            append_usage_event,
             new_window,
             current_repository,
             open_repository,

@@ -21,6 +21,9 @@ assert.deepEqual(loadChatQueues().thread[0].coordinationPath, ["parent", "child"
 fileStore.getItem = () => JSON.stringify({ thread: [{ ...item("telegram"), telegram: { connectionId: "id", journalId: "bot", updateId: 42, repositoryRoot: "/repo" } }, { ...item("invalid"), telegram: { connectionId: "id", journalId: "bot", updateId: -1, repositoryRoot: "/repo" } }] });
 assert.equal(loadChatQueues().thread.length, 1);
 assert.equal(loadChatQueues().thread[0].telegram?.updateId, 42);
+fileStore.getItem = () => JSON.stringify({ thread: [{ ...item("playbook"), playbook: { id: "book", title: "Review" } }, { ...item("invalid"), playbook: null }] });
+assert.deepEqual(loadChatQueues().thread.map((entry) => entry.id), ["playbook"]);
+assert.deepEqual(loadChatQueues().thread[0].playbook, { id: "book", title: "Review" });
 fileStore.getItem = () => "{";
 assert.deepEqual(loadChatQueues(), {});
 fileStore.getItem = originalGet;

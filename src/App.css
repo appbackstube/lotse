@@ -53,6 +53,33 @@
 .settings-content > [data-settings-page][hidden] { display: none; }
 .settings-content h3 { font-weight: 500; }
 
+.usage-settings { font-size: 13px; }
+.usage-description, .usage-heading p, .usage-note { color: var(--ios-secondary-label); }
+.usage-description { margin: -24px 0 0; line-height: 1.5; }
+.usage-heading { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin: 36px 0 16px; }
+.usage-heading h3 { margin: 0; font-size: 16px; font-weight: 600; }
+.usage-heading p { margin: 5px 0 0; font-size: 12px; }
+.usage-heading label { display: flex; align-items: center; gap: 8px; color: var(--ios-secondary-label); white-space: nowrap; }
+.usage-heading select { border: 1px solid var(--ios-separator); border-radius: 7px; background: var(--ios-elevated-background); color: var(--ios-label); padding: 8px; }
+.usage-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.usage-card { display: flex; flex-direction: column; gap: 5px; min-width: 0; padding: 16px; border: 1px solid var(--ios-separator); border-radius: 10px; background: var(--ios-elevated-background); }
+.usage-card span, .usage-card small { color: var(--ios-secondary-label); }
+.usage-card strong { margin-top: 4px; font-size: 26px; line-height: 1; }
+.usage-tabs { display: flex; gap: 4px; overflow-x: auto; border-bottom: 1px solid var(--ios-separator); margin-bottom: 16px; }
+.usage-tabs button { padding: 10px 14px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--ios-secondary-label); }
+.usage-tabs button[aria-pressed="true"] { color: var(--ios-label); border-bottom-color: var(--ios-label); font-weight: 600; }
+.usage-table { overflow: hidden; border: 1px solid var(--ios-separator); border-radius: 10px; background: var(--ios-elevated-background); }
+.usage-table table { width: 100%; border-collapse: collapse; text-align: left; }
+.usage-table th, .usage-table td { padding: 13px 16px; border-bottom: 1px solid var(--ios-separator); }
+.usage-table thead th { color: var(--ios-secondary-label); font-size: 11px; font-weight: 600; }
+.usage-table tbody th { font-weight: 500; overflow-wrap: anywhere; }
+.usage-table tr:last-child th, .usage-table tr:last-child td { border-bottom: 0; }
+.usage-table th:not(:first-child), .usage-table td { text-align: right; white-space: nowrap; }
+.usage-empty { padding: 24px; text-align: center; color: var(--ios-secondary-label); }
+.usage-note { font-size: 11px; line-height: 1.6; }
+@media (max-width: 760px) { .usage-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .usage-heading { align-items: start; flex-direction: column; } .usage-table th, .usage-table td { padding: 12px 9px; } }
+
 .task-status-settings-card { overflow: hidden; border: 1px solid var(--ios-separator); border-radius: 12px; background: var(--ios-elevated-background); }
 .task-status-settings-heading, .task-status-settings-row { display: grid; grid-template-columns: 24px minmax(80px, 1fr) 92px; align-items: center; gap: 12px; padding: 11px 17px; border-bottom: 1px solid var(--ios-separator); }
 .task-status-settings-heading { color: var(--ios-secondary-label); font-size: 11px; font-weight: 600; }

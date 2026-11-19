@@ -1,5 +1,5 @@
 import { useRef, useState, type ReactNode } from "react";
-import { AudioLines, Blocks, Bot, CircleHelp, FolderGit2, GitPullRequest, KeyRound, ListTodo, Plug, Route, Search, Settings, SlidersHorizontal, Timer, Users, X } from "lucide-react";
+import { AudioLines, BarChart3, Blocks, Bot, CircleHelp, FolderGit2, GitPullRequest, KeyRound, ListTodo, Plug, Route, Search, Settings, SlidersHorizontal, Timer, Users, X } from "lucide-react";
 import { Input } from "./ui/input";
 import { Button } from "./ui/button";
 
@@ -13,6 +13,7 @@ const pages = [
   { id: "agents", label: "Agents", group: "Agent", icon: Users, keywords: "roles prompts models approval" },
   { id: "playbooks", label: "Playbooks", group: "Agent", icon: Blocks, keywords: "prompts variables templates" },
   { id: "pipelines", label: "Pipelines", group: "Agent", icon: Route, keywords: "automation workflow steps roles messages designer" },
+  { id: "usage", label: "Usage", group: "Agent", icon: BarChart3, keywords: "activity statistics agents playbooks roles models runs" },
   { id: "mcp", label: "MCP servers", group: "Connections", icon: Plug, keywords: "tools integrations figma slack oauth" },
   { id: "github", label: "GitHub", group: "Connections", icon: GitPullRequest, keywords: "account token inbox refresh issues pull requests" },
   { id: "telegram", label: "Telegram", group: "Connections", icon: Plug, keywords: "bot messages repository chat images" },
