@@ -10,6 +10,7 @@ const written = new Map<string, string | null>();
 const failed = new Map<string, unknown>();
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 let flushing = false;
+let inFlightKey: string | undefined;
 const flushWaiters: { resolve: () => void; reject: (error: unknown) => void }[] = [];
 
 export const fileStore = {
@@ -62,9 +63,11 @@ async function flush() {
   while (pending.size) {
     const [key, value] = pending.entries().next().value as [string, StoredValue | null];
     pending.delete(key);
+    inFlightKey = key;
     try {
       const serialized = typeof value === "function" ? value() : value;
-      if (written.get(key) !== serialized || failed.has(key)) await invoke<void>("set_frontend_storage", { key, value: serialized });
+      if (written.get(key) !== serialized || failed.has(key)) await invoke<void>("set_frontend_storage", { key, value: serialized,
+        ...(key === "chaoticreview.chat-queues" ? { conditional: true, expectedValue: written.get(key) ?? null } : {}) });
       if (serialized === null) written.delete(key); else written.set(key, serialized);
       if (values.get(key) === value && serialized !== null) values.set(key, serialized);
       failed.delete(key);
@@ -73,6 +76,7 @@ async function flush() {
       failure = error;
       window.dispatchEvent(new CustomEvent("frontend-storage-error", { detail: String(error) }));
     }
+    inFlightKey = undefined;
   }
   flushing = false;
   for (const waiter of flushWaiters.splice(0)) {
@@ -105,6 +109,7 @@ export async function initializeFileStore(): Promise<void> {
   await listen<{ key: string; value: string | null; source: string }>("frontend-storage-changed", (event) => {
     const { key, value, source } = event.payload;
     if (source === getCurrentWindow().label) return;
+    if (key === "chaoticreview.chat-queues" && (pending.has(key) || inFlightKey === key)) return;
     pending.delete(key);
     if (value === null) written.delete(key); else written.set(key, value);
     failed.delete(key);

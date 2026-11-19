@@ -16,7 +16,7 @@ const checkBundleSizes: Plugin = {
     handler(_options, bundle) {
       for (const output of Object.values(bundle)) {
         if (output.type === "chunk" && Buffer.byteLength(output.code) > 500_000) {
-          this.error(`${output.fileName} exceeds the 500 kB JavaScript budget`);
+          this.error(`${output.fileName} (${Buffer.byteLength(output.code)} bytes) exceeds the 500 kB JavaScript budget`);
         }
       }
     },
@@ -35,6 +35,8 @@ export default defineConfig(async () => ({
       output: {
         manualChunks(id, { getModuleInfo }) {
           if (getModuleInfo(id)?.isIncluded === false) return;
+          if (/\/src\/(telegramJournal|useTelegram)\.ts$/.test(id)) return "telegram";
+          if (/\/src\/(pipelines|pipelineRuns|pipelineControl|playbooks|chatQueue|chatTimeline|chatDefaults)\.ts$/.test(id)) return "chat-state";
           const dependency = id.split("/node_modules/").at(-1);
           if (!id.includes("/node_modules/") || !dependency) return;
           const parts = dependency.split("/");

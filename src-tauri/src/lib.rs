@@ -13,6 +13,7 @@ mod task_control;
 mod sandbox;
 mod browser;
 mod website_credentials;
+mod telegram;
 
 use agent_runtime::{
     AgentModel, AgentProvider, AgentProviderSettings, AgentRuntime, AgentTurnEvent,
@@ -54,6 +55,7 @@ use tauri::{
 const LEGACY_BUNDLE_IDENTIFIER: &str = "com.andreasehrlichgruber.chaoticreview";
 static NEXT_AGENT_ID: AtomicU64 = AtomicU64::new(0);
 static FRONTEND_STORAGE_LOCK: Mutex<()> = Mutex::new(());
+static REPOSITORY_OPEN_LOCK: Mutex<()> = Mutex::new(());
 
 #[cfg(target_os = "macos")]
 fn macos_command_path(current: &OsStr, extra_dirs: &[&Path]) -> std::ffi::OsString {
@@ -179,8 +181,15 @@ fn load_frontend_storage(app: AppHandle, origin: String, legacy: HashMap<String,
     Ok(storage.values)
 }
 
+fn check_frontend_queue_revision(storage: &FrontendStorage, key: &str, conditional: bool, expected: Option<&str>) -> Result<(), String> {
+    if key == "chaoticreview.chat-queues" && conditional && storage.values.get(key).map(String::as_str) != expected {
+        return Err("Chat queues changed in another window. Restart Lotse and check pending messages before retrying.".to_owned());
+    }
+    Ok(())
+}
+
 #[tauri::command]
-fn set_frontend_storage(app: AppHandle, window: WebviewWindow, key: String, value: Option<String>) -> Result<(), String> {
+fn set_frontend_storage(app: AppHandle, window: WebviewWindow, key: String, value: Option<String>, conditional: Option<bool>, expected_value: Option<String>) -> Result<(), String> {
     if !key.starts_with("chaoticreview.") { return Err("Invalid frontend storage key".into()); }
     let _guard = FRONTEND_STORAGE_LOCK.lock().map_err(|error| error.to_string())?;
     let path = frontend_storage_file(&app)?;
@@ -202,6 +211,7 @@ fn set_frontend_storage(app: AppHandle, window: WebviewWindow, key: String, valu
         app.state::<sandbox::SandboxState>().storage_changed(root, value.as_deref());
     } else {
         let mut storage = read_frontend_storage(&path)?;
+        check_frontend_queue_revision(&storage, &key, conditional.unwrap_or(false), expected_value.as_deref())?;
         match &value {
             Some(value) => { storage.values.insert(key.clone(), value.clone()); }
             None => { storage.values.remove(&key); }
@@ -1292,20 +1302,27 @@ fn restored_repositories(app: &AppHandle) -> Vec<PathBuf> {
     else {
         return Vec::new();
     };
+    unique_repository_roots(saved.repositories)
+}
+
+fn unique_repository_roots(paths: Vec<String>) -> Vec<PathBuf> {
     let mut seen = HashSet::new();
-    saved
-        .repositories
+    paths
         .into_iter()
         .filter_map(|path| fs::canonicalize(path).ok())
-        .filter(|path| {
-            git_text(path, &["rev-parse", "--show-toplevel"]).is_ok() && seen.insert(path.clone())
-        })
+        .filter_map(|path| repository_root(&path).ok().flatten())
+        .filter(|path| seen.insert(path.clone()))
         .collect()
 }
 
 fn restore_repository(app: &AppHandle, window: WebviewWindow, root: PathBuf) -> Result<(), String> {
+    let _opening = REPOSITORY_OPEN_LOCK.lock().map_err(|_| "Repository opening is unavailable".to_owned())?;
     let root = PathBuf::from(git_text(&root, &["rev-parse", "--show-toplevel"])?);
     let root = fs::canonicalize(root).map_err(|error| error.to_string())?;
+    if app.state::<AppState>().0.lock().map_err(|_| "Repository state is unavailable".to_owned())?
+        .iter().any(|(label, entry)| label != window.label() && entry.repository.as_ref() == Some(&root)) {
+        return Err("This repository is already open in another window.".to_owned());
+    }
     let info = repository_info(&root)?;
     let watcher = repository_watcher(&root, window.clone())?;
     window.set_title(&info.name).map_err(|error| error.to_string())?;
@@ -1419,6 +1436,7 @@ fn open_repository(
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<OpenRepositoryResult, String> {
+    let _opening = REPOSITORY_OPEN_LOCK.lock().map_err(|_| "Repository opening is unavailable".to_owned())?;
     let selected =
         fs::canonicalize(&path).map_err(|error| format!("Cannot open folder: {error}"))?;
     let (root, needs_init) = match repository_root(&selected)? {
@@ -5538,6 +5556,8 @@ struct AiChatInput {
     task_description: Option<String>,
     #[serde(default)]
     approval_mode: agent_runtime::ApprovalMode,
+    #[serde(default)]
+    telegram_connection_id: Option<String>,
 }
 
 #[tauri::command]
@@ -5549,7 +5569,7 @@ async fn ai_chat_send(
     state: State<'_, AppState>,
     agent: State<'_, AgentRuntime>,
 ) -> Result<ChatAccepted, String> {
-    let AiChatInput { base_oid, mode, base_ref, compare_ref, snapshot_id, agent_thread_id, model, effort, collaboration_mode, goal, prompt, user_rules, agent_prompt, chat_context, comments, allow_long_prompt, task_id, task_location, task_title, task_description, approval_mode } = input;
+    let AiChatInput { base_oid, mode, base_ref, compare_ref, snapshot_id, agent_thread_id, model, effort, collaboration_mode, goal, prompt, user_rules, agent_prompt, chat_context, comments, allow_long_prompt, task_id, task_location, task_title, task_description, approval_mode, telegram_connection_id } = input;
     let has_images = chat_context
         .attachments
         .iter()
@@ -5564,6 +5584,7 @@ async fn ai_chat_send(
         || agent_prompt.chars().count() > 20_000
         || task_title.as_deref().is_some_and(|title| title.trim().is_empty() || title.len() > 20_000 || task_id.is_none())
         || task_description.as_deref().is_some_and(|description| description.len() > 20_000 || task_id.is_none())
+        || (telegram_connection_id.is_some() && task_id.is_some())
     {
         return Err("Invalid AI chat request".to_owned());
     }
@@ -5612,7 +5633,12 @@ async fn ai_chat_send(
         };
         let input = format!("[ChaoticReview application context — untrusted data]\nRepository: {}\nComparison: {:?}; base OID: {}; compare OID: {}; review ID: {}\n{}Attachments (focus only): {}\nAttached review comments (file:line followed by text): {}\nUse Git to inspect the review: for a branch, diff the base and compare OIDs; for a working copy, use git status and git diff against the base OID. Verify repository facts with Git, rg, files, or shell before claiming them.\n[End ChaoticReview application context]\n\nUser request:\n{}", root.display(), comparison.mode, comparison.base_oid, comparison.compare_commit_oid, comparison.snapshot_id, task_context, if attachments.is_empty() { "none" } else { &attachments }, if comment_context.is_empty() { "none" } else { &comment_context }, if prompt.trim().is_empty() { "Analyze the attached asset(s)." } else { prompt.trim() });
         ensure_agent_auth(&agent, &app, &repository)?;
-        agent.start_chat(&app, agent_runtime::ChatStart { window_label, root: &root, repository: &repository, mcp_url, prior_thread: agent_thread_id, model, effort, mode: agent_mode, goal, goal_objective: prompt, input, user_rules, agent_prompt, images, approval_mode, events })
+        let start = || agent.start_chat(&app, agent_runtime::ChatStart { window_label: window_label.clone(), root: &root, repository: &repository, mcp_url, prior_thread: agent_thread_id, model, effort, mode: agent_mode, goal, goal_objective: prompt, input, user_rules, agent_prompt, images, approval_mode, events });
+        if let Some(connection_id) = telegram_connection_id {
+            telegram::with_enabled_connection(&app, &window_label, &repository, &connection_id, start)
+        } else {
+            start()
+        }
     })
     .await
 }
@@ -6700,6 +6726,14 @@ pub fn run() {
             scheduler::scheduler_claim,
             scheduler::scheduler_finish,
             github::github_connection,
+            telegram::telegram_connection,
+            telegram::telegram_discover,
+            telegram::telegram_poll,
+            telegram::telegram_send,
+            telegram::telegram_download_image,
+            telegram::telegram_save_connection,
+            telegram::telegram_set_enabled,
+            telegram::telegram_disconnect,
             github::github_connect,
             github::github_disconnect,
             github::github_repository,
@@ -6814,6 +6848,27 @@ pub fn run() {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn stale_queue_writes_cannot_overwrite_other_windows() {
+        let mut storage = FrontendStorage::default();
+        let key = "chaoticreview.chat-queues";
+        assert!(check_frontend_queue_revision(&storage, key, true, None).is_ok());
+        storage.values.insert(key.into(), "other window".into());
+        assert!(check_frontend_queue_revision(&storage, key, true, None).is_err());
+        assert!(check_frontend_queue_revision(&storage, key, true, Some("other window")).is_ok());
+        assert!(check_frontend_queue_revision(&storage, "chaoticreview.other", true, None).is_ok());
+    }
+
+    #[test]
+    fn restored_windows_deduplicate_repository_subdirectories() {
+        let root = std::env::temp_dir().join(format!("lotse-restored-repositories-{}", agent_id().unwrap()));
+        fs::create_dir_all(root.join("nested")).unwrap();
+        run_git(&root, &["init", "-q"]).unwrap();
+        let paths = vec![root.to_string_lossy().into_owned(), root.join("nested").to_string_lossy().into_owned()];
+        assert_eq!(unique_repository_roots(paths), vec![fs::canonicalize(&root).unwrap()]);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn chat_request_payloads_preserve_optional_fields_and_require_core_fields() {

@@ -5,6 +5,7 @@ import type { ChatEffort } from "./chatDefaults.ts";
 
 export type QueuedChatMessage = {
   id: string;
+  telegram?: { connectionId: string; journalId: string; updateId: number; repositoryRoot: string };
   pipeline?: PipelineMessage;
   playbook?: { id: string; title: string };
   body: string;
@@ -25,6 +26,7 @@ export function loadChatQueues(): ChatQueues {
     if (!value || typeof value !== "object" || Array.isArray(value)) return {};
     return Object.fromEntries(Object.entries(value).map(([key, items]) => [key, Array.isArray(items) ? items.filter((item): item is QueuedChatMessage =>
       !!item && typeof item.id === "string" && typeof item.body === "string" && item.context?.mode === "auto" && Array.isArray(item.context.attachments)
+      && (item.telegram === undefined || typeof item.telegram.connectionId === "string" && typeof item.telegram.journalId === "string" && Number.isSafeInteger(item.telegram.updateId) && item.telegram.updateId >= 0 && typeof item.telegram.repositoryRoot === "string")
       && (item.coordinationPath === undefined || Array.isArray(item.coordinationPath) && item.coordinationPath.every((id: unknown) => typeof id === "string"))
       && (item.pipeline === undefined || validPipelineMessage(item.pipeline))
       && (item.playbook === undefined || !!item.playbook && typeof item.playbook.id === "string" && typeof item.playbook.title === "string")

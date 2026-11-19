@@ -1,0 +1,86 @@
+import { act } from "react";
+import { createRoot } from "react-dom/client";
+import { mockConvertFileSrc, mockWindows } from "@tauri-apps/api/mocks";
+import { mockIPC } from "./mockTauri";
+import { fileStore, initializeFileStore } from "../src/fileStore";
+import { telegramJournalKey } from "../src/telegramJournal";
+import App from "../src/App";
+
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+const repo = { rootPath: "/synthetic-repository", name: "Telegram", currentBranch: "main", hasOrigin: true };
+const comparison = { mode: "workingCopy", baseRef: null, compareRef: null, baseOid: "a".repeat(40), baseCommitOid: "a".repeat(40), compareCommitOid: "a".repeat(40), snapshotId: "snapshot", files: [] };
+const storage: Record<string, string> = { "chaoticreview.auth-onboarding-v1": "complete" };
+const sends: any[] = [], replies: string[] = [], reviews: any[] = [], failures: string[] = [];
+let ready: (status: unknown) => void = () => {};
+let polled = false;
+mockWindows("main"); mockConvertFileSrc("macos");
+mockIPC(async (command, args: any) => {
+  if (command === "load_frontend_storage") return storage;
+  if (command === "set_frontend_storage") { storage[args.key] = args.value; return; }
+  if (command === "telegram_connection") return new Promise((resolve) => { ready = resolve; });
+  if (command === "telegram_poll") {
+    if (polled) return new Promise(() => {});
+    polled = true;
+    return { nextOffset: 3, messages: [{ updateId: 1, message: { text: "First message" } }, { updateId: 2, message: { caption: "Describe this", photo: [{ file_id: "photo" }] } }] };
+  }
+  if (command === "telegram_download_image") return { kind: "image", path: "/synthetic/image.png", name: "image.png" };
+  if (command === "telegram_send") { replies.push(args.text); return; }
+  if (["retain_task_images", "release_chat_image_reference"].includes(command)) return;
+  if (command === "load_ai_settings") return { activeProvider: "openrouter", providers: [{ id: "openrouter", name: "Synthetic", baseUrl: "https://openrouter.ai/api/v1", envKey: "OPENROUTER_API_KEY" }], repositoryProviders: {}, ripgrepAvailable: true, mcpUrl: "" };
+  if (command === "current_repository" || command === "refresh_repository") return repo;
+  if (command === "compare_working_copy") return comparison;
+  if (command === "load_review") return reviews.at(-1) ?? null;
+  if (command === "github_connection") return null;
+  if (command === "list_branch_refs") return { refs: ["main"], remoteRefs: [], defaultBase: "main", pullCount: 0, pushCount: 0 };
+  if (command === "agent_models") return [{ model: "gpt-5.6-terra", displayName: "Default" }];
+  if (["scheduler_list", "list_memory", "load_mcp_servers"].includes(command)) return [];
+  if (command === "task_sandbox_supported" || command === "task_browser_supported") return false;
+  if (command === "conversation_settings") return { enabled: false };
+  if (command === "save_review") { reviews.push(args.session); return; }
+  if (command === "ai_chat_send") { sends.push(args); return { requestId: `run-${sends.length}`, threadId: "thread-1", turnId: `turn-${sends.length}` }; }
+  if (command === "set_mcp_context" || command.startsWith("plugin:window|")) return;
+  if (command.startsWith("plugin:notification|")) return false;
+  failures.push(command); throw new Error(`Unexpected IPC: ${command}`);
+}, { shouldMockEvents: true, telegram: true });
+const check = (value: unknown, message: string) => { if (!value) throw new Error(message); };
+const settle = async () => { for (let index = 0; index < 10; index++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); }); };
+const event = async (index: number, kind: string, extra: object = {}) => { await act(async () => sends[index].events.onmessage({ type: "chat", payload: { requestId: `run-${index + 1}`, threadId: "thread-1", turnId: `turn-${index + 1}`, kind, ...extra } })); await settle(); };
+let root = createRoot(document.getElementById("root")!);
+try {
+  await initializeFileStore(); await act(async () => root.render(<App />)); await settle();
+  await act(async () => ready({ connected: true, enabled: true, userId: 10, chatId: 10, connectionId: "connection", journalId: "bot" })); await settle();
+  check(sends.length === 1 && sends[0].prompt === "First message" && sends[0].telegramConnectionId === "connection", "First message did not start exactly once with the connection guard");
+  check(reviews.some((review) => review.chatMessages.some((item: any) => item.body === "First message")), "Incoming message was not saved to the workspace");
+  await act(async () => sends[0].events.onmessage({ type: "approvalRequested", payload: { requestId: 42, title: "Allow?", description: "Synthetic", source: "agent", serverName: null } })); await settle();
+  check(replies.some((text) => text.includes("approval in Lotse")), "Approval notice was not sent");
+  check(sends.length === 1, "Queued message started before the previous turn finished");
+  await event(0, "assistantMessageCompleted", { finalText: "First answer" }); await event(0, "completed");
+  check(replies.includes("First answer"), "Answer was not sent to Telegram");
+  check(sends.length === 2 && sends[1].prompt === "Describe this" && sends[1].agentThreadId === "thread-1", "Second message did not continue the workspace thread");
+  check(sends[1].chatContext.attachments[0].kind === "image", "Image did not reach the workspace agent");
+  await event(1, "assistantMessageCompleted", { finalText: "Image answer" }); await event(1, "completed");
+  check(replies.includes("Image answer"), "Image answer was not sent");
+  await act(async () => root.unmount());
+  const workspaceKey = JSON.stringify([repo.rootPath, "workingCopy", null, null, comparison.baseOid]);
+  const item = { id: "telegram-connection-3", telegram: { repositoryRoot: repo.rootPath, connectionId: "connection", journalId: "bot", updateId: 3 }, body: "After restart", context: { mode: "auto", attachments: [] }, selection: null, mode: "default", model: "gpt-5.6-terra", effort: "medium" };
+  fileStore.setItem("chaoticreview.chat-queues", JSON.stringify({ [workspaceKey]: [item] }));
+  fileStore.setItem(telegramJournalKey(repo.rootPath, "bot"), JSON.stringify({ offset: 4, entries: [{ updateId: 3, workspaceKey, item, phase: "queued" }] }));
+  await fileStore.flush();
+  root = createRoot(document.getElementById("root")!);
+  await act(async () => root.render(<App />)); await settle();
+  await act(async () => ready({ connected: true, enabled: true, userId: 10, chatId: 10, connectionId: "connection", journalId: "bot" })); await settle();
+  check(sends.length === 3 && sends[2].prompt === "After restart", "Persisted queued message was not resumed once after restart");
+  await event(2, "assistantMessageCompleted", { finalText: "Restart answer" }); await event(2, "completed");
+  check(replies.includes("Restart answer"), "Recovered turn did not send its answer");
+  await act(async () => root.unmount());
+  fileStore.setItem("chaoticreview.chat-queues", JSON.stringify({ [workspaceKey]: [item] }));
+  fileStore.setItem(telegramJournalKey(repo.rootPath, "bot"), JSON.stringify({ offset: 4, entries: [{ updateId: 3, workspaceKey, item, phase: "running" }] }));
+  await fileStore.flush();
+  root = createRoot(document.getElementById("root")!);
+  await act(async () => root.render(<App />)); await settle();
+  await act(async () => ready({ connected: true, enabled: true, userId: 10, chatId: 10, connectionId: "connection", journalId: "bot" })); await settle();
+  check(sends.length === 3, "An uncertain running message was started again after restart");
+  check(failures.length === 0, `Unexpected IPC: ${failures.join(", ")}`);
+  document.getElementById("result")!.textContent = "PASS: Telegram workspace round trip, queue, images, approvals and restart";
+} catch (error) { document.getElementById("result")!.textContent = `FAIL: ${String(error)}`; }
+finally { await act(async () => root.unmount()); }

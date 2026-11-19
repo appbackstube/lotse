@@ -16,6 +16,7 @@ const pages = [
   { id: "usage", label: "Usage", group: "Agent", icon: BarChart3, keywords: "activity statistics agents playbooks roles models runs" },
   { id: "mcp", label: "MCP servers", group: "Connections", icon: Plug, keywords: "tools integrations figma slack oauth" },
   { id: "github", label: "GitHub", group: "Connections", icon: GitPullRequest, keywords: "account token inbox refresh issues pull requests" },
+  { id: "telegram", label: "Telegram", group: "Connections", icon: Plug, keywords: "bot messages repository chat images" },
   { id: "credentials", label: "Website credentials", group: "Connections", icon: KeyRound, keywords: "browser login password keychain" },
   { id: "repository", label: "Repository", group: "Workspace", icon: FolderGit2, keywords: "git branches fetch pull run command worktrees cleanup" },
   { id: "diagnostics", label: "Diagnostics", group: "Workspace", icon: CircleHelp, keywords: "troubleshooting bundled codex agent" },

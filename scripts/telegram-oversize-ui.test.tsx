@@ -1,0 +1,62 @@
+import { act } from "react";
+import { createRoot } from "react-dom/client";
+import { mockConvertFileSrc, mockWindows } from "@tauri-apps/api/mocks";
+import { mockIPC } from "./mockTauri";
+import { fileStore, initializeFileStore } from "../src/fileStore";
+import { telegramJournalKey } from "../src/telegramJournal";
+import App from "../src/App";
+
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+const repo = { rootPath: "/synthetic-repository", name: "Telegram", currentBranch: "main", hasOrigin: true };
+const comparison = { mode: "workingCopy", baseRef: null, compareRef: null, baseOid: "a".repeat(40), baseCommitOid: "a".repeat(40), compareCommitOid: "a".repeat(40), snapshotId: "snapshot", files: [] };
+const storage: Record<string, string> = { "chaoticreview.auth-onboarding-v1": "complete" };
+const sends: any[] = [], replies: string[] = [], reviews: any[] = [], failures: string[] = [];
+let ready: (status: unknown) => void = () => {};
+let polled = false;
+mockWindows("main"); mockConvertFileSrc("macos");
+mockIPC(async (command, args: any) => {
+  if (command === "load_frontend_storage") return storage;
+  if (command === "set_frontend_storage") { storage[args.key] = args.value; return; }
+  if (command === "telegram_connection") return new Promise((resolve) => { ready = resolve; });
+  if (command === "telegram_poll") {
+    if (polled) return new Promise(() => {});
+    polled = true;
+    return { nextOffset: 4, messages: [{ updateId: 1, message: { document: { file_id: "oversized", file_size: 25000000, mime_type: "image/png" } } }, { updateId: 2, message: { document: { file_id: "oversized-unknown-size", mime_type: "image/png" } } }, { updateId: 3, message: { caption: "Describe this", photo: [{ file_id: "photo" }] } }] };
+  }
+  if (command === "telegram_download_image" && args.fileId === "oversized") throw new Error("Oversized image must be rejected before download");
+  if (command === "telegram_download_image" && args.fileId === "oversized-unknown-size") throw new Error("Telegram image exceeds 20 MB.");
+  if (command === "telegram_download_image") return { kind: "image", path: "/synthetic/image.png", name: "image.png" };
+  if (command === "telegram_send") { replies.push(args.text); return; }
+  if (["retain_task_images", "release_chat_image_reference"].includes(command)) return;
+  if (command === "load_ai_settings") return { activeProvider: "openrouter", providers: [{ id: "openrouter", name: "Synthetic", baseUrl: "https://openrouter.ai/api/v1", envKey: "OPENROUTER_API_KEY" }], repositoryProviders: {}, ripgrepAvailable: true, mcpUrl: "" };
+  if (command === "current_repository" || command === "refresh_repository") return repo;
+  if (command === "compare_working_copy") return comparison;
+  if (command === "load_review") return reviews.at(-1) ?? null;
+  if (command === "github_connection") return null;
+  if (command === "list_branch_refs") return { refs: ["main"], remoteRefs: [], defaultBase: "main", pullCount: 0, pushCount: 0 };
+  if (command === "agent_models") return [{ model: "gpt-5.6-terra", displayName: "Default" }];
+  if (["scheduler_list", "list_memory", "load_mcp_servers"].includes(command)) return [];
+  if (command === "task_sandbox_supported" || command === "task_browser_supported") return false;
+  if (command === "conversation_settings") return { enabled: false };
+  if (command === "save_review") { reviews.push(args.session); return; }
+  if (command === "ai_chat_send") { sends.push(args); return { requestId: `run-${sends.length}`, threadId: "thread-1", turnId: `turn-${sends.length}` }; }
+  if (command === "set_mcp_context" || command.startsWith("plugin:window|")) return;
+  if (command.startsWith("plugin:notification|")) return false;
+  failures.push(command); throw new Error(`Unexpected IPC: ${command}`);
+}, { shouldMockEvents: true, telegram: true });
+const check = (value: unknown, message: string) => { if (!value) throw new Error(message); };
+const settle = async () => { for (let index = 0; index < 10; index++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); }); };
+const root = createRoot(document.getElementById("root")!);
+try {
+  await initializeFileStore(); await act(async () => root.render(<App />)); await settle();
+  await act(async () => ready({ connected: true, enabled: true, userId: 10, chatId: 10, connectionId: "connection", journalId: "bot" })); await settle();
+
+  check(sends.length === 1 && sends[0].prompt === "Describe this", "Oversized image blocked the following message");
+  check(replies.filter((text) => text.includes("under 20 MB")).length === 2, "Oversized image did not receive a rejection notice");
+  const journal = JSON.parse(fileStore.getItem(telegramJournalKey(repo.rootPath, "bot"))!);
+  check(journal.offset === 4, "Rejected image prevented the offset from advancing");
+  check(!journal.entries.some((entry: any) => entry.updateId < 3), "Rejected image was queued");
+  check(failures.length === 0, "Unexpected IPC");
+  document.getElementById("result")!.textContent = "PASS: oversized Telegram image is rejected without blocking later messages";
+} catch (error) { document.getElementById("result")!.textContent = `FAIL: ${String(error)}`; }
+finally { await act(async () => root.unmount()); }

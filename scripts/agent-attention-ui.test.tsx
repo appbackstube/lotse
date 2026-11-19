@@ -27,6 +27,7 @@ mockIPC(async (command, args: any) => {
   if (command === "agent_models") return [{ model: "gpt-5.6-terra", displayName: "Default" }];
   if (["scheduler_list", "list_memory", "load_mcp_servers"].includes(command)) return [];
   if (command === "task_sandbox_supported" || command === "task_browser_supported") return false;
+  if (command === "conversation_settings") return { enabled: false };
   if (command === "load_task_changes") return { comparison, pendingSnapshotId: "snapshot", pendingFiles: false, committedChanges: false, headOid: comparison.baseOid, squashMessage: "" };
   if (command === "task_git_status") return { repository: repo, upstream: null, pullCount: 0, pushCount: 0, dirty: false };
   if (command === "ai_chat_send") { sends.push(args); return { requestId: `run-${sends.length}`, threadId: `thread-${sends.length}`, turnId: `turn-${sends.length}` }; }

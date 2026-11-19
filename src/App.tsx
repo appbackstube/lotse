@@ -1,4 +1,6 @@
 import { isChatUpload } from "./chatAttachments";
+import { useTelegram, type TelegramUpdate } from "./useTelegram";
+import { addTelegramEntry, changeTelegramPhase, readTelegramJournal, telegramJournalKey, updateTelegramJournal } from "./telegramJournal";
 import {
   Children,
   Fragment,
@@ -192,6 +194,7 @@ import type {
 } from "./types";
 import { branchPrefixStorageKey, defaultBranchStartStorageKey, loadDefaultBranchStart, saveDefaultBranchStart, loadBranchPrefix, saveBranchPrefix, taskNewBranchName, taskColors, taskStorageKey, customFieldsStorageKey, filterVisibleTasks, hasTaskCustomFieldLineBreaks, loadCloseKanbanModalOnOutsideClick, loadCollapsedTaskIds, loadOpenNewTaskInDrawer, loadTaskCustomFields, loadTaskLocationDefault, loadTaskView, loadTasks, mergeMcpTaskUpdates, moveTask, moveTaskCustomField, moveTaskProjected, moveTaskToBoardIndex, moveTaskWithinStatus, normalizeTask, removeTaskCustomFieldValues, saveCloseKanbanModalOnOutsideClick, saveCollapsedTaskIds, saveOpenNewTaskInDrawer, saveTaskCustomFields, saveTaskLocationDefault, saveTaskView, saveTasks, timestampTaskUpdates, taskAssetAttachments, taskBoardStatus, taskCustomFieldUrl, taskListMetadata, taskMcpContext, taskLocationFields, taskStartEditable, taskStartSelected, taskSubtreeIds, toggleTaskCommentCheckbox, type TaskBoardStatus, type TaskLocation, type TaskView } from "./tasks";
 
+const TelegramSettings = lazy(() => import("./components/TelegramSettings").then((module) => ({ default: module.TelegramSettings })));
 const AgentsSettings = lazy(() => import("./components/AgentsSettings").then((module) => ({ default: module.AgentsSettings })));
 const PlaybooksSettings = lazy(() => import("./components/PlaybooksSettings").then((module) => ({ default: module.PlaybooksSettings })));
 const message = (reason: unknown) =>
@@ -803,6 +806,8 @@ function ChatAssetNames({ attachments }: { attachments: ChatAttachment[] }) {
 const taskImagePaths = (task: RepositoryTask) => [...task.attachments, ...task.chatMessages.flatMap((message) => message.attachments ?? [])].flatMap((attachment) => isChatUpload(attachment) ? [attachment.path] : []);
 const taskQueueKey = (root: string, taskId: string) => JSON.stringify([root, "task", taskId]);
 const reviewQueueKey = (review: ReviewSession) => JSON.stringify([review.repoPath, review.mode, review.baseRef, review.compareRef, ...(review.mode === "workingCopy" ? [review.baseOid] : [])]);
+const comparisonMatchesReview = (comparison: Comparison | null, review: ReviewSession) => !!comparison && comparison.mode === review.mode
+  && comparison.baseRef === review.baseRef && comparison.compareRef === review.compareRef && comparison.baseOid === review.baseOid;
 
 function AppliedDiffs({ changes }: { changes: AppliedDiff[] }) {
   if (!changes.length) return null;
@@ -2144,7 +2149,12 @@ function App() {
   }, []);
   const [repository, setRepository] = useState<RepositoryInfo | null>(null);
   const repositoryRoot = repository?.rootPath ?? null;
+  const telegram = useTelegram(repositoryRoot, (root, connectionId, update) => receiveTelegram(root, connectionId, update), (root, connectionId) => recoverTelegram(root, connectionId));
+  const telegramRef = useRef(telegram);
+  telegramRef.current = telegram;
   const [comparison, setComparison] = useState<Comparison | null>(null);
+  const comparisonRef = useRef(comparison);
+  comparisonRef.current = comparison;
   const [comparisonMode, setComparisonMode] = useState<"workingCopy" | "branch">("workingCopy");
   const [branchRefs, setBranchRefs] = useState<BranchRefs | null>(null);
   const [branchFilter, setBranchFilter] = useState("");
@@ -2304,6 +2314,7 @@ function App() {
   const startingPipelineRef = useRef(new Map<string, string>());
   const [pausedQueueKeys, setPausedQueueKeys] = useState<Set<string>>(() => new Set(Object.keys(loadChatQueues())));
   const pausedQueueKeysRef = useRef(pausedQueueKeys);
+  const initiallyPausedQueueKeysRef = useRef(new Set(pausedQueueKeys));
   const queueDispatchRef = useRef<(key: string) => void>(() => {});
   const queueBusyRef = useRef(new Set<string>());
   const aiChatRunningRef = useRef(false);
@@ -2427,6 +2438,8 @@ function App() {
   const runOutputBottomRef = useRef<HTMLDivElement>(null);
   const refreshRef = useRef<() => Promise<void>>(async () => {});
   const reviewRef = useRef<ReviewSession | null>(null);
+  const telegramRunsRef = useRef(new Map<string, { connectionId: string; journalId: string; root: string; updateId: number; result: string; notices: Promise<void> }>());
+  const telegramSendingKeysRef = useRef(new Set<string>());
   const changedPathsRef = useRef<string[]>([]);
 
   const activeChatContext = useMemo<ChatContext>(() => ({ scope: "diff", items: [] }), []);
@@ -2990,8 +3003,44 @@ function App() {
     }
   };
 
+  async function markTelegramUncertain(run: { root: string; journalId: string; updateId: number }, explanation: string): Promise<void> {
+    const journalKey = telegramJournalKey(run.root, run.journalId);
+    await updateTelegramJournal(journalKey, (journal) => changeTelegramPhase(journal, run.updateId, "uncertain"));
+    setError(explanation);
+  }
+
+  async function finishTelegramRun(run: { root: string; connectionId: string; journalId: string; updateId: number }, result: string): Promise<void> {
+    const journalKey = telegramJournalKey(run.root, run.journalId);
+    await updateTelegramJournal(journalKey, (journal) => changeTelegramPhase(journal, run.updateId, "sending"));
+    try {
+      if (repositoryRef.current?.rootPath !== run.root || telegramRef.current.status?.connectionId !== run.connectionId || !telegramRef.current.status?.enabled) throw new Error("Telegram connection changed before the reply could be sent.");
+      let chunk = "";
+      for (const character of result) {
+        if (chunk.length + character.length > 4000) {
+          await invoke("telegram_send", { connectionId: run.connectionId, text: chunk });
+          chunk = "";
+        }
+        chunk += character;
+      }
+      if (chunk.trim()) await invoke("telegram_send", { connectionId: run.connectionId, text: chunk });
+      await updateTelegramJournal(journalKey, (journal) => changeTelegramPhase(journal, run.updateId, "done"));
+    } catch (reason) {
+      await markTelegramUncertain(run, "The Telegram reply may not have been delivered. Check the Telegram and Workspace chats before retrying.");
+      throw reason;
+    }
+  }
+
+  function notifyTelegramAttention(text: string): void {
+    const requestId = aiChatTurnRef.current?.requestId;
+    const run = requestId ? telegramRunsRef.current.get(requestId) : undefined;
+    if (!run || repositoryRef.current?.rootPath !== run.root || telegramRef.current.status?.connectionId !== run.connectionId) return;
+    run.notices = run.notices.then(() => invoke<void>("telegram_send", { connectionId: run.connectionId, text })).catch(() => setError("Could not notify Telegram about the agent's request. Open the Workspace chat."));
+  }
+
   const handleMainChatEvent = (update: AiChatEvent) => {
     handleVoiceChatEvent(update);
+    const telegramRun = telegramRunsRef.current.get(update.requestId);
+    if (telegramRun && update.kind === "assistantMessageCompleted" && update.finalText?.trim()) telegramRun.result = update.finalText.trim();
     if (update.kind !== "assistantDelta") flushAiChatDeltas();
     if (update.kind === "modelRerouted") { if (update.label) setAiChatServerModel(update.label); return; }
     if (update.kind === "status") { if (update.label) setAiChatStatus(update.label); return; }
@@ -3021,11 +3070,24 @@ function App() {
       aiChatRunningRef.current = false;
       setAiChatRunning(false); setAiChatStatus(""); setAiChatPlan(null); setAgentUserInput(null); aiChatTurnRef.current = null;
       const key = reviewRunQueueKeyRef.current;
-      void saved.then((ok) => { reviewRunSessionRef.current = null; if (key) { if (ok) window.setTimeout(() => queueDispatchRef.current(key), 0); else setQueuePaused(key, true); } });
+      if (telegramRun && key) telegramSendingKeysRef.current.add(key);
+      void saved.then(async (ok) => {
+        reviewRunSessionRef.current = null;
+        if (telegramRun) {
+          telegramRunsRef.current.delete(update.requestId);
+          await telegramRun.notices;
+          if (ok) await finishTelegramRun(telegramRun, telegramRun.result || "The agent finished. Open Lotse to see the result.");
+          else await markTelegramUncertain(telegramRun, "The agent finished, but its response could not be saved. Check the Workspace chat.");
+        }
+        const nextKey = reviewRunQueueKeyRef.current ?? key;
+        if (key && telegramRun) telegramSendingKeysRef.current.delete(key);
+        if (nextKey) { if (ok) window.setTimeout(() => queueDispatchRef.current(nextKey), 0); else setQueuePaused(nextKey, true); }
+      }).catch((reason) => { if (key) { if (telegramRun) telegramSendingKeysRef.current.delete(key); setQueuePaused(key, true); } if (reviewRunQueueKeyRef.current) setQueuePaused(reviewRunQueueKeyRef.current, true); setError(message(reason)); });
       if (!key || !chatQueuesRef.current[key]?.length) notifyAgent(null, "Agent finished. Open the workspace to view the result.");
       return saved;
     }
     if (update.kind === "failed") {
+      if (telegramRun) { notifyTelegramAttention("The agent failed. Open Lotse to check the Workspace chat."); telegramRunsRef.current.delete(update.requestId); void markTelegramUncertain(telegramRun, "The agent failed. Open Lotse to check the Workspace chat.").catch((reason) => setError(message(reason))); }
       resetAiChatTimeline(); aiChatTurnRef.current = null; aiChatRunningRef.current = false; setAiChatRunning(false); setAiChatStatus(""); setAiChatPlan(null); setAgentUserInput(null);
       if (reviewRunQueueKeyRef.current) setQueuePaused(reviewRunQueueKeyRef.current, true);
       reviewRunSessionRef.current = null;
@@ -3034,6 +3096,7 @@ function App() {
       notifyAgent(null, "Agent failed. Open the workspace to check the error.");
     }
     if (update.kind === "cancelled") {
+      if (telegramRun) { notifyTelegramAttention("The agent was stopped. Open Lotse to check the Workspace chat."); telegramRunsRef.current.delete(update.requestId); void markTelegramUncertain(telegramRun, "The agent was stopped. Open Lotse to check the Workspace chat.").catch((reason) => setError(message(reason))); }
       const saved = persistAiChatTimeline(); aiChatTimelineRef.current = []; setAiChatTimeline([]); aiChatTurnRef.current = null;
       aiChatRunningRef.current = false;
       setAiChatRunning(false); setAiChatStatus(""); setAiChatPlan(null); setAgentUserInput(null);
@@ -3067,6 +3130,7 @@ function App() {
       return;
     }
     if (event.type === "approvalRequested") {
+      if (!taskId) notifyTelegramAttention("The agent needs approval in Lotse. Telegram cannot approve it.");
       if (event.payload.source === "mcp") {
         setMcpApprovals((current) => current.some((approval) => approval.requestId === event.payload.requestId) ? current : [...current, { ...event.payload, taskId: taskId ?? null }]);
       }
@@ -3097,6 +3161,7 @@ function App() {
       return;
     }
     if (event.type === "userInputRequested") {
+      if (!taskId) notifyTelegramAttention("The agent has a question. Open Lotse to answer it.");
       if (taskId) {
         const run = taskRunsRef.current[taskId];
         if (run) {
@@ -3563,13 +3628,30 @@ function App() {
         const newKey = reviewQueueKey(nextReview);
         const queued = chatQueuesRef.current[oldKey];
         if (queued?.length) {
-          const nextQueues = { ...chatQueuesRef.current, [newKey]: [...queued, ...(chatQueuesRef.current[newKey] ?? [])] };
+          const wasPaused = pausedQueueKeysRef.current.has(oldKey) || (!!chatQueuesRef.current[newKey]?.length && pausedQueueKeysRef.current.has(newKey));
+          setQueuePaused(oldKey, true);
+          setQueuePaused(newKey, true);
+          // A carried conversation keeps its pending messages, including their durable
+          // Telegram identity. Persist the binding before allowing the new queue to run.
+          const journalIds = new Set(queued.flatMap((item) => item.telegram ? [item.telegram.journalId] : []));
+          for (const journalId of journalIds) {
+            await updateTelegramJournal(telegramJournalKey(repo.rootPath, journalId), (journal) => ({
+              ...journal,
+              entries: journal.entries.map((entry) => entry.workspaceKey === oldKey && (entry.phase === "prepared" || entry.phase === "queued")
+                ? { ...entry, workspaceKey: newKey } : entry),
+            }));
+          }
+          const nextQueues = { ...chatQueuesRef.current };
+          nextQueues[newKey] = [...(nextQueues[oldKey] ?? []), ...(nextQueues[newKey] ?? [])];
           delete nextQueues[oldKey];
           chatQueuesRef.current = nextQueues;
           setChatQueues(nextQueues);
           saveChatQueues(nextQueues);
-          setQueuePaused(newKey, true);
+          await fileStore.flush();
+          if (requestId !== comparisonLoadRef.current) return;
+          setQueuePaused(newKey, wasPaused || !journalIds.size);
         }
+        if (reviewRunQueueKeyRef.current === oldKey) reviewRunQueueKeyRef.current = newKey;
       }
       setReview(nextReview);
       const editedPath =
@@ -3836,7 +3918,7 @@ function App() {
       }
       if (result.status !== "opened") return;
       if (result.focusedExisting) {
-        await getCurrentWindow().close();
+        if (!repositoryRef.current) await getCurrentWindow().close();
         return;
       }
       await activateRepository(result.repository);
@@ -4156,11 +4238,12 @@ function App() {
     taskTitle?: string;
     taskDescription?: string;
     beforeStart?: () => boolean;
+    telegramConnectionId?: string;
     playbook?: UsageItem;
     }, onEvent: (event: AgentTurnEvent) => void) => {
     await syncMcpContextRef.current();
     if (request.beforeStart && !request.beforeStart()) throw new Error("The voice request was not started because the conversation or workspace changed.");
-    const accepted = await invoke<AiChatAccepted>("ai_chat_send", { input: { baseOid: comparison!.baseOid, mode: comparison!.mode, baseRef: comparison!.baseRef, compareRef: comparison!.compareRef, snapshotId: comparison!.snapshotId, agentThreadId: request.threadId, model: request.model, effort: request.effort, collaborationMode: request.mode, goal: request.mode === "default" ? request.goalSettings ?? defaultChatGoal : defaultChatGoal, prompt: request.prompt, userRules, agentPrompt: request.chatAgent?.prompt ?? "", chatContext: request.context, comments: review!.comments, allowLongPrompt: request.allowLongPrompt, taskId: request.taskId, taskLocation: request.taskLocation, taskTitle: request.taskTitle, taskDescription: request.taskDescription, approvalMode: approvalForAgent(request.chatAgent, approvalReviewerOverrides[request.taskId ?? "review"], approvalReviewerDefault, request.pipeline) }, events: new Channel<AgentTurnEvent>(onEvent) });
+    const accepted = await invoke<AiChatAccepted>("ai_chat_send", { input: { baseOid: comparison!.baseOid, mode: comparison!.mode, baseRef: comparison!.baseRef, compareRef: comparison!.compareRef, snapshotId: comparison!.snapshotId, agentThreadId: request.threadId, model: request.model, effort: request.effort, collaborationMode: request.mode, goal: request.mode === "default" ? request.goalSettings ?? defaultChatGoal : defaultChatGoal, prompt: request.prompt, userRules, agentPrompt: request.chatAgent?.prompt ?? "", chatContext: request.context, comments: review!.comments, allowLongPrompt: request.allowLongPrompt, taskId: request.taskId, taskLocation: request.taskLocation, taskTitle: request.taskTitle, taskDescription: request.taskDescription, approvalMode: approvalForAgent(request.chatAgent, approvalReviewerOverrides[request.taskId ?? "review"], approvalReviewerDefault, request.pipeline), telegramConnectionId: request.telegramConnectionId }, events: new Channel<AgentTurnEvent>(onEvent) });
     void recordUsage({ id: accepted.requestId, kind: "run", at: Date.now(), agent: request.chatAgent ? { id: request.chatAgent.id, title: request.chatAgent.title } : { id: "unassigned", title: "No agent" }, model: request.model, playbook: request.playbook }).catch((reason) => setError(`Usage could not be saved: ${message(reason)}`));
     return accepted;
   };
@@ -4224,6 +4307,7 @@ function App() {
         mode: turnMode,
         prompt,
         context: requestContext,
+        telegramConnectionId: queuedItem?.telegram?.connectionId,
         beforeStart,
         playbook: queuedItem?.playbook ?? playbook,
       }, (event) => { if (runReady) dispatchEvent(event); else earlyEvents.push(event); });
@@ -4611,8 +4695,111 @@ function App() {
     return true;
   };
 
+  async function receiveTelegram(root: string, connectionId: string, update: TelegramUpdate): Promise<void> {
+    const current = reviewRef.current;
+    const currentStatus = telegramRef.current.status;
+    if (repositoryRef.current?.rootPath !== root || !current || current.repoPath !== root || !comparisonMatchesReview(comparisonRef.current, current)
+      || !currentStatus?.enabled || currentStatus.connectionId !== connectionId || !currentStatus.journalId) throw new Error("Open the repository's Workspace chat to receive Telegram messages.");
+    if (!Number.isSafeInteger(update.updateId) || update.updateId < 0 || !update.message || typeof update.message !== "object") throw new Error("Telegram returned an invalid message.");
+    const journalId = currentStatus.journalId;
+    const key = telegramJournalKey(root, journalId);
+    let entry = readTelegramJournal(key).entries.find((value) => value.updateId === update.updateId);
+    if (entry && entry.item.telegram?.connectionId !== connectionId) {
+      setQueuePaused(entry.workspaceKey, true);
+      setError("A Telegram message belongs to a previous connection. Check the Workspace chat before retrying.");
+      return;
+    }
+    if (entry && entry.phase !== "prepared" && entry.phase !== "queued") {
+      if (entry.phase !== "done") { setQueuePaused(entry.workspaceKey, true); setError("A previous Telegram operation has an uncertain result. Check the Workspace chat before retrying."); }
+      return;
+    }
+    if (!entry) {
+      const incoming = update.message;
+      const text = (typeof incoming.text === "string" ? incoming.text : typeof incoming.caption === "string" ? incoming.caption : "").trim();
+      if (text === "/start" && !incoming.photo && !incoming.document) return;
+      const photos = Array.isArray(incoming.photo) ? incoming.photo : [];
+      const photo = photos.length ? photos[photos.length - 1] : null;
+      const document = incoming.document && typeof incoming.document === "object" ? incoming.document as Record<string, unknown> : null;
+      const image = photo && typeof photo === "object" ? photo as Record<string, unknown> : document && typeof document.mime_type === "string" && document.mime_type.startsWith("image/") ? document : null;
+      const unsupported = ["audio", "voice", "video", "video_note", "animation", "sticker", "contact", "location", "venue", "poll"].some((name) => incoming[name] !== undefined) || (!!document && !image);
+      if (unsupported || (!text && !image)) {
+        await invoke("telegram_send", { connectionId, text: "This message type is not supported. Send text or an image." });
+        return;
+      }
+      const attachments: ChatAttachment[] = [];
+      if (image) {
+        if (typeof image.file_size === "number" && image.file_size > 20 * 1024 * 1024) {
+          await invoke("telegram_send", { connectionId, text: "This image cannot be processed. Send a supported, non-animated image under 20 MB." });
+          return;
+        }
+        if (typeof image.file_id !== "string") throw new Error("Telegram sent an invalid image.");
+        let attachment: ChatAttachment;
+        try { attachment = await invoke<ChatAttachment>("telegram_download_image", { connectionId, fileId: image.file_id }); }
+        catch (reason) {
+          if (/Telegram image exceeds 20 MB|Telegram did not return a supported image|Animated GIFs are not supported|Invalid Telegram image ID/.test(String(reason))) {
+            await invoke("telegram_send", { connectionId, text: "This image cannot be processed. Send a supported, non-animated image under 20 MB." });
+            return;
+          }
+          throw reason;
+        }
+        if (!isChatUpload(attachment)) throw new Error("Telegram sent an invalid image.");
+        await invoke("retain_task_images", { paths: [attachment.path] });
+        attachments.push(attachment);
+      }
+      if (repositoryRef.current?.rootPath !== root || telegramRef.current.status?.connectionId !== connectionId || !telegramRef.current.status?.enabled) throw new Error("Telegram connection changed before the message was queued.");
+      const latest = reviewRef.current;
+      if (!latest || latest.repoPath !== root || !comparisonMatchesReview(comparisonRef.current, latest)) throw new Error("Open the repository's Workspace chat to receive Telegram messages.");
+      const workspaceKey = reviewQueueKey(latest);
+      const item: QueuedChatMessage = { id: `telegram-${connectionId}-${update.updateId}`, telegram: { connectionId, journalId, updateId: update.updateId, repositoryRoot: root }, body: text, context: { mode: "auto", attachments }, selection: null, mode: aiChatMode, model: aiChatModel, effort: aiChatEffort };
+      const journal = await updateTelegramJournal(key, (value) => addTelegramEntry(value, { updateId: update.updateId, workspaceKey, item, phase: "prepared" }));
+      entry = journal.entries.find((value) => value.updateId === update.updateId);
+      if (!entry) throw new Error("Could not save the Telegram message.");
+    }
+    if (repositoryRef.current?.rootPath !== root || telegramRef.current.status?.connectionId !== connectionId || !telegramRef.current.status?.enabled) throw new Error("Telegram connection changed before the message was queued.");
+    const existing = entry;
+    const wasPaused = pausedQueueKeysRef.current.has(existing.workspaceKey);
+    setQueuePaused(existing.workspaceKey, true);
+    try {
+      if (!chatQueuesRef.current[existing.workspaceKey]?.some((item) => item.id === existing.item.id)) {
+        if (existing.phase === "queued") throw new Error("A queued Telegram message is missing. Check the Workspace chat before retrying.");
+        changeQueue(existing.workspaceKey, (items) => [...items, existing.item]);
+        await fileStore.flush();
+      }
+      await updateTelegramJournal(key, (value) => changeTelegramPhase(value, update.updateId, "queued"));
+      if (!wasPaused) { setQueuePaused(existing.workspaceKey, false); queueDispatchRef.current(existing.workspaceKey); }
+    } catch (reason) {
+      setQueuePaused(existing.workspaceKey, true);
+      throw reason;
+    }
+  }
+
+  async function recoverTelegram(root: string, connectionId: string): Promise<void> {
+    const current = reviewRef.current;
+    if (repositoryRef.current?.rootPath !== root || !current || current.repoPath !== root || !comparisonMatchesReview(comparisonRef.current, current)
+      || !telegramRef.current.status?.enabled || telegramRef.current.status.connectionId !== connectionId || !telegramRef.current.status.journalId) throw new Error("Waiting for the repository's Workspace chat.");
+    const journal = readTelegramJournal(telegramJournalKey(root, telegramRef.current.status.journalId));
+    for (const entry of journal.entries) {
+      if (entry.phase !== "prepared" && entry.phase !== "queued" && entry.phase !== "done" && ![...telegramRunsRef.current.values()].some((run) => run.root === root && run.connectionId === connectionId && run.updateId === entry.updateId)) {
+        setQueuePaused(entry.workspaceKey, true);
+        initiallyPausedQueueKeysRef.current.delete(entry.workspaceKey);
+        setError("A previous Telegram operation has an uncertain result. Check the Workspace and Telegram chats before retrying.");
+      }
+    }
+    for (const entry of journal.entries) {
+      if (entry.phase === "prepared" || entry.phase === "queued") await receiveTelegram(root, connectionId, { updateId: entry.updateId, message: {} });
+    }
+    for (const key of initiallyPausedQueueKeysRef.current) {
+      const queue = chatQueuesRef.current[key];
+      if (!queue?.length || !queue.every((item) => item.telegram?.repositoryRoot === root && item.telegram.connectionId === connectionId
+        && journal.entries.some((entry) => entry.updateId === item.telegram?.updateId && entry.workspaceKey === key && (entry.phase === "prepared" || entry.phase === "queued")))) continue;
+      initiallyPausedQueueKeysRef.current.delete(key);
+      setQueuePaused(key, false);
+      queueDispatchRef.current(key);
+    }
+  }
+
   queueDispatchRef.current = (key) => {
-    if (pausedQueueKeysRef.current.has(key) || queueBusyRef.current.has(key)) return;
+    if (pausedQueueKeysRef.current.has(key) || queueBusyRef.current.has(key) || telegramSendingKeysRef.current.has(key)) return;
     if (!modelsLoaded) return;
     const item = chatQueuesRef.current[key]?.[0];
     if (!item || !repositoryRef.current) return;
@@ -4623,9 +4810,31 @@ function App() {
       return;
     }
     const task = tasksRef.current.find((entry) => taskQueueKey(repositoryRef.current!.rootPath, entry.id) === key);
-    if (task ? !!taskRunsRef.current[task.id] || taskStartingRef.current.has(task.id) : aiChatRunningRef.current || !reviewRef.current || reviewQueueKey(reviewRef.current) !== key) return;
+    if (task ? !!taskRunsRef.current[task.id] || taskStartingRef.current.has(task.id) : aiChatRunningRef.current || telegramSendingKeysRef.current.size > 0 || !reviewRef.current || reviewQueueKey(reviewRef.current) !== key) return;
+    if (item.telegram && (task || repositoryRef.current.rootPath !== item.telegram.repositoryRoot || !telegramRef.current.status?.enabled || telegramRef.current.status.connectionId !== item.telegram.connectionId)) return;
     queueBusyRef.current.add(key);
     void (async () => {
+      if (item.telegram) {
+        const origin = item.telegram;
+        const journalKey = telegramJournalKey(origin.repositoryRoot, origin.journalId);
+        const journalEntry = readTelegramJournal(journalKey).entries.find((entry) => entry.updateId === origin.updateId);
+        if (!journalEntry || journalEntry.phase !== "queued" || journalEntry.workspaceKey !== key || journalEntry.item.id !== item.id) throw new Error("A Telegram message has an uncertain status. Check the Workspace chat before retrying.");
+        await updateTelegramJournal(journalKey, (journal) => changeTelegramPhase(journal, origin.updateId, "starting"));
+        const accepted = await sendAiChat(item.body, item.context, item.mode, { model: item.model, effort: item.effort }, item, (run) => {
+          telegramRunsRef.current.set(run.requestId, { root: origin.repositoryRoot, connectionId: origin.connectionId, journalId: origin.journalId, updateId: origin.updateId, result: "", notices: Promise.resolve() });
+          void updateTelegramJournal(journalKey, (journal) => changeTelegramPhase(journal, origin.updateId, "running")).catch((reason) => setError(message(reason)));
+        }, () => repositoryRef.current?.rootPath === origin.repositoryRoot && telegramRef.current.status?.enabled === true
+          && telegramRef.current.status.connectionId === origin.connectionId && !!reviewRef.current && reviewQueueKey(reviewRef.current) === key);
+        if (!accepted) {
+          await markTelegramUncertain({ root: origin.repositoryRoot, journalId: origin.journalId, updateId: origin.updateId }, "The Telegram message may not have started. Check the Workspace chat before retrying.");
+          setQueuePaused(key, true);
+          return;
+        }
+        removeQueued(key, item.id);
+        await fileStore.flush();
+        for (const attachment of item.context.attachments) if (isChatUpload(attachment)) void invoke("release_chat_image_reference", { path: attachment.path }).catch((reason) => setError(message(reason)));
+        return;
+      }
       const accepted = task ? await sendTaskMessage(task, item.mode, item.body, item)
         : await sendAiChat(item.body, item.context, item.mode, { model: item.model, effort: item.effort }, item);
       if (accepted) {
@@ -4650,6 +4859,10 @@ function App() {
   useEffect(() => {
     if (modelsLoaded) for (const key of Object.keys(chatQueuesRef.current)) queueDispatchRef.current(key);
   }, [modelsStatus, modelsLoaded]);
+
+  useEffect(() => {
+    if (review && telegram.status?.enabled) queueDispatchRef.current(reviewQueueKey(review));
+  }, [review, telegram.status?.enabled, telegram.status?.connectionId]);
 
   const pipelineRunSnapshot = (root: string, taskId: string, runId: string) => {
     const key = taskQueueKey(root, taskId);
@@ -4758,6 +4971,7 @@ function App() {
 
   const steerQueued = async (key: string, id: string) => {
     const item = chatQueuesRef.current[key]?.find((entry) => entry.id === id);
+    if (item?.telegram) { setError("Telegram messages must stay in the queue and cannot steer a running agent."); return; }
     const task = taskMode ? tasksRef.current.find((entry) => entry.id === selectedTaskId) : null;
     const accepted = task ? taskRunsRef.current[task.id]?.accepted : aiChatTurnRef.current;
     if (!item || !accepted || (!task && reviewRunQueueKeyRef.current !== key) || queueBusyRef.current.has(key)) return;
@@ -4795,6 +5009,23 @@ function App() {
       queueBusyRef.current.delete(key);
       if (chatQueuesRef.current[key]?.length && !pausedQueueKeysRef.current.has(key)) queueMicrotask(() => queueDispatchRef.current(key));
     }
+  };
+
+  const deleteQueued = async (key: string, id: string) => {
+    const item = chatQueuesRef.current[key]?.find((entry) => entry.id === id);
+    if (!item || queueBusyRef.current.has(key)) return;
+    if (!item.telegram) { removeQueued(key, id, true); return; }
+    const wasPaused = pausedQueueKeysRef.current.has(key);
+    queueBusyRef.current.add(key);
+    setQueuePaused(key, true);
+    try {
+      const origin = item.telegram;
+      await updateTelegramJournal(telegramJournalKey(origin.repositoryRoot, origin.journalId), (journal) => changeTelegramPhase(journal, origin.updateId, "done"));
+      removeQueued(key, id, true);
+      await fileStore.flush();
+      if (!wasPaused) { setQueuePaused(key, false); queueDispatchRef.current(key); }
+    } catch (reason) { setError(message(reason)); }
+    finally { queueBusyRef.current.delete(key); if (!pausedQueueKeysRef.current.has(key)) queueDispatchRef.current(key); }
   };
 
   const sendVoiceMessage = async (request: VoiceDelegation): Promise<boolean> => {
@@ -6214,6 +6445,10 @@ function App() {
           <div hidden={settingsPage !== "github"} data-settings-page="github">
             <GitHubSettings github={githubInbox} />
           </div>
+          <div hidden={settingsPage !== "telegram"} data-settings-page="telegram">
+            {settingsPage === "telegram" && <Suspense fallback={null}><TelegramSettings key={repositoryRoot ?? "none"} repositoryRoot={repositoryRoot} status={telegram.status} onChange={(status) => { if (repositoryRef.current?.rootPath === repositoryRoot) telegram.updateStatus(status); }} /></Suspense>}
+            {telegram.error && <p role="alert" className="mt-3 text-sm text-[#FB7185]">{telegram.error}</p>}
+          </div>
           <div hidden={settingsPage !== "credentials"} data-settings-page="credentials">
             {browserSupported && <WebsiteCredentialsSettings />}
           </div>
@@ -6773,7 +7008,7 @@ function App() {
             queuePaused={activeQueueKey ? pausedQueueKeys.has(activeQueueKey) : false}
             canSteerQueued={taskMode ? !!selectedTaskRun : reviewRunQueueKeyRef.current === activeQueueKey}
             onSteerQueued={(id) => { if (activeQueueKey) void steerQueued(activeQueueKey, id); }}
-            onDeleteQueued={(id) => { if (activeQueueKey && !queueBusyRef.current.has(activeQueueKey)) removeQueued(activeQueueKey, id, true); }}
+            onDeleteQueued={(id) => { if (activeQueueKey) void deleteQueued(activeQueueKey, id); }}
             onEditQueued={(id, body) => { if (activeQueueKey && !queueBusyRef.current.has(activeQueueKey)) changeQueue(activeQueueKey, (items) => items.map((item) => item.id === id ? { ...item, body: body.trim() } : item)); }}
             onMoveQueued={(id, offset) => { if (activeQueueKey && !queueBusyRef.current.has(activeQueueKey)) changeQueue(activeQueueKey, (items) => moveQueuedMessage(items, id, offset)); }}
             pipelines={pipelines}

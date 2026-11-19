@@ -6,9 +6,10 @@ import type { UsageEvent } from "../src/usage";
 const requestCommands = new Set(["ai_chat_send", "ai_chat_steer", "set_mcp_context", "load_task_file_diff", "merge_task_worktree", "github_update_item"]);
 export const usageEvents: UsageEvent[] = [];
 
-export function mockIPC(callback: Parameters<typeof tauriMockIPC>[0], options?: Parameters<typeof tauriMockIPC>[1]) {
+export function mockIPC(callback: Parameters<typeof tauriMockIPC>[0], options?: Parameters<typeof tauriMockIPC>[1] & { telegram?: boolean }) {
   usageEvents.length = 0;
   tauriMockIPC((command, payload) => {
+    if (command === "telegram_connection" && !options?.telegram) return null;
     if (command === "append_usage_event") { usageEvents.push(payload?.event as UsageEvent); return; }
     if (!requestCommands.has(command)) return callback(command, payload);
     if (!payload || !("input" in payload) || !payload.input || typeof payload.input !== "object") {

@@ -18,6 +18,22 @@ The shadcn 4.19.0 Tailwind helpers are preserved locally in `src/styles/shadcn.c
 
 Rebuild/restart the native app after this cleanup: several Tauri commands now accept a typed `input` payload, and both frontend and backend must be updated together. Saved chat/proposal formats remain compatible.
 
+## Repository windows
+
+Within one Lotse process, each repository can be open in one window. Opening the same repository again focuses its existing window; saved paths to the same repository are restored only once. Rebuild and restart the desktop app after changing the window backend.
+
+## Telegram
+
+In **Settings → Telegram**, create a bot with BotFather, send `/start` to it, paste its token, choose your own private chat, connect and enable it. Use a separate bot per repository. The enabled switch persists across app restarts; the test button sends a message to the selected chat. The bot token is stored in the local `~/.lotse/credentials.json` file, protected by filesystem permissions, not in the repository. Anyone with the token can control the bot, so keep it private.
+
+Only messages from the selected sender in that same private chat are accepted. Text and supported images (up to 20 MB) enter the current repository's Workspace review chat, using its model, role, approval settings, thread and queue; Task chats are not connected. A message is bound to the Workspace chat current when it is accepted, so changing reviews does not redirect already queued work. When Lotse carries the same conversation forward after a commit, its pending Telegram messages and their journal bindings follow that conversation in order; paused queues remain paused. Agent replies to Telegram-originated messages are also sent to Telegram. Oversized images are rejected with a Telegram notice and do not block later messages. Other file types are not supported. Questions and approvals must be handled in Lotse, not via Telegram.
+
+Lotse must be open and the repository's Workspace chat available. Messages received while the app is closed or Telegram is disabled may be processed after reopening or enabling, if Telegram still retains them (at most 24 hours). Disconnecting prevents access while disconnected but does not delete undelivered Telegram updates; reconnecting may receive them. A connection or save error is shown in Settings; uncertain agent starts or reply deliveries pause the affected queue and require checking both chats. They are not automatically retried. Disconnecting invalidates the connection; unresolved queued work from a previous connection is not automatically started after reconnecting. A Telegram bot must not be used concurrently by another client polling its updates.
+
+With Vite running, `npm run test:browser -- telegram telegram-commit telegram-oversize` checks the synthetic Workspace round trip, queue carry-over after commits, reply ordering, restart recovery and oversized-image rejection. Rust unit tests cover the `getFile` size-error classification without exposing server-provided error text. These checks do not contact Telegram or run a real agent. Rebuild and restart the desktop app after updating the Telegram backend.
+
+Concurrent queue edits from different repository windows are checked before saving. If they conflict, Lotse reports the failed save instead of overwriting another window's queue; restart and inspect pending messages before retrying.
+
 ## Conversation
 
 Enable Talk in Settings → Conversation with an OpenAI API key. The key remains in the local credentials file; the selected AI voice is saved separately and applies to new sessions. GPT-Live receives microphone audio and the current workspace chat's saved text messages, including updates during Talk. Only a bounded recent portion is sent; long messages may be shortened, and attachments and in-progress responses are not included. A Responses model interprets delegated requests for the workspace agent. GPT-Live usage is billed by connection duration, including WebRTC initialization; Responses model and workspace agent usage are billed separately. Muting does not end the connection. If a connection fails or is ended while connecting, final closure and charges can remain unconfirmed; check OpenAI usage.
