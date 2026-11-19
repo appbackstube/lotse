@@ -4733,9 +4733,9 @@ function App() {
       const photos = Array.isArray(incoming.photo) ? incoming.photo : [];
       const photo = photos.length ? photos[photos.length - 1] : null;
       const document = incoming.document && typeof incoming.document === "object" ? incoming.document as Record<string, unknown> : null;
-      const image = photo && typeof photo === "object" ? photo as Record<string, unknown> : document && typeof document.mime_type === "string" && document.mime_type.startsWith("image/") ? document : null;
       const videoMedia = incoming.video ?? incoming.video_note ?? incoming.animation;
       const video = videoMedia && typeof videoMedia === "object" ? videoMedia as Record<string, unknown> : document && typeof document.mime_type === "string" && document.mime_type.startsWith("video/") ? document : null;
+      const image = video ? null : photo && typeof photo === "object" ? photo as Record<string, unknown> : document && typeof document.mime_type === "string" && document.mime_type.startsWith("image/") ? document : null;
       const unsupported = ["audio", "voice", "sticker", "contact", "location", "venue", "poll"].some((name) => incoming[name] !== undefined) || (!!document && !image && !video);
       if (unsupported || (!text && !image && !video)) {
         await invoke("telegram_send", { connectionId, text: "This message type is not supported. Send text, an image, or a video." });
