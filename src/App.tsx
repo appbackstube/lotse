@@ -4729,14 +4729,16 @@ function App() {
     if (!entry) {
       const incoming = update.message;
       const text = (typeof incoming.text === "string" ? incoming.text : typeof incoming.caption === "string" ? incoming.caption : "").trim();
-      if (text === "/start" && !incoming.photo && !incoming.document) return;
+      if (text === "/start" && !incoming.photo && !incoming.document && !incoming.video && !incoming.video_note && !incoming.animation) return;
       const photos = Array.isArray(incoming.photo) ? incoming.photo : [];
       const photo = photos.length ? photos[photos.length - 1] : null;
       const document = incoming.document && typeof incoming.document === "object" ? incoming.document as Record<string, unknown> : null;
       const image = photo && typeof photo === "object" ? photo as Record<string, unknown> : document && typeof document.mime_type === "string" && document.mime_type.startsWith("image/") ? document : null;
-      const unsupported = ["audio", "voice", "video", "video_note", "animation", "sticker", "contact", "location", "venue", "poll"].some((name) => incoming[name] !== undefined) || (!!document && !image);
-      if (unsupported || (!text && !image)) {
-        await invoke("telegram_send", { connectionId, text: "This message type is not supported. Send text or an image." });
+      const videoMedia = incoming.video ?? incoming.video_note ?? incoming.animation;
+      const video = videoMedia && typeof videoMedia === "object" ? videoMedia as Record<string, unknown> : document && typeof document.mime_type === "string" && document.mime_type.startsWith("video/") ? document : null;
+      const unsupported = ["audio", "voice", "sticker", "contact", "location", "venue", "poll"].some((name) => incoming[name] !== undefined) || (!!document && !image && !video);
+      if (unsupported || (!text && !image && !video)) {
+        await invoke("telegram_send", { connectionId, text: "This message type is not supported. Send text, an image, or a video." });
         return;
       }
       const attachments: ChatAttachment[] = [];
@@ -4756,6 +4758,25 @@ function App() {
           throw reason;
         }
         if (!isChatUpload(attachment)) throw new Error("Telegram sent an invalid image.");
+        await invoke("retain_task_images", { paths: [attachment.path] });
+        attachments.push(attachment);
+      }
+      if (video) {
+        if (typeof video.file_size === "number" && video.file_size > 20 * 1024 * 1024) {
+          await invoke("telegram_send", { connectionId, text: "This video cannot be processed. Send a video under 20 MB." });
+          return;
+        }
+        if (typeof video.file_id !== "string") throw new Error("Telegram sent an invalid video.");
+        let attachment: ChatAttachment;
+        try { attachment = await invoke<ChatAttachment>("telegram_download_video", { connectionId, fileId: video.file_id }); }
+        catch (reason) {
+          if (/Telegram video exceeds 20 MB|Invalid Telegram video ID/.test(String(reason))) {
+            await invoke("telegram_send", { connectionId, text: "This video cannot be processed. Send a video under 20 MB." });
+            return;
+          }
+          throw reason;
+        }
+        if (attachment.kind !== "localFile" || !isChatUpload(attachment)) throw new Error("Telegram sent an invalid video.");
         await invoke("retain_task_images", { paths: [attachment.path] });
         attachments.push(attachment);
       }
