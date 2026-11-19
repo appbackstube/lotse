@@ -21,11 +21,26 @@ mockIPC(async (command, args: any) => {
   if (command === "telegram_poll") {
     if (polled) return new Promise(() => {});
     polled = true;
-    return { nextOffset: 4, messages: [{ updateId: 1, message: { document: { file_id: "oversized", file_size: 25000000, mime_type: "image/png" } } }, { updateId: 2, message: { document: { file_id: "oversized-unknown-size", mime_type: "image/png" } } }, { updateId: 3, message: { caption: "Describe this", photo: [{ file_id: "photo" }] } }] };
+    return { nextOffset: 11, messages: [
+      { updateId: 1, message: { document: { file_id: "oversized", file_size: 25000000, mime_type: "image/png" } } },
+      { updateId: 2, message: { document: { file_id: "oversized-unknown-size", mime_type: "image/png" } } },
+      { updateId: 3, message: { video: { file_id: "oversized-video", file_size: 25000000 } } },
+      { updateId: 4, message: { video: { file_id: "oversized-video-unknown-size" } } },
+      { updateId: 5, message: { caption: "Describe this video", video: { file_id: "video" } } },
+      { updateId: 6, message: { document: { file_id: "document-video", mime_type: "video/quicktime" } } },
+      { updateId: 7, message: { video_note: { file_id: "video-note" } } },
+      { updateId: 8, message: { animation: { file_id: "animation" } } },
+      { updateId: 9, message: { caption: "Describe this animation", animation: { file_id: "gif-animation" }, document: { file_id: "gif-document", mime_type: "image/gif" } } },
+      { updateId: 10, message: { caption: "Describe this", photo: [{ file_id: "photo" }] } },
+    ] };
   }
   if (command === "telegram_download_image" && args.fileId === "oversized") throw new Error("Oversized image must be rejected before download");
   if (command === "telegram_download_image" && args.fileId === "oversized-unknown-size") throw new Error("Telegram image exceeds 20 MB.");
+  if (command === "telegram_download_image" && args.fileId === "gif-document") throw new Error("GIF animations must not be downloaded as images");
   if (command === "telegram_download_image") return { kind: "image", path: "/synthetic/image.png", name: "image.png" };
+  if (command === "telegram_download_video" && args.fileId === "oversized-video") throw new Error("Oversized video must be rejected before download");
+  if (command === "telegram_download_video" && args.fileId === "oversized-video-unknown-size") throw new Error("Telegram video exceeds 20 MB.");
+  if (command === "telegram_download_video") return { kind: "localFile", path: `/synthetic/${args.fileId}.mp4`, name: `${args.fileId}.mp4` };
   if (command === "telegram_send") { replies.push(args.text); return; }
   if (["retain_task_images", "release_chat_image_reference"].includes(command)) return;
   if (command === "load_ai_settings") return { activeProvider: "openrouter", providers: [{ id: "openrouter", name: "Synthetic", baseUrl: "https://openrouter.ai/api/v1", envKey: "OPENROUTER_API_KEY" }], repositoryProviders: {}, ripgrepAvailable: true, mcpUrl: "" };
@@ -51,12 +66,20 @@ try {
   await initializeFileStore(); await act(async () => root.render(<App />)); await settle();
   await act(async () => ready({ connected: true, enabled: true, userId: 10, chatId: 10, connectionId: "connection", journalId: "bot" })); await settle();
 
-  check(sends.length === 1 && sends[0].prompt === "Describe this", "Oversized image blocked the following message");
-  check(replies.filter((text) => text.includes("under 20 MB")).length === 2, "Oversized image did not receive a rejection notice");
+  check(sends.length === 1 && sends[0].prompt === "Describe this video", "Oversized media blocked the following message");
+  check(sends[0].chatContext.attachments[0].kind === "localFile" && sends[0].chatContext.attachments[0].path === "/synthetic/video.mp4", "Video did not reach the workspace agent");
+  check(replies.filter((text) => text.includes("under 20 MB")).length === 4, "Oversized media did not receive rejection notices");
   const journal = JSON.parse(fileStore.getItem(telegramJournalKey(repo.rootPath, "bot"))!);
-  check(journal.offset === 4, "Rejected image prevented the offset from advancing");
-  check(!journal.entries.some((entry: any) => entry.updateId < 3), "Rejected image was queued");
+  check(journal.offset === 11, "Rejected media prevented the offset from advancing");
+  check(!journal.entries.some((entry: any) => entry.updateId < 5), "Rejected media was queued");
+  for (const [updateId, fileId] of [[6, "document-video"], [7, "video-note"], [8, "animation"]] as const) {
+    const item = journal.entries.find((entry: any) => entry.updateId === updateId)?.item;
+    check(item?.body === "" && item.context.attachments[0].path === `/synthetic/${fileId}.mp4`, `${fileId} was not queued without a caption`);
+  }
+  const animation = journal.entries.find((entry: any) => entry.updateId === 9)?.item;
+  check(animation?.body === "Describe this animation" && animation.context.attachments.length === 1 && animation.context.attachments[0].kind === "localFile" && animation.context.attachments[0].path === "/synthetic/gif-animation.mp4", "GIF animation and caption were not queued as a single video attachment");
+  check(journal.entries.some((entry: any) => entry.updateId === 10 && entry.item.context.attachments[0].kind === "image"), "Following image was not queued");
   check(failures.length === 0, "Unexpected IPC");
-  document.getElementById("result")!.textContent = "PASS: oversized Telegram image is rejected without blocking later messages";
+  document.getElementById("result")!.textContent = "PASS: Telegram videos are queued and oversized media does not block later messages";
 } catch (error) { document.getElementById("result")!.textContent = `FAIL: ${String(error)}`; }
 finally { await act(async () => root.unmount()); }

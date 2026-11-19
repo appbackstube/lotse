@@ -231,6 +231,12 @@ fn valid_file_path(path: &str) -> bool {
         && part.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')))
 }
 
+fn video_extension(path: &str) -> &str {
+    Path::new(path).extension().and_then(|extension| extension.to_str())
+        .filter(|extension| !extension.is_empty() && extension.len() <= 10 && extension.bytes().all(|byte| byte.is_ascii_alphanumeric()))
+        .unwrap_or("mp4")
+}
+
 #[tauri::command]
 pub async fn telegram_download_image(file_id: String, connection_id: String, app: AppHandle, window: WebviewWindow, state: State<'_, AppState>) -> Result<ChatAttachment, String> {
     if file_id.is_empty() || file_id.len() > 1024 || !file_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')) {
@@ -259,6 +265,38 @@ pub async fn telegram_download_image(file_id: String, connection_id: String, app
         let target = directory.join(format!("{}.{}", agent_id()?, extension));
         fs::write(&target, bytes).map_err(|_| "Cannot save the Telegram image.")?;
         Ok(ChatAttachment::Image { path: target.to_string_lossy().into_owned(), name: format!("telegram-image.{extension}") })
+    }).await
+}
+
+#[tauri::command]
+pub async fn telegram_download_video(file_id: String, connection_id: String, app: AppHandle, window: WebviewWindow, state: State<'_, AppState>) -> Result<ChatAttachment, String> {
+    if file_id.is_empty() || file_id.len() > 1024 || !file_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')) {
+        return Err("Invalid Telegram video ID.".to_owned());
+    }
+    let root = root_string(&repository_path(&state, &window)?)?;
+    let label = window.label().to_owned();
+    run_blocking(move || {
+        let connection = enabled_connection(&app, &root, &connection_id)?;
+        let file = api_request(&connection.token, "getFile", json!({"file_id":file_id})).map_err(|error| {
+            if error == "Telegram image exceeds 20 MB." { "Telegram video exceeds 20 MB.".to_owned() } else { error }
+        })?;
+        let path = file.get("file_path").and_then(Value::as_str).filter(|path| valid_file_path(path)).ok_or("Telegram returned an invalid video path.")?;
+        if file.get("file_size").and_then(Value::as_u64).is_some_and(|size| size > MAX_CHAT_IMAGE_BYTES) { return Err("Telegram video exceeds 20 MB.".to_owned()); }
+        unchanged(&app, &label, &root, &connection)?;
+        let response = Client::builder().timeout(Duration::from_secs(60)).build().map_err(|_| "Cannot initialize Telegram connection.")?
+            .get(format!("https://api.telegram.org/file/bot{}/{path}", connection.token)).send()
+            .map_err(|_| "Cannot download the Telegram video.")?;
+        if !response.status().is_success() { return Err("Cannot download the Telegram video.".to_owned()); }
+        let mut bytes = Vec::new();
+        response.take(MAX_CHAT_IMAGE_BYTES + 1).read_to_end(&mut bytes).map_err(|_| "Cannot read the Telegram video.")?;
+        if bytes.len() as u64 > MAX_CHAT_IMAGE_BYTES { return Err("Telegram video exceeds 20 MB.".to_owned()); }
+        unchanged(&app, &label, &root, &connection)?;
+        let extension = video_extension(path);
+        let directory = chat_images_dir(&app)?;
+        fs::create_dir_all(&directory).map_err(|_| "Cannot prepare attachment storage.")?;
+        let target = directory.join(format!("{}.{}", agent_id()?, extension));
+        fs::write(&target, bytes).map_err(|_| "Cannot save the Telegram video.")?;
+        Ok(ChatAttachment::LocalFile { path: target.to_string_lossy().into_owned(), name: format!("telegram-video.{extension}") })
     }).await
 }
 
@@ -496,5 +534,13 @@ mod tests {
         for path in ["../secret", "/absolute", "photos/../../secret", "photos/file?token=secret", "https://example.com/file"] {
             assert!(!valid_file_path(path));
         }
+    }
+
+    #[test]
+    fn video_extensions_are_safe_and_preserved() {
+        assert_eq!(video_extension("videos/file_1.mp4"), "mp4");
+        assert_eq!(video_extension("documents/file_1.webm"), "webm");
+        assert_eq!(video_extension("videos/file_1"), "mp4");
+        assert_eq!(video_extension("videos/file_1.verylongextension"), "mp4");
     }
 }
