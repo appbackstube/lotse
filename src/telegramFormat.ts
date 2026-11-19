@@ -1,9 +1,43 @@
-import { renderMarkdown, splitMessage, type RenderedMessage } from "telegram-md-entities";
+import { normalizeEntities, renderMarkdown, splitMessage, type RenderedMessage } from "telegram-md-entities";
 
 const MAX_LENGTH = 4000;
 
+function renderTelegramMarkdown(markdown: string): RenderedMessage {
+  const options = { underline: false, spoiler: false };
+  const rendered = renderMarkdown(markdown, options);
+  if (!rendered.entities.some((entity) => entity.type === "pre" && (entity.offset === 0 || entity.offset + entity.length === rendered.text.length))) return rendered;
+
+  const wrapped = renderMarkdown(`X\n\n${markdown}\n\nX`, options);
+  if (!wrapped.text.startsWith("X\n\n") || !wrapped.text.endsWith("\n\nX")) return rendered;
+  const text = wrapped.text.slice(3, -3);
+  const entities = wrapped.entities.flatMap((entity) => {
+    const start = Math.max(3, entity.offset);
+    const end = Math.min(wrapped.text.length - 3, entity.offset + entity.length);
+    return end > start ? [{ ...entity, offset: start - 3, length: end - start }] : [];
+  });
+  const leading = text.length - text.trimStart().length;
+  const trailing = text.trimEnd().length;
+  const trimmedEntities = normalizeEntities(entities.flatMap((entity) => {
+    const start = Math.max(leading, entity.offset);
+    const end = Math.min(trailing, entity.offset + entity.length);
+    return end > start ? [{ ...entity, offset: start - leading, length: end - start }] : [];
+  }));
+  if (text.trim() !== rendered.text || JSON.stringify(trimmedEntities) !== JSON.stringify(rendered.entities)) return rendered;
+
+  const start = entities.some((entity) => entity.type === "pre" && entity.offset === 0) ? 0 : leading;
+  const end = entities.some((entity) => entity.type === "pre" && entity.offset + entity.length === text.length) ? text.length : trailing;
+  return {
+    text: text.slice(start, end),
+    entities: entities.flatMap((entity) => {
+      const entityStart = Math.max(start, entity.offset);
+      const entityEnd = Math.min(end, entity.offset + entity.length);
+      return entityEnd > entityStart ? [{ ...entity, offset: entityStart - start, length: entityEnd - entityStart }] : [];
+    }),
+  };
+}
+
 export function formatTelegramMessage(markdown: string) {
-  const rendered = renderMarkdown(markdown, { underline: false, spoiler: false });
+  const rendered = renderTelegramMarkdown(markdown);
   const message = rendered.text.trim() ? rendered : { text: markdown, entities: [] };
   const chunks: RenderedMessage[] = [];
   let cursor = 0;
