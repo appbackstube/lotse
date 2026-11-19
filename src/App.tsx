@@ -3639,18 +3639,20 @@ function App() {
       if (carriedChat) {
         const oldKey = reviewQueueKey(previousReview!);
         const newKey = reviewQueueKey(nextReview);
-        const queued = chatQueuesRef.current[oldKey];
-        if (queued?.length) {
+        const queued = chatQueuesRef.current[oldKey] ?? [];
+        const journalIds = new Set(queued.flatMap((item) => item.telegram ? [item.telegram.journalId] : []));
+        const activeJournalId = telegramRef.current.status?.journalId;
+        if (activeJournalId) journalIds.add(activeJournalId);
+        if (queued.length || journalIds.size) {
           const wasPaused = pausedQueueKeysRef.current.has(oldKey) || (!!chatQueuesRef.current[newKey]?.length && pausedQueueKeysRef.current.has(newKey));
           setQueuePaused(oldKey, true);
           setQueuePaused(newKey, true);
           // A carried conversation keeps its pending messages, including their durable
           // Telegram identity. Persist the binding before allowing the new queue to run.
-          const journalIds = new Set(queued.flatMap((item) => item.telegram ? [item.telegram.journalId] : []));
           for (const journalId of journalIds) {
             await updateTelegramJournal(telegramJournalKey(repo.rootPath, journalId), (journal) => ({
               ...journal,
-              entries: journal.entries.map((entry) => entry.workspaceKey === oldKey && (entry.phase === "prepared" || entry.phase === "queued")
+              entries: journal.entries.map((entry) => entry.workspaceKey === oldKey && (entry.phase === "transcribing" || entry.phase === "prepared" || entry.phase === "queued")
                 ? { ...entry, workspaceKey: newKey } : entry),
             }));
           }
@@ -3662,7 +3664,7 @@ function App() {
           saveChatQueues(nextQueues);
           await fileStore.flush();
           if (requestId !== comparisonLoadRef.current) return;
-          setQueuePaused(newKey, wasPaused || !journalIds.size);
+          setQueuePaused(newKey, wasPaused || (queued.length > 0 && !queued.some((item) => item.telegram)));
         }
         if (reviewRunQueueKeyRef.current === oldKey) reviewRunQueueKeyRef.current = newKey;
       }
@@ -4320,6 +4322,7 @@ function App() {
         mode: turnMode,
         prompt,
         context: requestContext,
+        allowLongPrompt: !!queuedItem?.telegram,
         telegramConnectionId: queuedItem?.telegram?.connectionId,
         beforeStart,
         playbook: queuedItem?.playbook ?? playbook,
@@ -5049,7 +5052,7 @@ function App() {
     const voiceWork = voiceWorkRef.current.get(id);
     if (voiceWork) { voiceWork.requestId = accepted.requestId; voiceWork.pendingEvents = []; }
     try {
-      await invoke("ai_chat_steer", { input: { requestId: accepted.requestId, prompt: item.body, chatContext: item.context, taskId: task?.id ?? null, allowLongPrompt: !!task, comments: review?.comments ?? [] } });
+      await invoke("ai_chat_steer", { input: { requestId: accepted.requestId, prompt: item.body, chatContext: item.context, taskId: task?.id ?? null, allowLongPrompt: !!task || !!item.telegram, comments: review?.comments ?? [] } });
       if (voiceWork) {
         const events = voiceWork.pendingEvents ?? [];
         delete voiceWork.pendingEvents;
