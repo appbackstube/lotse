@@ -2324,7 +2324,7 @@ impl AgentRuntime {
                     thread_id,
                     turn_id,
                     kind: "assistantMessageCompleted",
-                    message: None,
+                    message: p.pointer("/item/phase").and_then(Value::as_str).map(str::to_owned),
                     delta: None,
                     final_text: p
                         .pointer("/item/text")

@@ -167,14 +167,14 @@ pub async fn telegram_poll(offset: i64, connection_id: String, app: AppHandle, w
 }
 
 #[tauri::command]
-pub async fn telegram_send(text: String, connection_id: String, app: AppHandle, window: WebviewWindow, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn telegram_send(text: String, entities: Option<Vec<Value>>, connection_id: String, app: AppHandle, window: WebviewWindow, state: State<'_, AppState>) -> Result<(), String> {
     if text.trim().is_empty() || text.encode_utf16().count() > 4096 { return Err("Telegram messages must contain 1–4096 characters.".to_owned()); }
     let root = root_string(&repository_path(&state, &window)?)?;
     let label = window.label().to_owned();
     run_blocking(move || {
         let connection = enabled_connection(&app, &root, &connection_id)?;
         with_enabled_connection(&app, &label, Path::new(&root), &connection_id, || {
-            api_request(&connection.token, "sendMessage", json!({"chat_id":connection.chat_id,"text":text}))?;
+            api_request(&connection.token, "sendMessage", json!({"chat_id":connection.chat_id,"text":text,"entities":entities.unwrap_or_default()}))?;
             Ok(())
         })
     }).await

@@ -1,6 +1,7 @@
 import { isChatUpload } from "./chatAttachments";
 import { useTelegram, type TelegramUpdate } from "./useTelegram";
 import { addTelegramEntry, changeTelegramPhase, readTelegramJournal, telegramJournalKey, updateTelegramJournal } from "./telegramJournal";
+import { formatTelegramMessage } from "./telegramFormat";
 import {
   Children,
   Fragment,
@@ -3014,15 +3015,7 @@ function App() {
     await updateTelegramJournal(journalKey, (journal) => changeTelegramPhase(journal, run.updateId, "sending"));
     try {
       if (repositoryRef.current?.rootPath !== run.root || telegramRef.current.status?.connectionId !== run.connectionId || !telegramRef.current.status?.enabled) throw new Error("Telegram connection changed before the reply could be sent.");
-      let chunk = "";
-      for (const character of result) {
-        if (chunk.length + character.length > 4000) {
-          await invoke("telegram_send", { connectionId: run.connectionId, text: chunk });
-          chunk = "";
-        }
-        chunk += character;
-      }
-      if (chunk.trim()) await invoke("telegram_send", { connectionId: run.connectionId, text: chunk });
+      await sendTelegramText(run, result);
       await updateTelegramJournal(journalKey, (journal) => changeTelegramPhase(journal, run.updateId, "done"));
     } catch (reason) {
       await markTelegramUncertain(run, "The Telegram reply may not have been delivered. Check the Telegram and Workspace chats before retrying.");
@@ -3030,17 +3023,37 @@ function App() {
     }
   }
 
+  async function sendTelegramText(run: { root: string; connectionId: string }, text: string): Promise<void> {
+    for (const chunk of formatTelegramMessage(text)) {
+      if (repositoryRef.current?.rootPath !== run.root || telegramRef.current.status?.connectionId !== run.connectionId || !telegramRef.current.status?.enabled) throw new Error("Telegram connection changed before the reply could be sent.");
+      if (chunk.text.trim()) await invoke("telegram_send", { connectionId: run.connectionId, ...chunk });
+    }
+  }
+
+  function flushTelegramProgress(run: { root: string; connectionId: string; result: string; notices: Promise<void> }): void {
+    if (!run.result) return;
+    const text = run.result;
+    run.result = "";
+    run.notices = run.notices.then(() => sendTelegramText(run, text)).catch(() => setError("A Telegram progress message may not have been delivered. Check the Workspace chat."));
+  }
+
   function notifyTelegramAttention(text: string): void {
     const requestId = aiChatTurnRef.current?.requestId;
     const run = requestId ? telegramRunsRef.current.get(requestId) : undefined;
     if (!run || repositoryRef.current?.rootPath !== run.root || telegramRef.current.status?.connectionId !== run.connectionId) return;
+    flushTelegramProgress(run);
     run.notices = run.notices.then(() => invoke<void>("telegram_send", { connectionId: run.connectionId, text })).catch(() => setError("Could not notify Telegram about the agent's request. Open the Workspace chat."));
   }
 
   const handleMainChatEvent = (update: AiChatEvent) => {
     handleVoiceChatEvent(update);
     const telegramRun = telegramRunsRef.current.get(update.requestId);
-    if (telegramRun && update.kind === "assistantMessageCompleted" && update.finalText?.trim()) telegramRun.result = update.finalText.trim();
+    if (telegramRun && update.kind === "assistantMessageCompleted" && update.finalText?.trim()) {
+      flushTelegramProgress(telegramRun);
+      telegramRun.result = update.finalText.trim();
+      if (update.message === "commentary") flushTelegramProgress(telegramRun);
+    }
+    if (telegramRun && (update.kind === "toolStarted" || update.kind === "assistantMessageStarted")) flushTelegramProgress(telegramRun);
     if (update.kind !== "assistantDelta") flushAiChatDeltas();
     if (update.kind === "modelRerouted") { if (update.label) setAiChatServerModel(update.label); return; }
     if (update.kind === "status") { if (update.label) setAiChatStatus(update.label); return; }
