@@ -126,6 +126,13 @@ try {
     await click(nav(name));
     check(active()?.dataset.settingsPage === id, `${name} page is not reachable`);
   }
+  await click(nav("Agent preferences"));
+  check(control("Default new branch start")?.textContent?.includes("Choose for each task"), "New branch start must initially be unset");
+  await click(control("Default new branch start"));
+  await click([...document.querySelectorAll<HTMLElement>('[role="option"]')].find((item) => item.textContent === "origin/main (remote)"));
+  await fileStore.flush();
+  check(storage[`chaoticreview.default-branch-start:${repo.rootPath}`] === "remote:origin/main", "Remote branch default must persist per repository");
+  check(JSON.parse(storage[taskStorageKey(repo.rootPath)])[0].worktreeStart === null, "Changing the default must not modify existing tasks");
   await click(nav("Tasks"));
   const statusNames = () => [...document.querySelectorAll<HTMLInputElement>('.task-status-settings-name')].map((input) => input.value);
   check(statusNames().join(",") === "Inbox,Planning,In development,In review,Done", "Existing statuses must appear in board order");
@@ -158,7 +165,9 @@ try {
   await change(document.querySelector<HTMLInputElement>('input[placeholder="Task title"]')!, "Custom workflow task");
   await click(document.querySelector<HTMLElement>('[role="dialog"] button[type="submit"]'));
   await fileStore.flush();
-  check(JSON.parse(storage[taskStorageKey(repo.rootPath)]).find((task: any) => task.title === "Custom workflow task")?.manualStatus === qa.id, "New tasks must keep their custom status");
+  const createdTask = JSON.parse(storage[taskStorageKey(repo.rootPath)]).find((task: any) => task.title === "Custom workflow task");
+  check(createdTask?.manualStatus === qa.id, "New tasks must keep their custom status");
+  check(createdTask?.worktreeStart?.kind === "remote" && createdTask.worktreeStart.branch === "origin/main", "New tasks must inherit the configured branch start");
   await click(control("Settings")); await click(nav("Tasks"));
   check(statusNames()[4] === "Quality assurance", "Reopening settings must preserve custom status order");
   await click(control("Delete Quality assurance"));

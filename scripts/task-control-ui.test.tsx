@@ -221,8 +221,12 @@ try {
   await click(document.querySelector<HTMLAnchorElement>(`a[href="#task=${first.id}"]`)!);
   check(document.querySelector<HTMLTextAreaElement>('[role="dialog"] [aria-label="Review Agent message"]')?.value === "Keep my draft after Escape", "Escape must preserve the focused task draft");
   await click(button("Close task modal"));
+  fileStore.setItem(`chaoticreview.default-branch-start:${repo.rootPath}`, "branch:main");
+  const branchStartContext = await request(null, "get_task_start_context", {});
+  check(branchStartContext.result.defaultBranchStart?.kind === "branch" && branchStartContext.result.defaultBranchStart.branch === "main", "Start context must expose the configured branch default");
   const created = await request(null, "create_task", { title: "Shared coordination", description: "From workspace", agentId: createdRole.result.id, startDate: "2026-11-06", deadline: "2026-11-07" });
   check(!created.error && storedTasks().some((task: any) => task.id === created.result.id), "Task creation not persisted");
+  check(storedTasks().find((task: any) => task.id === created.result.id).worktreeStart?.branch === "main", "MCP-created task must use the configured branch start");
   check(created.result.agent.id === createdRole.result.id && storedTasks().find((task: any) => task.id === created.result.id).chatAgent.prompt === "Review changes", "Task creation did not select and persist the canonical agent role");
   check(storedTasks().find((task: any) => task.id === created.result.id).chatModel === "model-a" && storedTasks().find((task: any) => task.id === created.result.id).chatEffort === "high", "Task creation did not apply the agent model and effort");
   const beforeBadRole = storage[taskStorageKey(repo.rootPath)];
