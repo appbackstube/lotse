@@ -3,12 +3,49 @@ use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, fs, io::Read, path::Path, sync::Mutex, time::Duration};
+use std::{collections::BTreeMap, fs, io::Read, path::Path, sync::{Arc, Mutex, OnceLock}, time::{Duration, Instant}};
 use tauri::Manager;
 use tauri::{AppHandle, State, WebviewWindow};
 
 const CREDENTIAL_KEY: &str = "lotse.telegram.repositories";
 static CONNECTION_LOCK: Mutex<()> = Mutex::new(());
+// Shared across windows and reconnects; only sends to the same bot/chat wait.
+type SendSchedule = Arc<Mutex<Instant>>;
+static SEND_SCHEDULES: OnceLock<Mutex<BTreeMap<String, SendSchedule>>> = OnceLock::new();
+
+fn send_schedule(connection: &Connection) -> Result<SendSchedule, String> {
+    let key = format!("{:x}", Sha256::digest(format!("{}:{}", connection.token, connection.chat_id).as_bytes()));
+    let mut schedules = SEND_SCHEDULES.get_or_init(|| Mutex::new(BTreeMap::new())).lock()
+        .map_err(|_| "Telegram sending is unavailable.")?;
+    Ok(schedules.entry(key).or_insert_with(|| Arc::new(Mutex::new(Instant::now()))).clone())
+}
+
+fn send_paced(
+    next: &mut Instant,
+    now: impl Fn() -> Instant,
+    sleep: impl Fn(Duration),
+    mut request: impl FnMut() -> Result<Value, String>,
+) -> Result<(), String> {
+    loop {
+        let delay = next.saturating_duration_since(now());
+        if !delay.is_zero() { sleep(delay); }
+        let response = request();
+        *next = now() + Duration::from_secs(1);
+        let value = response?;
+        // Retry only an explicit rejection. Transport errors may have delivered
+        // the message and must keep the existing uncertain-delivery behavior.
+        if value.get("ok").and_then(Value::as_bool) == Some(false)
+            && value.get("error_code").and_then(Value::as_u64) == Some(429) {
+            if let Some(seconds) = value.pointer("/parameters/retry_after").and_then(Value::as_u64) {
+                *next = now().checked_add(Duration::from_secs(seconds.max(1)))
+                    .ok_or("Telegram returned an invalid retry delay.")?;
+                continue;
+            }
+        }
+        api_result("sendMessage", value)?;
+        return Ok(());
+    }
+}
 
 #[derive(Clone, Deserialize, Serialize, PartialEq)]
 struct Connection {
@@ -81,12 +118,15 @@ fn root_string(root: &Path) -> Result<String, String> {
 }
 
 fn api_request(token: &str, method: &str, payload: Value) -> Result<Value, String> {
+    api_result(method, api_response(token, method, payload)?)
+}
+
+fn api_response(token: &str, method: &str, payload: Value) -> Result<Value, String> {
     let client = Client::builder().timeout(Duration::from_secs(20)).build()
         .map_err(|_| "Cannot initialize Telegram connection.")?;
     let response = client.post(format!("https://api.telegram.org/bot{token}/{method}"))
         .json(&payload).send().map_err(|_| "Telegram could not be reached; the request outcome may be uncertain.")?;
-    let value: Value = response.json().map_err(|_| "Telegram returned an invalid response.")?;
-    api_result(method, value)
+    response.json().map_err(|_| "Telegram returned an invalid response.".to_owned())
 }
 
 fn api_result(method: &str, value: Value) -> Result<Value, String> {
@@ -167,15 +207,21 @@ pub async fn telegram_poll(offset: i64, connection_id: String, app: AppHandle, w
 }
 
 #[tauri::command]
-pub async fn telegram_send(text: String, connection_id: String, app: AppHandle, window: WebviewWindow, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn telegram_send(text: String, entities: Option<Vec<Value>>, connection_id: String, app: AppHandle, window: WebviewWindow, state: State<'_, AppState>) -> Result<(), String> {
     if text.trim().is_empty() || text.encode_utf16().count() > 4096 { return Err("Telegram messages must contain 1–4096 characters.".to_owned()); }
     let root = root_string(&repository_path(&state, &window)?)?;
     let label = window.label().to_owned();
     run_blocking(move || {
         let connection = enabled_connection(&app, &root, &connection_id)?;
-        with_enabled_connection(&app, &label, Path::new(&root), &connection_id, || {
-            api_request(&connection.token, "sendMessage", json!({"chat_id":connection.chat_id,"text":text}))?;
-            Ok(())
+        let schedule = send_schedule(&connection)?;
+        let mut next = schedule.lock().map_err(|_| "Telegram sending is unavailable.")?;
+        let payload = json!({"chat_id":connection.chat_id,"text":text,"entities":entities.unwrap_or_default()});
+        send_paced(&mut next, Instant::now, std::thread::sleep, || {
+            // Recheck after every wait without holding settings/repository locks
+            // during pacing or a server-requested cooldown.
+            with_enabled_connection(&app, &label, Path::new(&root), &connection_id, || {
+                api_response(&connection.token, "sendMessage", payload.clone())
+            })
         })
     }).await
 }
@@ -306,6 +352,81 @@ pub fn telegram_disconnect(app: AppHandle, window: WebviewWindow, state: State<'
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn sends_are_paced_and_explicit_rate_limits_are_retried() {
+        use std::cell::Cell;
+        let start = Instant::now();
+        let clock = Cell::new(start);
+        let mut next = start;
+        let mut sent_at = Vec::new();
+        let responses = [
+            json!({"ok":false,"error_code":429,"parameters":{"retry_after":3}}),
+            json!({"ok":false,"error_code":429,"parameters":{"retry_after":2}}),
+            json!({"ok":true,"result":{}}),
+            json!({"ok":true,"result":{}}),
+            json!({"ok":true,"result":{}}),
+        ];
+        let mut responses = responses.into_iter();
+        for _ in 0..3 {
+            send_paced(&mut next, || clock.get(), |delay| clock.set(clock.get() + delay), || {
+                sent_at.push(clock.get().duration_since(start).as_secs());
+                Ok(responses.next().unwrap())
+            }).unwrap();
+        }
+        assert_eq!(sent_at, [0, 3, 5, 6, 7]);
+    }
+
+    #[test]
+    fn uncertain_sends_and_unusable_rate_limits_are_not_retried() {
+        for response in [
+            Err("uncertain delivery".to_owned()),
+            Ok(json!({"ok":false,"error_code":429})),
+            Ok(json!({"ok":false,"error_code":429,"parameters":{"retry_after":-1}})),
+            Ok(json!({"ok":false,"error_code":500})),
+        ] {
+            let start = Instant::now();
+            let mut next = start;
+            let mut calls = 0;
+            assert!(send_paced(&mut next, || start, |_| panic!("unexpected retry"), || {
+                calls += 1;
+                response.clone()
+            }).is_err());
+            assert_eq!(calls, 1);
+            assert_eq!(next, start + Duration::from_secs(1));
+        }
+    }
+
+    #[test]
+    fn connection_is_rechecked_after_cooldown() {
+        use std::cell::Cell;
+        let start = Instant::now();
+        let clock = Cell::new(start);
+        let mut next = start;
+        let mut calls = 0;
+        let result = send_paced(&mut next, || clock.get(), |delay| clock.set(clock.get() + delay), || {
+            calls += 1;
+            if calls == 1 { Ok(json!({"ok":false,"error_code":429,"parameters":{"retry_after":0}})) }
+            else { Err("connection changed".to_owned()) }
+        });
+        assert_eq!(result.unwrap_err(), "connection changed");
+        assert_eq!(calls, 2);
+        assert_eq!(clock.get(), start + Duration::from_secs(1));
+    }
+
+    #[test]
+    fn schedules_are_shared_per_bot_and_chat_across_reconnects() {
+        let connection = Connection { id: "one".into(), token: "synthetic-test-token".into(), user_id: 10, chat_id: 10, enabled: true };
+        let first = send_schedule(&connection).unwrap();
+        let mut other = connection.clone();
+        other.id = "two".into();
+        assert!(Arc::ptr_eq(&first, &send_schedule(&other).unwrap()));
+        other.chat_id = 11;
+        assert!(!Arc::ptr_eq(&first, &send_schedule(&other).unwrap()));
+        other.chat_id = 10;
+        other.token = "another-synthetic-token".into();
+        assert!(!Arc::ptr_eq(&first, &send_schedule(&other).unwrap()));
+    }
 
     #[test]
     fn oversized_get_file_response_is_a_permanent_image_rejection() {

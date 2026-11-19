@@ -4,6 +4,8 @@ import { mockConvertFileSrc, mockWindows } from "@tauri-apps/api/mocks";
 import { mockIPC } from "./mockTauri";
 import { fileStore, initializeFileStore } from "../src/fileStore";
 import { telegramJournalKey } from "../src/telegramJournal";
+import { formatTelegramMessage } from "../src/telegramFormat";
+import { validateMessage } from "telegram-md-entities";
 import App from "../src/App";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -11,6 +13,7 @@ const repo = { rootPath: "/synthetic-repository", name: "Telegram", currentBranc
 const comparison = { mode: "workingCopy", baseRef: null, compareRef: null, baseOid: "a".repeat(40), baseCommitOid: "a".repeat(40), compareCommitOid: "a".repeat(40), snapshotId: "snapshot", files: [] };
 const storage: Record<string, string> = { "chaoticreview.auth-onboarding-v1": "complete" };
 const sends: any[] = [], replies: string[] = [], reviews: any[] = [], failures: string[] = [];
+const sentMessages: any[] = [];
 let ready: (status: unknown) => void = () => {};
 let polled = false;
 mockWindows("main"); mockConvertFileSrc("macos");
@@ -24,7 +27,7 @@ mockIPC(async (command, args: any) => {
     return { nextOffset: 3, messages: [{ updateId: 1, message: { text: "First message" } }, { updateId: 2, message: { caption: "Describe this", photo: [{ file_id: "photo" }] } }] };
   }
   if (command === "telegram_download_image") return { kind: "image", path: "/synthetic/image.png", name: "image.png" };
-  if (command === "telegram_send") { replies.push(args.text); return; }
+  if (command === "telegram_send") { replies.push(args.text); sentMessages.push(args); return; }
   if (["retain_task_images", "release_chat_image_reference"].includes(command)) return;
   if (command === "load_ai_settings") return { activeProvider: "openrouter", providers: [{ id: "openrouter", name: "Synthetic", baseUrl: "https://openrouter.ai/api/v1", envKey: "OPENROUTER_API_KEY" }], repositoryProviders: {}, ripgrepAvailable: true, mcpUrl: "" };
   if (command === "current_repository" || command === "refresh_repository") return repo;
@@ -51,11 +54,39 @@ try {
   await act(async () => ready({ connected: true, enabled: true, userId: 10, chatId: 10, connectionId: "connection", journalId: "bot" })); await settle();
   check(sends.length === 1 && sends[0].prompt === "First message" && sends[0].telegramConnectionId === "connection", "First message did not start exactly once with the connection guard");
   check(reviews.some((review) => review.chatMessages.some((item: any) => item.body === "First message")), "Incoming message was not saved to the workspace");
+  await event(0, "assistantMessageCompleted", { finalText: "Checking **tasks**.", message: "commentary" });
+  check(replies.includes("Checking tasks."), "Commentary was not delivered before the turn finished");
+  check(sentMessages.find((item) => item.text === "Checking tasks.")?.entities.some((entity: any) => entity.type === "bold"), "Telegram did not receive the formatted progress entities");
+  await event(0, "assistantMessageCompleted", { finalText: "Looking further." });
+  await event(0, "toolStarted");
+  check(replies.includes("Looking further."), "A progress message without a phase was not delivered when work continued");
   await act(async () => sends[0].events.onmessage({ type: "approvalRequested", payload: { requestId: 42, title: "Allow?", description: "Synthetic", source: "agent", serverName: null } })); await settle();
   check(replies.some((text) => text.includes("approval in Lotse")), "Approval notice was not sent");
   check(sends.length === 1, "Queued message started before the previous turn finished");
   await event(0, "assistantMessageCompleted", { finalText: "First answer" }); await event(0, "completed");
   check(replies.includes("First answer"), "Answer was not sent to Telegram");
+  check(replies.filter((text) => text === "First answer").length === 1, "Final answer was sent more than once");
+  const formatted = formatTelegramMessage("😀 **bold** and [link](https://example.com)\n\n- [task](#task=123)\n\n`code`");
+  check(formatted[0].text === "😀 bold and link\n\n• task (#task=123)\n\ncode", "Markdown was not converted into readable Telegram text");
+  check(formatted[0].entities.some((entity) => entity.type === "bold" && entity.offset === 3 && entity.length === 4), "Bold entity offsets must use UTF-16");
+  check(formatted[0].entities.some((entity) => entity.type === "text_link" && entity.url === "https://example.com"), "External links must remain clickable");
+  check(!formatted[0].entities.some((entity) => entity.url?.startsWith("#")), "Internal task links must not be sent as invalid Telegram links");
+  const long = formatTelegramMessage(`**${"x".repeat(3999)}😀end**`);
+  check(long.length === 2 && long[0].text.length === 3999 && long[1].text.startsWith("😀"), "Chunking must not split surrogate pairs");
+  check(long.every((chunk) => chunk.entities.some((entity) => entity.type === "bold" && entity.length === chunk.text.length)), "Formatting must survive chunk boundaries");
+  const nested = formatTelegramMessage("**bold `code` text**")[0];
+  const code = nested.entities.find((entity) => entity.type === "code")!;
+  check(nested.entities.filter((entity) => entity.type === "bold").every((entity) => entity.offset + entity.length <= code.offset || entity.offset >= code.offset + code.length), "Code must not overlap other Telegram entities");
+  const list = formatTelegramMessage("3. third\n4. fourth\n\n- [x] done\n- [ ] todo")[0];
+  check(list.text.includes("3. third\n4. fourth") && list.text.includes("✅ done") && list.text.includes("⬜ todo"), "Ordered list starts and task states must be preserved");
+  const image = formatTelegramMessage("![diagram](https://example.com/a.png)")[0];
+  check(image.text === "diagram" && image.entities.some((entity) => entity.type === "text_link" && entity.url === "https://example.com/a.png"), "Images must retain their URL as a link");
+  const quote = formatTelegramMessage("> quoted")[0];
+  check(quote.entities.some((entity) => entity.type === "blockquote"), "Quotes must retain Telegram formatting");
+  const table = formatTelegramMessage("| A | B |\n|---|---|\n| x | y |")[0];
+  check(table.text.includes("A | B") && table.text.includes("x | y") && table.entities.some((entity) => entity.type === "pre"), "Tables must remain readable");
+  const many = formatTelegramMessage(Array.from({ length: 120 }, (_, index) => `**x${index}**`).join(" "));
+  check(many.length > 1 && many.every((chunk) => chunk.entities.length <= 90 && validateMessage(chunk).length === 0), "Entity-heavy messages must split into valid Telegram chunks");
   check(sends.length === 2 && sends[1].prompt === "Describe this" && sends[1].agentThreadId === "thread-1", "Second message did not continue the workspace thread");
   check(sends[1].chatContext.attachments[0].kind === "image", "Image did not reach the workspace agent");
   await event(1, "assistantMessageCompleted", { finalText: "Image answer" }); await event(1, "completed");
