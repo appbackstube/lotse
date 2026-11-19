@@ -3639,18 +3639,20 @@ function App() {
       if (carriedChat) {
         const oldKey = reviewQueueKey(previousReview!);
         const newKey = reviewQueueKey(nextReview);
-        const queued = chatQueuesRef.current[oldKey];
-        if (queued?.length) {
+        const queued = chatQueuesRef.current[oldKey] ?? [];
+        const journalIds = new Set(queued.flatMap((item) => item.telegram ? [item.telegram.journalId] : []));
+        const activeJournalId = telegramRef.current.status?.journalId;
+        if (activeJournalId) journalIds.add(activeJournalId);
+        if (queued.length || journalIds.size) {
           const wasPaused = pausedQueueKeysRef.current.has(oldKey) || (!!chatQueuesRef.current[newKey]?.length && pausedQueueKeysRef.current.has(newKey));
           setQueuePaused(oldKey, true);
           setQueuePaused(newKey, true);
           // A carried conversation keeps its pending messages, including their durable
           // Telegram identity. Persist the binding before allowing the new queue to run.
-          const journalIds = new Set(queued.flatMap((item) => item.telegram ? [item.telegram.journalId] : []));
           for (const journalId of journalIds) {
             await updateTelegramJournal(telegramJournalKey(repo.rootPath, journalId), (journal) => ({
               ...journal,
-              entries: journal.entries.map((entry) => entry.workspaceKey === oldKey && (entry.phase === "prepared" || entry.phase === "queued")
+              entries: journal.entries.map((entry) => entry.workspaceKey === oldKey && (entry.phase === "transcribing" || entry.phase === "prepared" || entry.phase === "queued")
                 ? { ...entry, workspaceKey: newKey } : entry),
             }));
           }
@@ -3662,7 +3664,7 @@ function App() {
           saveChatQueues(nextQueues);
           await fileStore.flush();
           if (requestId !== comparisonLoadRef.current) return;
-          setQueuePaused(newKey, wasPaused || !journalIds.size);
+          setQueuePaused(newKey, wasPaused || (queued.length > 0 && !queued.some((item) => item.telegram)));
         }
         if (reviewRunQueueKeyRef.current === oldKey) reviewRunQueueKeyRef.current = newKey;
       }
@@ -4320,6 +4322,7 @@ function App() {
         mode: turnMode,
         prompt,
         context: requestContext,
+        allowLongPrompt: !!queuedItem?.telegram,
         telegramConnectionId: queuedItem?.telegram?.connectionId,
         beforeStart,
         playbook: queuedItem?.playbook ?? playbook,
@@ -4729,65 +4732,96 @@ function App() {
     if (!entry) {
       const incoming = update.message;
       const text = (typeof incoming.text === "string" ? incoming.text : typeof incoming.caption === "string" ? incoming.caption : "").trim();
-      if (text === "/start" && !incoming.photo && !incoming.document && !incoming.video && !incoming.video_note && !incoming.animation) return;
-      const photos = Array.isArray(incoming.photo) ? incoming.photo : [];
-      const photo = photos.length ? photos[photos.length - 1] : null;
-      const document = incoming.document && typeof incoming.document === "object" ? incoming.document as Record<string, unknown> : null;
-      const videoMedia = incoming.video ?? incoming.video_note ?? incoming.animation;
-      const video = videoMedia && typeof videoMedia === "object" ? videoMedia as Record<string, unknown> : document && typeof document.mime_type === "string" && document.mime_type.startsWith("video/") ? document : null;
-      const image = video ? null : photo && typeof photo === "object" ? photo as Record<string, unknown> : document && typeof document.mime_type === "string" && document.mime_type.startsWith("image/") ? document : null;
-      const unsupported = ["audio", "voice", "sticker", "contact", "location", "venue", "poll"].some((name) => incoming[name] !== undefined) || (!!document && !image && !video);
-      if (unsupported || (!text && !image && !video)) {
-        await invoke("telegram_send", { connectionId, text: "This message type is not supported. Send text, an image, or a video." });
-        return;
-      }
-      const attachments: ChatAttachment[] = [];
-      if (image) {
-        if (typeof image.file_size === "number" && image.file_size > 20 * 1024 * 1024) {
-          await invoke("telegram_send", { connectionId, text: "This image cannot be processed. Send a supported, non-animated image under 20 MB." });
+      if (text === "/start" && !incoming.photo && !incoming.document && !incoming.video && !incoming.video_note && !incoming.animation && !incoming.voice) return;
+      if (incoming.voice !== undefined) {
+        const voice = incoming.voice && typeof incoming.voice === "object" ? incoming.voice as Record<string, unknown> : null;
+        if (!voice || typeof voice.file_id !== "string" || (typeof voice.file_size === "number" && voice.file_size > 20 * 1024 * 1024)) {
+          await invoke("telegram_send", { connectionId, text: "This voice message cannot be processed. Send a supported voice message under 20 MB." });
           return;
         }
-        if (typeof image.file_id !== "string") throw new Error("Telegram sent an invalid image.");
-        let attachment: ChatAttachment;
-        try { attachment = await invoke<ChatAttachment>("telegram_download_image", { connectionId, fileId: image.file_id }); }
+        const workspaceKey = reviewQueueKey(current);
+        const item: QueuedChatMessage = { id: `telegram-${connectionId}-${update.updateId}`, telegram: { connectionId, journalId, updateId: update.updateId, repositoryRoot: root }, body: text, context: { mode: "auto", attachments: [] }, selection: null, mode: aiChatMode, model: aiChatModel, effort: aiChatEffort };
+        const saved = await updateTelegramJournal(key, (value) => addTelegramEntry(value, { updateId: update.updateId, workspaceKey, item, phase: "transcribing" }));
+        entry = saved.entries.find((value) => value.updateId === update.updateId);
+        if (!entry || entry.phase !== "transcribing") throw new Error("Could not save the Telegram voice message.");
+        let transcript: string;
+        try { transcript = await invoke<string>("telegram_transcribe_voice", { connectionId, fileId: voice.file_id }); }
         catch (reason) {
-          if (/Telegram image exceeds 20 MB|Telegram did not return a supported image|Animated GIFs are not supported|Invalid Telegram image ID/.test(String(reason))) {
+          if (repositoryRef.current?.rootPath !== root || telegramRef.current.status?.connectionId !== connectionId || !telegramRef.current.status?.enabled) throw reason;
+          await updateTelegramJournal(key, (value) => changeTelegramPhase(value, update.updateId, "done"));
+          const detail = String(reason);
+          const hint = /exceeds 20 MB/.test(detail) ? "Send a voice message under 20 MB."
+            : /Unsupported Telegram voice format/.test(detail) ? "The audio format is not supported."
+            : /OpenRouter API key|Configure OpenRouter/.test(detail) ? "Configure an OpenRouter API key in Settings → Model providers."
+            : "Check the audio model, format, key and OpenRouter credits. A charge may have occurred.";
+          await invoke("telegram_send", { connectionId, text: `Voice transcription failed. ${hint} Send the voice message again after correcting the problem.` });
+          return;
+        }
+        const body = text ? `Voice transcript:\n${transcript}\n\nCaption:\n${text}` : transcript;
+        const journal = await updateTelegramJournal(key, (value) => ({ ...value, entries: value.entries.map((existing) => existing.updateId === update.updateId && existing.phase === "transcribing" ? { ...existing, item: { ...existing.item, body }, phase: "prepared" as const } : existing) }));
+        entry = journal.entries.find((value) => value.updateId === update.updateId);
+        if (!entry || entry.phase !== "prepared") throw new Error("Could not save the Telegram transcription.");
+      }
+      if (!entry) {
+        const photos = Array.isArray(incoming.photo) ? incoming.photo : [];
+        const photo = photos.length ? photos[photos.length - 1] : null;
+        const document = incoming.document && typeof incoming.document === "object" ? incoming.document as Record<string, unknown> : null;
+        const videoMedia = incoming.video ?? incoming.video_note ?? incoming.animation;
+        const video = videoMedia && typeof videoMedia === "object" ? videoMedia as Record<string, unknown> : document && typeof document.mime_type === "string" && document.mime_type.startsWith("video/") ? document : null;
+        const image = video ? null : photo && typeof photo === "object" ? photo as Record<string, unknown> : document && typeof document.mime_type === "string" && document.mime_type.startsWith("image/") ? document : null;
+        const unsupported = ["audio", "sticker", "contact", "location", "venue", "poll"].some((name) => incoming[name] !== undefined) || (!!document && !image && !video);
+        if (unsupported || (!text && !image && !video)) {
+          await invoke("telegram_send", { connectionId, text: "This message type is not supported. Send text, an image, a video, or a voice message." });
+          return;
+        }
+        const attachments: ChatAttachment[] = [];
+        if (image) {
+          if (typeof image.file_size === "number" && image.file_size > 20 * 1024 * 1024) {
             await invoke("telegram_send", { connectionId, text: "This image cannot be processed. Send a supported, non-animated image under 20 MB." });
             return;
           }
-          throw reason;
+          if (typeof image.file_id !== "string") throw new Error("Telegram sent an invalid image.");
+          let attachment: ChatAttachment;
+          try { attachment = await invoke<ChatAttachment>("telegram_download_image", { connectionId, fileId: image.file_id }); }
+          catch (reason) {
+            if (/Telegram image exceeds 20 MB|Telegram did not return a supported image|Animated GIFs are not supported|Invalid Telegram image ID/.test(String(reason))) {
+              await invoke("telegram_send", { connectionId, text: "This image cannot be processed. Send a supported, non-animated image under 20 MB." });
+              return;
+            }
+            throw reason;
+          }
+          if (!isChatUpload(attachment)) throw new Error("Telegram sent an invalid image.");
+          await invoke("retain_task_images", { paths: [attachment.path] });
+          attachments.push(attachment);
         }
-        if (!isChatUpload(attachment)) throw new Error("Telegram sent an invalid image.");
-        await invoke("retain_task_images", { paths: [attachment.path] });
-        attachments.push(attachment);
-      }
-      if (video) {
-        if (typeof video.file_size === "number" && video.file_size > 20 * 1024 * 1024) {
-          await invoke("telegram_send", { connectionId, text: "This video cannot be processed. Send a video under 20 MB." });
-          return;
-        }
-        if (typeof video.file_id !== "string") throw new Error("Telegram sent an invalid video.");
-        let attachment: ChatAttachment;
-        try { attachment = await invoke<ChatAttachment>("telegram_download_video", { connectionId, fileId: video.file_id }); }
-        catch (reason) {
-          if (/Telegram video exceeds 20 MB|Invalid Telegram video ID/.test(String(reason))) {
+        if (video) {
+          if (typeof video.file_size === "number" && video.file_size > 20 * 1024 * 1024) {
             await invoke("telegram_send", { connectionId, text: "This video cannot be processed. Send a video under 20 MB." });
             return;
           }
-          throw reason;
+          if (typeof video.file_id !== "string") throw new Error("Telegram sent an invalid video.");
+          let attachment: ChatAttachment;
+          try { attachment = await invoke<ChatAttachment>("telegram_download_video", { connectionId, fileId: video.file_id }); }
+          catch (reason) {
+            if (/Telegram video exceeds 20 MB|Invalid Telegram video ID/.test(String(reason))) {
+              await invoke("telegram_send", { connectionId, text: "This video cannot be processed. Send a video under 20 MB." });
+              return;
+            }
+            throw reason;
+          }
+          if (attachment.kind !== "localFile" || !isChatUpload(attachment)) throw new Error("Telegram sent an invalid video.");
+          await invoke("retain_task_images", { paths: [attachment.path] });
+          attachments.push(attachment);
         }
-        if (attachment.kind !== "localFile" || !isChatUpload(attachment)) throw new Error("Telegram sent an invalid video.");
-        await invoke("retain_task_images", { paths: [attachment.path] });
-        attachments.push(attachment);
+        if (repositoryRef.current?.rootPath !== root || telegramRef.current.status?.connectionId !== connectionId || !telegramRef.current.status?.enabled) throw new Error("Telegram connection changed before the message was queued.");
+        const latest = reviewRef.current;
+        if (!latest || latest.repoPath !== root || !comparisonMatchesReview(comparisonRef.current, latest)) throw new Error("Open the repository's Workspace chat to receive Telegram messages.");
+        const workspaceKey = reviewQueueKey(latest);
+        const item: QueuedChatMessage = { id: `telegram-${connectionId}-${update.updateId}`, telegram: { connectionId, journalId, updateId: update.updateId, repositoryRoot: root }, body: text, context: { mode: "auto", attachments }, selection: null, mode: aiChatMode, model: aiChatModel, effort: aiChatEffort };
+        const journal = await updateTelegramJournal(key, (value) => addTelegramEntry(value, { updateId: update.updateId, workspaceKey, item, phase: "prepared" }));
+        entry = journal.entries.find((value) => value.updateId === update.updateId);
+        if (!entry) throw new Error("Could not save the Telegram message.");
       }
-      if (repositoryRef.current?.rootPath !== root || telegramRef.current.status?.connectionId !== connectionId || !telegramRef.current.status?.enabled) throw new Error("Telegram connection changed before the message was queued.");
-      const latest = reviewRef.current;
-      if (!latest || latest.repoPath !== root || !comparisonMatchesReview(comparisonRef.current, latest)) throw new Error("Open the repository's Workspace chat to receive Telegram messages.");
-      const workspaceKey = reviewQueueKey(latest);
-      const item: QueuedChatMessage = { id: `telegram-${connectionId}-${update.updateId}`, telegram: { connectionId, journalId, updateId: update.updateId, repositoryRoot: root }, body: text, context: { mode: "auto", attachments }, selection: null, mode: aiChatMode, model: aiChatModel, effort: aiChatEffort };
-      const journal = await updateTelegramJournal(key, (value) => addTelegramEntry(value, { updateId: update.updateId, workspaceKey, item, phase: "prepared" }));
-      entry = journal.entries.find((value) => value.updateId === update.updateId);
-      if (!entry) throw new Error("Could not save the Telegram message.");
     }
     if (repositoryRef.current?.rootPath !== root || telegramRef.current.status?.connectionId !== connectionId || !telegramRef.current.status?.enabled) throw new Error("Telegram connection changed before the message was queued.");
     const existing = entry;
@@ -4813,7 +4847,12 @@ function App() {
       || !telegramRef.current.status?.enabled || telegramRef.current.status.connectionId !== connectionId || !telegramRef.current.status.journalId) throw new Error("Waiting for the repository's Workspace chat.");
     const journal = readTelegramJournal(telegramJournalKey(root, telegramRef.current.status.journalId));
     for (const entry of journal.entries) {
-      if (entry.phase !== "prepared" && entry.phase !== "queued" && entry.phase !== "done" && ![...telegramRunsRef.current.values()].some((run) => run.root === root && run.connectionId === connectionId && run.updateId === entry.updateId)) {
+      if (entry.phase !== "transcribing" || entry.item.telegram?.connectionId !== connectionId) continue;
+      await updateTelegramJournal(telegramJournalKey(root, telegramRef.current.status.journalId), (value) => changeTelegramPhase(value, entry.updateId, "done"));
+      await invoke("telegram_send", { connectionId, text: "Voice transcription was interrupted and may have incurred charges. The message was not sent to the agent; please send it again." });
+    }
+    for (const entry of journal.entries) {
+      if (!(entry.phase === "transcribing" && entry.item.telegram?.connectionId === connectionId) && entry.phase !== "prepared" && entry.phase !== "queued" && entry.phase !== "done" && ![...telegramRunsRef.current.values()].some((run) => run.root === root && run.connectionId === connectionId && run.updateId === entry.updateId)) {
         setQueuePaused(entry.workspaceKey, true);
         initiallyPausedQueueKeysRef.current.delete(entry.workspaceKey);
         setError("A previous Telegram operation has an uncertain result. Check the Workspace and Telegram chats before retrying.");
@@ -5013,7 +5052,7 @@ function App() {
     const voiceWork = voiceWorkRef.current.get(id);
     if (voiceWork) { voiceWork.requestId = accepted.requestId; voiceWork.pendingEvents = []; }
     try {
-      await invoke("ai_chat_steer", { input: { requestId: accepted.requestId, prompt: item.body, chatContext: item.context, taskId: task?.id ?? null, allowLongPrompt: !!task, comments: review?.comments ?? [] } });
+      await invoke("ai_chat_steer", { input: { requestId: accepted.requestId, prompt: item.body, chatContext: item.context, taskId: task?.id ?? null, allowLongPrompt: !!task || !!item.telegram, comments: review?.comments ?? [] } });
       if (voiceWork) {
         const events = voiceWork.pendingEvents ?? [];
         delete voiceWork.pendingEvents;

@@ -577,6 +577,14 @@ fn provider_secret(app: &AppHandle, provider: &AgentProvider) -> Result<Option<S
         .map(|secret| secret.or_else(|| std::env::var(&provider.env_key).ok()))
 }
 
+pub(crate) fn openrouter_secret(app: &AppHandle) -> Result<String, String> {
+    let settings = load_provider_settings(app)?;
+    let provider = settings.providers.iter().find(|provider| provider.id == "openrouter" && is_openrouter(&provider.base_url))
+        .ok_or("Configure OpenRouter in Settings → Model providers first.")?;
+    provider_secret(app, provider)?.filter(|key| !key.trim().is_empty())
+        .ok_or_else(|| "Add an OpenRouter API key in Settings → Model providers first.".to_owned())
+}
+
 
 fn provider_env(app: &AppHandle) -> Result<Vec<(String, String)>, String> {
     let settings = load_provider_settings(app)?;

@@ -1,9 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Input } from "./ui/input";
 import { Switch } from "./ui/switch";
 
-export type TelegramStatus = { connected: boolean; enabled: boolean; userId: number | null; chatId: number | null; connectionId: string | null; journalId: string | null };
+export type TelegramStatus = { connected: boolean; enabled: boolean; userId: number | null; chatId: number | null; connectionId: string | null; journalId: string | null; transcriptionModel?: string; transcriptionLanguage?: string };
 type Candidate = { id: number; name: string };
 
 export function TelegramSettings({ repositoryRoot, status, onChange }: { repositoryRoot: string | null; status: TelegramStatus | null; onChange: (status: TelegramStatus | null) => void }) {
@@ -13,6 +13,13 @@ export function TelegramSettings({ repositoryRoot, status, onChange }: { reposit
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [model, setModel] = useState("google/gemini-2.5-flash");
+  const [language, setLanguage] = useState("");
+
+  useEffect(() => {
+    setModel(status?.transcriptionModel ?? "google/gemini-2.5-flash");
+    setLanguage(status?.transcriptionLanguage ?? "");
+  }, [status?.connectionId, status?.transcriptionModel, status?.transcriptionLanguage]);
 
   const run = async (operation: () => Promise<void>) => {
     setBusy(true); setError(""); setNotice("");
@@ -28,10 +35,18 @@ export function TelegramSettings({ repositoryRoot, status, onChange }: { reposit
       <li>Paste the token below and select <strong>Find my chat</strong>. Choose your own account and connect it.</li>
       <li>Enable Telegram and send a test message. Use a separate bot for each repository.</li>
     </ol>
-    <p className="text-sm text-[#7C9B88]">Text and supported images go to the current Workspace chat. Questions and approvals must be handled in Lotse. Messages received while Lotse is closed are processed when it reopens, if Telegram still retains them.</p>
+    <p className="text-sm text-[#7C9B88]">Text, supported images, videos, and voice messages go to the current Workspace chat. Questions and approvals must be handled in Lotse. Messages received while Lotse is closed are processed when it reopens, if Telegram still retains them.</p>
     {!repositoryRoot ? <p className="text-sm text-[#7C9B88]">Open a repository to connect Telegram.</p> : <>
       {status?.connected ? <div className="rounded-xl border border-[#294536] bg-[#111A15] p-5">
         <label className="flex items-center justify-between gap-5"><span><strong>Telegram enabled</strong><span className="mt-1 block text-sm text-[#7C9B88]">Private chat {status.chatId}. This setting stays enabled after restarting Lotse.</span></span><Switch checked={status.enabled} disabled={busy} aria-label="Telegram enabled" onCheckedChange={(enabled) => void run(async () => { const result = await invoke<TelegramStatus>("telegram_set_enabled", { enabled }); onChange(result); })} /></label>
+        <div className="mt-5 space-y-3 border-t border-[#294536] pt-5">
+          <label className="block text-sm font-semibold" htmlFor="telegram-transcription-model">OpenRouter audio model ID</label>
+          <Input id="telegram-transcription-model" value={model} onChange={(event) => setModel(event.currentTarget.value)} disabled={busy} />
+          <label className="block text-sm font-semibold" htmlFor="telegram-transcription-language">Spoken language</label>
+          <Input id="telegram-transcription-language" value={language} onChange={(event) => setLanguage(event.currentTarget.value)} placeholder="Automatic detection" disabled={busy} />
+          <p className="text-sm text-[#7C9B88]">Voice audio is sent to OpenRouter and its model provider using the configured OpenRouter key. Usage may incur charges. Choose a model that supports the voice audio format; leave language blank for automatic detection.</p>
+          <button type="button" className="quiet-button" disabled={busy || !model.trim()} onClick={() => void run(async () => { const result = await invoke<TelegramStatus>("telegram_set_transcription_settings", { model, language }); onChange(result); setNotice("Voice settings saved."); })}>Save voice settings</button>
+        </div>
         <div className="mt-4 flex justify-end gap-2"><button type="button" className="quiet-button" disabled={busy || !status.enabled} onClick={() => void run(async () => { await invoke("telegram_send", { text: "Lotse is connected to this repository.", connectionId: status.connectionId }); setNotice("Test message sent."); })}>Send test message</button><button type="button" className="quiet-button text-[#fb7185]" disabled={busy} onClick={() => void run(async () => { await invoke("telegram_disconnect"); const result = { connected: false, enabled: false, userId: null, chatId: null, connectionId: null, journalId: null }; onChange(result); })}>Disconnect</button></div>
       </div> : <div className="rounded-xl border border-[#294536] bg-[#111A15] p-5 space-y-3">
         <label className="block text-sm font-semibold" htmlFor="telegram-token">Bot token</label><Input id="telegram-token" type="password" autoComplete="off" value={token} onChange={(event) => { setToken(event.currentTarget.value); setCandidates([]); setSelectedId(null); }} />

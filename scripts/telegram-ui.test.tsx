@@ -111,6 +111,16 @@ try {
   await act(async () => root.render(<App />)); await settle();
   await act(async () => ready({ connected: true, enabled: true, userId: 10, chatId: 10, connectionId: "connection", journalId: "bot" })); await settle();
   check(sends.length === 3, "An uncertain running message was started again after restart");
+  await act(async () => root.unmount());
+  fileStore.setItem("chaoticreview.chat-queues", JSON.stringify({}));
+  fileStore.setItem(telegramJournalKey(repo.rootPath, "bot"), JSON.stringify({ offset: 4, entries: [{ updateId: 3, workspaceKey, item, phase: "transcribing" }] }));
+  await fileStore.flush();
+  root = createRoot(document.getElementById("root")!);
+  await act(async () => root.render(<App />)); await settle();
+  await act(async () => ready({ connected: true, enabled: true, userId: 10, chatId: 10, connectionId: "connection", journalId: "bot" })); await settle();
+  check(sends.length === 3, "An interrupted voice transcription started an agent");
+  check(replies.some((text) => text.includes("Voice transcription was interrupted")), "Interrupted transcription was not reported");
+  check(JSON.parse(fileStore.getItem(telegramJournalKey(repo.rootPath, "bot"))!).entries[0].phase === "done", "Interrupted transcription was not finalized");
   check(failures.length === 0, `Unexpected IPC: ${failures.join(", ")}`);
   document.getElementById("result")!.textContent = "PASS: Telegram workspace round trip, queue, images, approvals and restart";
 } catch (error) { document.getElementById("result")!.textContent = `FAIL: ${String(error)}`; }
