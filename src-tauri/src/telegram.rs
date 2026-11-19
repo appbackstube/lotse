@@ -86,7 +86,15 @@ fn api_request(token: &str, method: &str, payload: Value) -> Result<Value, Strin
     let response = client.post(format!("https://api.telegram.org/bot{token}/{method}"))
         .json(&payload).send().map_err(|_| "Telegram could not be reached; the request outcome may be uncertain.")?;
     let value: Value = response.json().map_err(|_| "Telegram returned an invalid response.")?;
+    api_result(method, value)
+}
+
+fn api_result(method: &str, value: Value) -> Result<Value, String> {
     if value.get("ok").and_then(Value::as_bool) != Some(true) {
+        if method == "getFile" && value.get("error_code").and_then(Value::as_u64) == Some(400)
+            && value.get("description").and_then(Value::as_str) == Some("Bad Request: file is too big") {
+            return Err("Telegram image exceeds 20 MB.".to_owned());
+        }
         return Err("Telegram rejected the request. Check the bot token and connection.".to_owned());
     }
     value.get("result").cloned().ok_or_else(|| "Telegram returned an incomplete response.".to_owned())
@@ -298,6 +306,21 @@ pub fn telegram_disconnect(app: AppHandle, window: WebviewWindow, state: State<'
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn oversized_get_file_response_is_a_permanent_image_rejection() {
+        let oversized = json!({"ok":false,"error_code":400,"description":"Bad Request: file is too big"});
+        assert_eq!(api_result("getFile", oversized.clone()).unwrap_err(), "Telegram image exceeds 20 MB.");
+        assert!(!api_result("sendMessage", oversized).unwrap_err().contains("20 MB"));
+        for response in [
+            json!({"ok":false,"error_code":401,"description":"Unauthorized"}),
+            json!({"ok":false,"error_code":429,"description":"Too Many Requests"}),
+            json!({"ok":false,"error_code":500,"description":"secret-token"}),
+        ] {
+            assert_eq!(api_result("getFile", response).unwrap_err(), "Telegram rejected the request. Check the bot token and connection.");
+        }
+        assert_eq!(api_result("getFile", json!({"ok":true,"result":{"file_path":"photos/image.jpg"}})).unwrap()["file_path"], "photos/image.jpg");
+    }
 
     #[test]
     fn accepts_only_the_authorized_sender_in_the_authorized_private_chat() {
