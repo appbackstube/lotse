@@ -19,4 +19,6 @@ fileStore.getItem = () => "not json";
 assert.throws(() => readTelegramJournal("invalid"), /could not be read/);
 fileStore.getItem = () => JSON.stringify(starting);
 assert.equal(readTelegramJournal("valid").entries[0].phase, "starting");
+fileStore.getItem = () => JSON.stringify(changeTelegramPhase(queued, 1, "transcribing"));
+assert.equal(readTelegramJournal("valid").entries[0].phase, "transcribing");
 fileStore.getItem = original;

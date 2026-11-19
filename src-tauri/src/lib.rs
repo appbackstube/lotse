@@ -6732,6 +6732,8 @@ pub fn run() {
             telegram::telegram_send,
             telegram::telegram_download_image,
             telegram::telegram_download_video,
+            telegram::telegram_transcribe_voice,
+            telegram::telegram_set_transcription_settings,
             telegram::telegram_save_connection,
             telegram::telegram_set_enabled,
             telegram::telegram_disconnect,

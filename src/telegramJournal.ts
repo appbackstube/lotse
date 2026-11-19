@@ -1,7 +1,7 @@
 import { fileStore } from "./fileStore";
 import type { QueuedChatMessage } from "./chatQueue";
 
-export type TelegramPhase = "prepared" | "queued" | "starting" | "running" | "sending" | "done" | "uncertain";
+export type TelegramPhase = "transcribing" | "prepared" | "queued" | "starting" | "running" | "sending" | "done" | "uncertain";
 export type TelegramEntry = { updateId: number; workspaceKey: string; item: QueuedChatMessage; phase: TelegramPhase };
 export type TelegramJournal = { offset: number; entries: TelegramEntry[] };
 const journalWrites = new Map<string, Promise<TelegramJournal>>();
@@ -22,7 +22,7 @@ export function readTelegramJournal(key: string): TelegramJournal {
       || !entry.item || typeof entry.item.id !== "string" || typeof entry.item.body !== "string" || !entry.item.context || entry.item.context.mode !== "auto"
       || !Array.isArray(entry.item.context.attachments) || (entry.item.mode !== "default" && entry.item.mode !== "plan")
       || typeof entry.item.model !== "string" || typeof entry.item.effort !== "string"
-      || !["prepared", "queued", "starting", "running", "sending", "done", "uncertain"].includes(entry.phase))) {
+      || !["transcribing", "prepared", "queued", "starting", "running", "sending", "done", "uncertain"].includes(entry.phase))) {
     throw new Error("Telegram history is invalid. Check pending work before reconnecting.");
   }
   return journal;
