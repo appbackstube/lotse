@@ -2440,6 +2440,8 @@ function App() {
   const refreshRef = useRef<() => Promise<void>>(async () => {});
   const reviewRef = useRef<ReviewSession | null>(null);
   const telegramRunsRef = useRef(new Map<string, { connectionId: string; journalId: string; root: string; updateId: number; result: string; notices: Promise<void> }>());
+  const telegramAttentionRef = useRef(new Map<string, { root: string; connectionId: string; taskId: string | null; requestId: number; kind: "question" | "approval" }>());
+  const telegramReplyTokensRef = useRef(new Map<number, string>());
   const telegramSendingKeysRef = useRef(new Set<string>());
   const changedPathsRef = useRef<string[]>([]);
 
@@ -2762,6 +2764,8 @@ function App() {
   useEffect(() => { saveCloseKanbanModalOnOutsideClick(closeKanbanModalOnOutsideClick); }, [closeKanbanModalOnOutsideClick]);
 
   const resetRepositoryTasks = useEffectEvent((root: string | null) => {
+    telegramAttentionRef.current.clear();
+    telegramReplyTokensRef.current.clear();
     setTaskStorageRoot(null);
     setTaskStatusSettings(loadTaskStatuses(root));
     setApprovalReviewerOverrides({});
@@ -2982,6 +2986,13 @@ function App() {
       else if (key) setQueuePaused(key, true);
       if (run.mode === "default") void refreshRef.current();
       if (update.kind === "failed" && update.message) setError(update.message);
+      const telegramRoot = repositoryRef.current?.rootPath;
+      const telegramConnection = telegramRef.current.status;
+      if (telegramRoot && telegramConnection?.enabled && telegramConnection.remoteControlEnabled && telegramConnection.connectionId) {
+        const title = tasksRef.current.find((task) => task.id === taskId)?.title ?? "Task";
+        const detail = update.kind === "failed" ? update.message : messages.filter((entry) => entry.role === "assistant").at(-1)?.body;
+        void sendTelegramRemoteText({ root: telegramRoot, connectionId: telegramConnection.connectionId }, `${title}: Agent ${update.kind}.${detail ? `\n\n${detail}` : ""}`).catch((reason) => setError(message(reason)));
+      }
       if (update.kind !== "cancelled" && (update.kind === "failed" || !key || !chatQueuesRef.current[key]?.length)) notifyAgent(taskId, update.kind === "failed" ? "Agent failed. Open the task to check the error." : "Agent finished. Open the task to view the result.");
       return;
     }
@@ -3030,6 +3041,21 @@ function App() {
     }
   }
 
+  async function sendTelegramRemoteText(run: { root: string; connectionId: string }, text: string, token?: string): Promise<void> {
+    const characters = Array.from(text);
+    for (let offset = 0; offset < characters.length; offset += 2000) {
+      if (repositoryRef.current?.rootPath !== run.root || !telegramRef.current.status?.enabled || !telegramRef.current.status.remoteControlEnabled || telegramRef.current.status.connectionId !== run.connectionId) throw new Error("Telegram remote control was disabled or the connection changed.");
+      const chunk = characters.slice(offset, offset + 2000).join("");
+      if (chunk.trim()) {
+        const messageId = await invoke<number | null>("telegram_send", { connectionId: run.connectionId, text: token ? `[Lotse request] ${chunk}` : chunk, entities: [], remoteControl: true });
+        if (token && Number.isSafeInteger(messageId) && typeof messageId === "number" && messageId > 0) {
+          telegramReplyTokensRef.current.set(messageId, token);
+          if (telegramReplyTokensRef.current.size > 1000) telegramReplyTokensRef.current.delete(telegramReplyTokensRef.current.keys().next().value!);
+        }
+      }
+    }
+  }
+
   function flushTelegramProgress(run: { root: string; connectionId: string; result: string; notices: Promise<void> }): void {
     if (!run.result) return;
     const text = run.result;
@@ -3044,6 +3070,65 @@ function App() {
     flushTelegramProgress(run);
     run.notices = run.notices.then(() => invoke<void>("telegram_send", { connectionId: run.connectionId, text })).catch(() => setError("Could not notify Telegram about the agent's request. Open the Workspace chat."));
   }
+
+  function publishTelegramAttention(taskId: string | null, value: AgentUserInput | AgentApproval, kind: "question" | "approval"): void {
+    const root = repositoryRef.current?.rootPath;
+    const status = telegramRef.current.status;
+    if (!root || !status?.enabled || !status.remoteControlEnabled || !status.connectionId) return;
+    const connectionId = status.connectionId;
+    const title = taskId ? tasksRef.current.find((task) => task.id === taskId)?.title ?? "Task" : "Workspace";
+    if ([...telegramAttentionRef.current.values()].some((attention) => attention.root === root && attention.connectionId === connectionId && attention.taskId === taskId && attention.requestId === value.requestId && attention.kind === kind)) return;
+    if (kind === "question" && (value as AgentUserInput).questions.some((question) => question.isSecret)) {
+      void sendTelegramRemoteText({ root, connectionId }, `${title}: A sensitive question is waiting in Lotse.`).catch((reason) => setError(message(reason)));
+      return;
+    }
+    if (kind === "approval") {
+      const approval = value as AgentApproval;
+      if (/(?:authorization\s*:|bearer\s+\S+|(?:api[-_]?key|access[-_]?token|password|secret|private[-_]?key)\s*[:=]|--(?:password|token|secret)\s+\S+|-----BEGIN [A-Z ]*PRIVATE KEY-----)/i.test(`${approval.title}\n${approval.description}\n${approval.command ?? ""}`)) {
+        void sendTelegramRemoteText({ root, connectionId }, `${title}: A potentially sensitive approval is waiting in Lotse.`).catch((reason) => setError(message(reason)));
+        return;
+      }
+    }
+    const token = crypto.randomUUID();
+    telegramAttentionRef.current.set(token, { root, connectionId, taskId, requestId: value.requestId, kind });
+    let text: string;
+    if (kind === "question") {
+      const input = value as AgentUserInput;
+      text = `${title}: Agent question\n\n${input.questions.map((question, index) => `${index + 1}. ${question.question}${question.options?.length ? `\n${question.options.map((option, optionIndex) => `  ${optionIndex + 1}) ${option.label}${option.description ? ` — ${option.description}` : ""}`).join("\n")}` : ""}`).join("\n\n")}\n\nReply to this message with one answer per line, in question order. Alternatively send /answer ${token} followed by the answers.`;
+    } else {
+      const approval = value as AgentApproval;
+      text = `${title}: Approval required\n\n${approval.title}\n${approval.description}${approval.command ? `\n\n${approval.command}` : ""}\n\nReply ALLOW or DENY to this message. Alternatively send /allow ${token} or /deny ${token}.`;
+    }
+    const deliver = async () => { if (telegramAttentionRef.current.has(token)) await sendTelegramRemoteText({ root, connectionId }, text, token); };
+    const failed = (reason: unknown) => { telegramAttentionRef.current.delete(token); setError(message(reason)); };
+    const requestId = taskId ? undefined : aiChatTurnRef.current?.requestId;
+    const run = requestId ? telegramRunsRef.current.get(requestId) : undefined;
+    if (run && run.root === root && run.connectionId === connectionId) {
+      flushTelegramProgress(run);
+      run.notices = run.notices.then(deliver).catch(failed);
+    } else void deliver().catch(failed);
+  }
+
+  function clearTelegramAttention(taskId: string | null, requestId?: number): void {
+    for (const [token, attention] of telegramAttentionRef.current) {
+      if (attention.taskId === taskId && (requestId === undefined || attention.requestId === requestId)) telegramAttentionRef.current.delete(token);
+    }
+  }
+
+  const syncTelegramAttention = useEffectEvent(() => {
+    telegramAttentionRef.current.clear();
+    telegramReplyTokensRef.current.clear();
+    if (!telegramRef.current.status?.enabled || !telegramRef.current.status.remoteControlEnabled) return;
+    if (agentInputRef.current) publishTelegramAttention(null, agentInputRef.current, "question");
+    if (agentApprovalRef.current) publishTelegramAttention(null, agentApprovalRef.current, "approval");
+    for (const [taskId, run] of Object.entries(taskRunsRef.current)) {
+      if (run.input) publishTelegramAttention(taskId, run.input, "question");
+      if (run.approval) publishTelegramAttention(taskId, run.approval, "approval");
+    }
+    for (const approval of mcpApprovals) publishTelegramAttention(approval.taskId, approval, "approval");
+  });
+
+  useEffect(() => { syncTelegramAttention(); }, [telegram.status?.enabled, telegram.status?.remoteControlEnabled, telegram.status?.connectionId]);
 
   const handleMainChatEvent = (update: AiChatEvent) => {
     handleVoiceChatEvent(update);
@@ -3125,6 +3210,7 @@ function App() {
     }
     if (event.type === "chat") {
       if (event.payload.kind === "completed" || event.payload.kind === "cancelled" || event.payload.kind === "failed") {
+        clearTelegramAttention(taskId ?? null);
         setMcpApprovals((current) => current.filter((approval) => approval.taskId !== (taskId ?? null)));
         if (!taskId) {
           agentApprovalRef.current = null; agentInputRef.current = null;
@@ -3143,7 +3229,7 @@ function App() {
       return;
     }
     if (event.type === "approvalRequested") {
-      if (!taskId) notifyTelegramAttention("The agent needs approval in Lotse. Telegram cannot approve it.");
+      if (!taskId && !telegramRef.current.status?.remoteControlEnabled) notifyTelegramAttention("The agent needs approval in Lotse.");
       if (event.payload.source === "mcp") {
         setMcpApprovals((current) => current.some((approval) => approval.requestId === event.payload.requestId) ? current : [...current, { ...event.payload, taskId: taskId ?? null }]);
       }
@@ -3154,10 +3240,12 @@ function App() {
           taskRunsRef.current = { ...taskRunsRef.current, [taskId]: next }; setTaskRuns(taskRunsRef.current);
         }
       } else { agentApprovalRef.current = event.payload; setAgentApproval(event.payload); setAiChatStatus("Waiting for your approval…"); }
+      publishTelegramAttention(taskId ?? null, event.payload, "approval");
       notifyAgent(taskId ?? null, "Agent needs your approval.");
       return;
     }
     if (event.type === "approvalResolved") {
+      clearTelegramAttention(taskId ?? null, event.payload.requestId);
       if (agentApprovalRef.current?.requestId === event.payload.requestId) agentApprovalRef.current = null;
       setMcpApprovals((current) => current.filter((approval) => approval.requestId !== event.payload.requestId));
       setMcpRespondingRequestId((current) => current === event.payload.requestId ? null : current);
@@ -3174,7 +3262,7 @@ function App() {
       return;
     }
     if (event.type === "userInputRequested") {
-      if (!taskId) notifyTelegramAttention("The agent has a question. Open Lotse to answer it.");
+      if (!taskId && !telegramRef.current.status?.remoteControlEnabled) notifyTelegramAttention("The agent has a question. Open Lotse to answer it.");
       if (taskId) {
         const run = taskRunsRef.current[taskId];
         if (run) {
@@ -3182,9 +3270,11 @@ function App() {
           taskRunsRef.current = { ...taskRunsRef.current, [taskId]: next }; setTaskRuns(taskRunsRef.current);
         }
       } else { agentInputRef.current = event.payload; setAgentUserInput(event.payload); setAiChatStatus("Waiting for your answer…"); }
+      publishTelegramAttention(taskId ?? null, event.payload, "question");
       notifyAgent(taskId ?? null, "Agent has a question for you.");
       return;
     }
+    clearTelegramAttention(taskId ?? null, event.payload.requestId);
     if (taskId) {
       const run = taskRunsRef.current[taskId];
       if (run?.input?.requestId === event.payload.requestId) {
@@ -4731,8 +4821,58 @@ function App() {
     }
     if (!entry) {
       const incoming = update.message;
-      const text = (typeof incoming.text === "string" ? incoming.text : typeof incoming.caption === "string" ? incoming.caption : "").trim();
+      let text = (typeof incoming.text === "string" ? incoming.text : typeof incoming.caption === "string" ? incoming.caption : "").trim();
+      const replied = incoming.reply_to_message && typeof incoming.reply_to_message === "object" ? incoming.reply_to_message as Record<string, unknown> : null;
+      const replyId = replied && typeof replied.message_id === "number" ? replied.message_id : null;
+      const replyToken = replyId === null ? undefined : telegramReplyTokensRef.current.get(replyId);
+      if (replyToken || typeof replied?.text === "string" && replied.text.startsWith("[Lotse request] ")) {
+        const token = replyToken ?? "0";
+        const attention = telegramAttentionRef.current.get(token);
+        if (attention?.kind === "question") text = `/answer ${token} ${text}`;
+        else if (attention?.kind === "approval" && /^(allow|deny)$/i.test(text)) text = `/${text.toLowerCase()} ${token}`;
+        else text = `/answer ${token}`;
+      }
       if (text === "/start" && !incoming.photo && !incoming.document && !incoming.video && !incoming.video_note && !incoming.animation && !incoming.voice) return;
+      if (/^\/(?:answer|allow|deny)(?:\s|$)/i.test(text)) {
+        const workspaceKey = reviewQueueKey(current);
+        const item: QueuedChatMessage = { id: `telegram-${connectionId}-${update.updateId}`, telegram: { connectionId, journalId, updateId: update.updateId, repositoryRoot: root }, body: "", context: { mode: "auto", attachments: [] }, selection: null, mode: aiChatMode, model: aiChatModel, effort: aiChatEffort };
+        await updateTelegramJournal(key, (value) => addTelegramEntry(value, { updateId: update.updateId, workspaceKey, item, phase: "uncertain" }));
+        const command = text.match(/^\/(answer|allow|deny)\s+([a-f0-9-]+)(?:\s+([\s\S]*))?$/i);
+        let result = "Invalid or expired request. Check Lotse for the current question or approval.";
+        const attention = command ? telegramAttentionRef.current.get(command[2]) : undefined;
+        if (command && attention && attention.root === root && attention.connectionId === connectionId) {
+          const run = attention.taskId ? taskRunsRef.current[attention.taskId] : null;
+          const action = command[1].toLowerCase();
+          try {
+            if (repositoryRef.current?.rootPath !== root || !telegramRef.current.status?.enabled || !telegramRef.current.status.remoteControlEnabled || telegramRef.current.status.connectionId !== connectionId) throw new Error("Telegram remote control is disabled or the connection changed. Check Lotse before trying again.");
+            if (attention.kind === "question" && action === "answer") {
+              const input = attention.taskId ? run?.input : agentInputRef.current;
+              if (!input || input.requestId !== attention.requestId || input.questions.some((question) => question.isSecret)) throw new Error("This question is no longer available in Telegram.");
+              const lines = (command[3] ?? "").split(/\r?\n/).map((line) => line.trim());
+              if (lines.length !== input.questions.length || lines.some((line) => !line)) throw new Error("Send one answer per line, in question order.");
+              const answers = Object.fromEntries(input.questions.map((question, index) => {
+                const line = lines[index];
+                const number = /^\d+$/.test(line) ? Number(line) : 0;
+                const selected = number > 0 ? question.options?.[number - 1] : undefined;
+                const answer = selected?.label ?? line;
+                if (question.options?.length && !question.isOther && !question.options.some((option) => option.label === answer)) throw new Error(`Choose an offered option for question ${index + 1}.`);
+                return [question.id, [answer]];
+              }));
+              await invoke("telegram_agent_user_input_respond", { connectionId, requestId: input.requestId, answers });
+              clearTelegramAttention(attention.taskId, attention.requestId);
+              result = "Answer delivered. The agent can continue.";
+            } else if (attention.kind === "approval" && (action === "allow" || action === "deny") && !command[3]) {
+              const accepted = await invoke<boolean>("telegram_agent_approve", { connectionId, requestId: attention.requestId, approved: action === "allow" });
+              clearTelegramAttention(attention.taskId, attention.requestId);
+              if (!accepted) throw new Error("This approval is no longer active.");
+              result = action === "allow" ? "Approval delivered." : "Request denied.";
+            }
+          } catch (reason) { result = message(reason); }
+        }
+        await updateTelegramJournal(key, (value) => changeTelegramPhase(value, update.updateId, "done"));
+        await sendTelegramText({ root, connectionId }, result);
+        return;
+      }
       if (incoming.voice !== undefined) {
         const voice = incoming.voice && typeof incoming.voice === "object" ? incoming.voice as Record<string, unknown> : null;
         if (!voice || typeof voice.file_id !== "string" || (typeof voice.file_size === "number" && voice.file_size > 20 * 1024 * 1024)) {

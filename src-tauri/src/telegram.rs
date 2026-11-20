@@ -27,7 +27,7 @@ fn send_paced(
     now: impl Fn() -> Instant,
     sleep: impl Fn(Duration),
     mut request: impl FnMut() -> Result<Value, String>,
-) -> Result<(), String> {
+) -> Result<Value, String> {
     loop {
         let delay = next.saturating_duration_since(now());
         if !delay.is_zero() { sleep(delay); }
@@ -44,8 +44,7 @@ fn send_paced(
                 continue;
             }
         }
-        api_result("sendMessage", value)?;
-        return Ok(());
+        return api_result("sendMessage", value);
     }
 }
 
@@ -56,6 +55,8 @@ struct Connection {
     user_id: i64,
     chat_id: i64,
     enabled: bool,
+    #[serde(default)]
+    remote_control_enabled: bool,
     #[serde(default)]
     transcription: TranscriptionSettings,
 }
@@ -77,6 +78,7 @@ impl Default for TranscriptionSettings {
 pub struct ConnectionStatus {
     connected: bool,
     enabled: bool,
+    remote_control_enabled: bool,
     user_id: Option<i64>,
     chat_id: Option<i64>,
     connection_id: Option<String>,
@@ -95,6 +97,7 @@ fn status(connection: Option<&Connection>) -> ConnectionStatus {
     ConnectionStatus {
         connected: connection.is_some(),
         enabled: connection.is_some_and(|item| item.enabled),
+        remote_control_enabled: connection.is_some_and(|item| item.remote_control_enabled),
         user_id: connection.map(|item| item.user_id),
         chat_id: connection.map(|item| item.chat_id),
         connection_id: connection.map(|item| item.id.clone()),
@@ -190,6 +193,23 @@ pub(crate) fn with_enabled_connection<T>(app: &AppHandle, label: &str, root: &Pa
     action()
 }
 
+fn remote_control_allowed(connection: Option<&Connection>, expected_id: &str) -> bool {
+    connection.is_some_and(|item| item.enabled && item.remote_control_enabled && item.id == expected_id)
+}
+
+pub(crate) fn with_remote_control<T>(app: &AppHandle, label: &str, root: &Path, expected_id: &str, action: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    let _opening = REPOSITORY_OPEN_LOCK.lock().map_err(|_| "Repository opening is unavailable.")?;
+    let _lock = CONNECTION_LOCK.lock().map_err(|_| "Telegram settings are unavailable.")?;
+    if repository_path_for_label(&app.state::<AppState>(), label)? != root {
+        return Err("The repository changed while Telegram was working.".to_owned());
+    }
+    let root = root_string(root)?;
+    if !remote_control_allowed(load(app)?.get(&root), expected_id) {
+        return Err("Telegram remote control is disabled or the connection changed.".to_owned());
+    }
+    action()
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateBatch {
@@ -227,7 +247,7 @@ pub async fn telegram_poll(offset: i64, connection_id: String, app: AppHandle, w
 }
 
 #[tauri::command]
-pub async fn telegram_send(text: String, entities: Option<Vec<Value>>, connection_id: String, app: AppHandle, window: WebviewWindow, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn telegram_send(text: String, entities: Option<Vec<Value>>, connection_id: String, remote_control: Option<bool>, app: AppHandle, window: WebviewWindow, state: State<'_, AppState>) -> Result<Option<i64>, String> {
     if text.trim().is_empty() || text.encode_utf16().count() > 4096 { return Err("Telegram messages must contain 1–4096 characters.".to_owned()); }
     let root = root_string(&repository_path(&state, &window)?)?;
     let label = window.label().to_owned();
@@ -236,13 +256,16 @@ pub async fn telegram_send(text: String, entities: Option<Vec<Value>>, connectio
         let schedule = send_schedule(&connection)?;
         let mut next = schedule.lock().map_err(|_| "Telegram sending is unavailable.")?;
         let payload = json!({"chat_id":connection.chat_id,"text":text,"entities":entities.unwrap_or_default()});
-        send_paced(&mut next, Instant::now, std::thread::sleep, || {
+        let result = send_paced(&mut next, Instant::now, std::thread::sleep, || {
             // Recheck after every wait without holding settings/repository locks
             // during pacing or a server-requested cooldown.
-            with_enabled_connection(&app, &label, Path::new(&root), &connection_id, || {
-                api_response(&connection.token, "sendMessage", payload.clone())
-            })
-        })
+            if remote_control.unwrap_or(false) {
+                with_remote_control(&app, &label, Path::new(&root), &connection_id, || api_response(&connection.token, "sendMessage", payload.clone()))
+            } else {
+                with_enabled_connection(&app, &label, Path::new(&root), &connection_id, || api_response(&connection.token, "sendMessage", payload.clone()))
+            }
+        })?;
+        Ok(result.get("message_id").and_then(Value::as_i64))
     }).await
 }
 
@@ -425,7 +448,7 @@ pub async fn telegram_save_connection(token: String, user_id: i64, chat_id: i64,
         if connections.iter().any(|(key, value)| key != &root && value.token == token) {
             return Err("Use a different Telegram bot for each repository.".to_owned());
         }
-        let connection = Connection { id: agent_id()?, token, user_id, chat_id, enabled: false, transcription: TranscriptionSettings::default() };
+        let connection = Connection { id: agent_id()?, token, user_id, chat_id, enabled: false, remote_control_enabled: false, transcription: TranscriptionSettings::default() };
         connections.insert(root, connection.clone());
         save(&app, &connections)?;
         Ok(status(Some(&connection)))
@@ -477,6 +500,18 @@ pub fn telegram_set_enabled(enabled: bool, app: AppHandle, window: WebviewWindow
 }
 
 #[tauri::command]
+pub fn telegram_set_remote_control(enabled: bool, app: AppHandle, window: WebviewWindow, state: State<'_, AppState>) -> Result<ConnectionStatus, String> {
+    let root = root_string(&repository_path(&state, &window)?)?;
+    let _lock = CONNECTION_LOCK.lock().map_err(|_| "Telegram settings are unavailable.")?;
+    let mut connections = load(&app)?;
+    let connection = connections.get_mut(&root).ok_or("Connect Telegram first.")?;
+    connection.remote_control_enabled = enabled;
+    let result = status(Some(connection));
+    save(&app, &connections)?;
+    Ok(result)
+}
+
+#[tauri::command]
 pub fn telegram_disconnect(app: AppHandle, window: WebviewWindow, state: State<'_, AppState>) -> Result<(), String> {
     let root = root_string(&repository_path(&state, &window)?)?;
     let _lock = CONNECTION_LOCK.lock().map_err(|_| "Telegram settings are unavailable.")?;
@@ -509,6 +544,15 @@ mod tests {
         let connection: Connection = serde_json::from_value(json!({"id":"test","token":"test","user_id":1,"chat_id":1,"enabled":true})).unwrap();
         assert_eq!(connection.transcription.model, DEFAULT_TRANSCRIPTION_MODEL);
         assert!(connection.transcription.language.is_empty());
+        assert!(!connection.remote_control_enabled);
+        assert!(!remote_control_allowed(Some(&connection), "test"));
+        let mut opted_in = connection.clone();
+        opted_in.remote_control_enabled = true;
+        assert!(remote_control_allowed(Some(&opted_in), "test"));
+        assert!(!remote_control_allowed(Some(&opted_in), "other"));
+        opted_in.enabled = false;
+        assert!(!remote_control_allowed(Some(&opted_in), "test"));
+        assert!(!remote_control_allowed(None, "test"));
     }
 
     #[test]
@@ -533,6 +577,8 @@ mod tests {
             }).unwrap();
         }
         assert_eq!(sent_at, [0, 3, 5, 6, 7]);
+        let result = send_paced(&mut next, || start + Duration::from_secs(8), |_| {}, || Ok(json!({"ok":true,"result":{"message_id":123}}))).unwrap();
+        assert_eq!(result["message_id"], 123);
     }
 
     #[test]
@@ -574,7 +620,7 @@ mod tests {
 
     #[test]
     fn schedules_are_shared_per_bot_and_chat_across_reconnects() {
-        let connection = Connection { id: "one".into(), token: "synthetic-test-token".into(), user_id: 10, chat_id: 10, enabled: true, transcription: TranscriptionSettings::default() };
+        let connection = Connection { id: "one".into(), token: "synthetic-test-token".into(), user_id: 10, chat_id: 10, enabled: true, remote_control_enabled: false, transcription: TranscriptionSettings::default() };
         let first = send_schedule(&connection).unwrap();
         let mut other = connection.clone();
         other.id = "two".into();
@@ -603,7 +649,7 @@ mod tests {
 
     #[test]
     fn accepts_only_the_authorized_sender_in_the_authorized_private_chat() {
-        let connection = Connection { id: "test".into(), token: "unused".into(), user_id: 10, chat_id: 10, enabled: true, transcription: TranscriptionSettings::default() };
+        let connection = Connection { id: "test".into(), token: "unused".into(), user_id: 10, chat_id: 10, enabled: true, remote_control_enabled: false, transcription: TranscriptionSettings::default() };
         let mut update = json!({"message":{"from":{"id":10,"is_bot":false},"chat":{"id":10,"type":"private"},"text":"hello"}});
         assert!(authorized_message(&update, &connection).is_some());
         update["message"]["from"]["id"] = json!(11);
@@ -625,7 +671,7 @@ mod tests {
 
     #[test]
     fn reconnect_keeps_the_journal_identity_without_exposing_the_token() {
-        let first = Connection { id: "one".into(), token: "123:secret-token".into(), user_id: 10, chat_id: 10, enabled: true, transcription: TranscriptionSettings::default() };
+        let first = Connection { id: "one".into(), token: "123:secret-token".into(), user_id: 10, chat_id: 10, enabled: true, remote_control_enabled: false, transcription: TranscriptionSettings::default() };
         let mut second = first.clone();
         second.id = "two".into();
         assert_eq!(status(Some(&first)).journal_id, status(Some(&second)).journal_id);
@@ -636,7 +682,7 @@ mod tests {
 
     #[test]
     fn filters_unauthorized_updates_without_losing_their_offsets() {
-        let connection = Connection { id: "test".into(), token: "unused".into(), user_id: 10, chat_id: 10, enabled: true, transcription: TranscriptionSettings::default() };
+        let connection = Connection { id: "test".into(), token: "unused".into(), user_id: 10, chat_id: 10, enabled: true, remote_control_enabled: false, transcription: TranscriptionSettings::default() };
         let updates = json!([
             {"update_id": 9, "message":{"from":{"id":11,"is_bot":false},"chat":{"id":11,"type":"private"},"text":"bad"}},
             {"update_id": 10, "message":{"from":{"id":10,"is_bot":false},"chat":{"id":10,"type":"private"},"text":"good"}}

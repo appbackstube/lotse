@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Input } from "./ui/input";
 import { Switch } from "./ui/switch";
 
-export type TelegramStatus = { connected: boolean; enabled: boolean; userId: number | null; chatId: number | null; connectionId: string | null; journalId: string | null; transcriptionModel?: string; transcriptionLanguage?: string };
+export type TelegramStatus = { connected: boolean; enabled: boolean; remoteControlEnabled?: boolean; userId: number | null; chatId: number | null; connectionId: string | null; journalId: string | null; transcriptionModel?: string; transcriptionLanguage?: string };
 type Candidate = { id: number; name: string };
 
 export function TelegramSettings({ repositoryRoot, status, onChange }: { repositoryRoot: string | null; status: TelegramStatus | null; onChange: (status: TelegramStatus | null) => void }) {
@@ -35,10 +35,11 @@ export function TelegramSettings({ repositoryRoot, status, onChange }: { reposit
       <li>Paste the token below and select <strong>Find my chat</strong>. Choose your own account and connect it.</li>
       <li>Enable Telegram and send a test message. Use a separate bot for each repository.</li>
     </ol>
-    <p className="text-sm text-[#7C9B88]">Text, supported images, videos, and voice messages go to the current Workspace chat. Questions and approvals must be handled in Lotse. Messages received while Lotse is closed are processed when it reopens, if Telegram still retains them.</p>
+    <p className="text-sm text-[#7C9B88]">Text, supported images, videos, and voice messages go to the current Workspace chat. Messages received while Lotse is closed are processed when it reopens, if Telegram still retains them.</p>
     {!repositoryRoot ? <p className="text-sm text-[#7C9B88]">Open a repository to connect Telegram.</p> : <>
       {status?.connected ? <div className="rounded-xl border border-[#294536] bg-[#111A15] p-5">
         <label className="flex items-center justify-between gap-5"><span><strong>Telegram enabled</strong><span className="mt-1 block text-sm text-[#7C9B88]">Private chat {status.chatId}. This setting stays enabled after restarting Lotse.</span></span><Switch checked={status.enabled} disabled={busy} aria-label="Telegram enabled" onCheckedChange={(enabled) => void run(async () => { const result = await invoke<TelegramStatus>("telegram_set_enabled", { enabled }); onChange(result); })} /></label>
+        <label className="mt-5 flex items-center justify-between gap-5"><span><strong>Remote questions and approvals</strong><span className="mt-1 block text-sm text-[#7C9B88]">Send agent questions, approval details and task results to Telegram. Anyone with access to the connected account can answer or approve actions. Sensitive questions stay in Lotse; other messages may contain private information. Reply directly to the request or use the displayed commands.</span></span><Switch checked={status.remoteControlEnabled === true} disabled={busy || !status.enabled} aria-label="Remote questions and approvals" onCheckedChange={(enabled) => void run(async () => { const result = await invoke<TelegramStatus>("telegram_set_remote_control", { enabled }); onChange(result); })} /></label>
         <div className="mt-5 space-y-3 border-t border-[#294536] pt-5">
           <label className="block text-sm font-semibold" htmlFor="telegram-transcription-model">OpenRouter audio model ID</label>
           <Input id="telegram-transcription-model" value={model} onChange={(event) => setModel(event.currentTarget.value)} disabled={busy} />

@@ -5716,6 +5716,18 @@ fn agent_user_input_respond(
 }
 
 #[tauri::command]
+fn telegram_agent_approve(connection_id: String, request_id: u64, approved: bool, app: AppHandle, window: WebviewWindow, state: State<'_, AppState>, agent: State<'_, AgentRuntime>) -> Result<bool, String> {
+    let root = repository_path(&state, &window)?;
+    telegram::with_remote_control(&app, window.label(), &root, &connection_id, || Ok(agent.approve(request_id, approved)))
+}
+
+#[tauri::command]
+fn telegram_agent_user_input_respond(connection_id: String, request_id: u64, answers: HashMap<String, Vec<String>>, app: AppHandle, window: WebviewWindow, state: State<'_, AppState>, agent: State<'_, AgentRuntime>) -> Result<(), String> {
+    let root = repository_path(&state, &window)?;
+    telegram::with_remote_control(&app, window.label(), &root, &connection_id, || agent.respond_user_input(request_id, answers))
+}
+
+#[tauri::command]
 fn agent_turn_cancel(
     thread_id: String,
     turn_id: String,
@@ -6736,6 +6748,7 @@ pub fn run() {
             telegram::telegram_set_transcription_settings,
             telegram::telegram_save_connection,
             telegram::telegram_set_enabled,
+            telegram::telegram_set_remote_control,
             telegram::telegram_disconnect,
             github::github_connect,
             github::github_disconnect,
@@ -6824,6 +6837,8 @@ pub fn run() {
             ai_chat_cancel,
             agent_approve,
             agent_user_input_respond,
+            telegram_agent_approve,
+            telegram_agent_user_input_respond,
             agent_turn_cancel,
         ])
         .build(tauri::generate_context!())

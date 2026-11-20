@@ -14,11 +14,16 @@ const comparison = { mode: "workingCopy", baseRef: null, compareRef: null, baseO
 const tasks = ["Release", "Login"].map((title, index) => normalizeTask({ id: `12345678-1234-1234-1234-123456789ab${index}`, title, location: "worktree", worktree: { branch: `task/${index}`, baseOid: comparison.baseOid, baseBranch: "main" } })!);
 const storage: Record<string, string> = { "chaoticreview.auth-onboarding-v1": "complete", [taskStorageKey(repo.rootPath)]: JSON.stringify(tasks), "chaoticreview.task-view": JSON.stringify({ [repo.rootPath]: "kanban" }) };
 const sends: any[] = [], responses: any[] = [], approvals: any[] = [], acknowledgements: any[] = [], failures: string[] = [];
+const telegramMessages: string[] = [];
+let resolveTelegram: ((batch: unknown) => void) | undefined;
 let failAnswer = false;
 mockWindows("main"); mockConvertFileSrc("macos");
 mockIPC(async (command, args: any) => {
   if (command === "load_frontend_storage") return storage;
   if (command === "set_frontend_storage") { storage[args.key] = args.value; return; }
+  if (command === "telegram_connection") return { connected: true, enabled: true, remoteControlEnabled: true, connectionId: "connection", journalId: "bot", userId: 10, chatId: 10 };
+  if (command === "telegram_poll") return new Promise((resolve) => { resolveTelegram = resolve; });
+  if (command === "telegram_send") { telegramMessages.push(args.text); return; }
   if (command === "load_ai_settings") return { activeProvider: "openrouter", providers: [{ id: "openrouter", name: "Synthetic", baseUrl: "https://openrouter.ai/api/v1", envKey: "OPENROUTER_API_KEY" }], repositoryProviders: {}, ripgrepAvailable: true, mcpUrl: "" };
   if (command === "current_repository" || command === "refresh_repository") return repo;
   if (command === "load_review" || command === "github_connection") return null;
@@ -31,8 +36,8 @@ mockIPC(async (command, args: any) => {
   if (command === "load_task_changes") return { comparison, pendingSnapshotId: "snapshot", pendingFiles: false, committedChanges: false, headOid: comparison.baseOid, squashMessage: "" };
   if (command === "task_git_status") return { repository: repo, upstream: null, pullCount: 0, pushCount: 0, dirty: false };
   if (command === "ai_chat_send") { sends.push(args); return { requestId: `run-${sends.length}`, threadId: `thread-${sends.length}`, turnId: `turn-${sends.length}` }; }
-  if (command === "agent_user_input_respond") { if (failAnswer) throw new Error("Synthetic answer failure"); responses.push(args); return; }
-  if (command === "agent_approve") { approvals.push(args); return true; }
+  if (command === "agent_user_input_respond" || command === "telegram_agent_user_input_respond") { if (failAnswer) throw new Error("Synthetic answer failure"); responses.push(args); return; }
+  if (command === "agent_approve" || command === "telegram_agent_approve") { approvals.push(args); return true; }
   if (command === "ai_chat_cancel") return;
   if (command === "task_control_active") return true;
   if (command === "task_control_ack") { acknowledgements.push(args); return; }
@@ -43,13 +48,14 @@ mockIPC(async (command, args: any) => {
   if (command.startsWith("plugin:notification|")) return false;
   if (["save_review", "set_mcp_context"].includes(command) || command.startsWith("plugin:window|")) return;
   failures.push(command); throw new Error(`Unexpected IPC: ${command}`);
-}, { shouldMockEvents: true });
+}, { shouldMockEvents: true, telegram: true });
 const check = (value: unknown, message: string) => { if (!value) throw new Error(message); };
 const settle = async () => { for (let i = 0; i < 8; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); }); };
 const visible = (element: Element) => !!element.getBoundingClientRect().width && !!element.getBoundingClientRect().height;
 const button = (label: string) => [...document.querySelectorAll<HTMLButtonElement>("button")].find(el => visible(el) && (el.textContent?.trim() === label || el.getAttribute("aria-label") === label))!;
 const click = async (el: HTMLElement) => { check(el, "Missing control"); await act(async () => { el.focus(); el.click(); }); await settle(); };
 const turnEvent = async (index: number, type: string, payload: any) => { await act(async () => sends[index].events.onmessage({ type, payload })); await settle(); };
+const telegramIncoming = async (updateId: number, text: string) => { check(resolveTelegram, "Telegram poll is not ready"); const resolve = resolveTelegram!; resolveTelegram = undefined; await act(async () => resolve({ nextOffset: updateId + 1, messages: [{ updateId, message: { text } }] })); await settle(); };
 const question = (index: number, requestId: number, text: string) => turnEvent(index, "userInputRequested", { requestId, threadId: `thread-${index + 1}`, turnId: `turn-${index + 1}`, itemId: "question", isBlocking: true, questions: [{ id: "choice", header: "Decision", question: text, isOther: true, isSecret: false, options: [{ label: "Yes", description: "Continue" }, { label: "No", description: "Change the plan" }] }] });
 const approval = (index: number, requestId: number, title: string, source = "mcp") => turnEvent(index, "approvalRequested", { requestId, title, description: "Review the concrete action before allowing it.", source, serverName: source === "mcp" ? "Synthetic service" : null });
 const stack = () => document.querySelector<HTMLElement>('[aria-label="Agent requests"]')!;
@@ -83,6 +89,23 @@ try {
     check(acknowledgements.some(ack => ack.operationId === operationId && !ack.error), "Background agent did not start");
   }
   check(sends.length === 3, "Expected workspace and two task agents");
+  await question(1, 201, "Release remotely?");
+  await approval(2, 202, "First remote approval");
+  await approval(2, 203, "Second remote approval");
+  const remoteQuestion = telegramMessages.find((text) => text.includes("Release remotely?")) ?? "";
+  const remoteApproval = telegramMessages.find((text) => text.includes("First remote approval")) ?? "";
+  check(remoteQuestion.includes("Release") && remoteApproval.includes("Login"), "Task names were not included in Telegram notices");
+  const answerToken = remoteQuestion.match(/\/answer ([a-f0-9-]+)/)?.[1];
+  const approvalToken = remoteApproval.match(/\/deny ([a-f0-9-]+)/)?.[1];
+  check(answerToken && approvalToken, "Missing remote request identifiers");
+  await telegramIncoming(1, `/answer ${answerToken} 1`);
+  check(responses.at(-1)?.requestId === 201 && responses.at(-1)?.answers.choice[0] === "Yes", "Remote task answer was misrouted");
+  await turnEvent(1, "userInputResolved", { requestId: 201 });
+  await telegramIncoming(2, `/deny ${approvalToken}`);
+  check(approvals.at(-1)?.requestId === 202 && !approvals.at(-1)?.approved, "An earlier concurrent approval was misrouted");
+  await turnEvent(2, "approvalResolved", { requestId: 202 });
+  await turnEvent(2, "approvalResolved", { requestId: 203 });
+  responses.length = 0; approvals.length = 0;
   await question(1, 101, "Can I release?");
   await question(0, 102, "Which project next?");
   await approval(2, 103, "Connect login service");
