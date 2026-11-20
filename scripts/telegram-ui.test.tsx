@@ -14,20 +14,24 @@ const comparison = { mode: "workingCopy", baseRef: null, compareRef: null, baseO
 const storage: Record<string, string> = { "chaoticreview.auth-onboarding-v1": "complete" };
 const sends: any[] = [], replies: string[] = [], reviews: any[] = [], failures: string[] = [];
 const sentMessages: any[] = [];
+const approvals: any[] = [], answers: any[] = [];
 let ready: (status: unknown) => void = () => {};
 let polled = false;
+let resolvePoll: ((batch: unknown) => void) | undefined;
 mockWindows("main"); mockConvertFileSrc("macos");
 mockIPC(async (command, args: any) => {
   if (command === "load_frontend_storage") return storage;
   if (command === "set_frontend_storage") { storage[args.key] = args.value; return; }
   if (command === "telegram_connection") return new Promise((resolve) => { ready = resolve; });
   if (command === "telegram_poll") {
-    if (polled) return new Promise(() => {});
+    if (polled) return new Promise((resolve) => { resolvePoll = resolve; });
     polled = true;
     return { nextOffset: 3, messages: [{ updateId: 1, message: { text: "First message" } }, { updateId: 2, message: { caption: "Describe this", photo: [{ file_id: "photo" }] } }] };
   }
   if (command === "telegram_download_image") return { kind: "image", path: "/synthetic/image.png", name: "image.png" };
-  if (command === "telegram_send") { replies.push(args.text); sentMessages.push(args); return; }
+  if (command === "telegram_send") { replies.push(args.text); const messageId = sentMessages.length + 1; sentMessages.push({ ...args, messageId }); return messageId; }
+  if (command === "telegram_agent_approve") { approvals.push(args); return true; }
+  if (command === "telegram_agent_user_input_respond") { answers.push(args); return; }
   if (["retain_task_images", "release_chat_image_reference"].includes(command)) return;
   if (command === "load_ai_settings") return { activeProvider: "openrouter", providers: [{ id: "openrouter", name: "Synthetic", baseUrl: "https://openrouter.ai/api/v1", envKey: "OPENROUTER_API_KEY" }], repositoryProviders: {}, ripgrepAvailable: true, mcpUrl: "" };
   if (command === "current_repository" || command === "refresh_repository") return repo;
@@ -48,10 +52,11 @@ mockIPC(async (command, args: any) => {
 const check = (value: unknown, message: string) => { if (!value) throw new Error(message); };
 const settle = async () => { for (let index = 0; index < 10; index++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); }); };
 const event = async (index: number, kind: string, extra: object = {}) => { await act(async () => sends[index].events.onmessage({ type: "chat", payload: { requestId: `run-${index + 1}`, threadId: "thread-1", turnId: `turn-${index + 1}`, kind, ...extra } })); await settle(); };
+const incoming = async (updateId: number, text: string, reply?: any) => { check(resolvePoll, "Telegram poll is not ready"); const resolve = resolvePoll!; resolvePoll = undefined; await act(async () => resolve({ nextOffset: updateId + 1, messages: [{ updateId, message: { text, ...(reply ? { reply_to_message: { message_id: reply.messageId, text: reply.text } } : {}) } }] })); await settle(); };
 let root = createRoot(document.getElementById("root")!);
 try {
   await initializeFileStore(); await act(async () => root.render(<App />)); await settle();
-  await act(async () => ready({ connected: true, enabled: true, userId: 10, chatId: 10, connectionId: "connection", journalId: "bot" })); await settle();
+  await act(async () => ready({ connected: true, enabled: true, remoteControlEnabled: true, userId: 10, chatId: 10, connectionId: "connection", journalId: "bot" })); await settle();
   check(sends.length === 1 && sends[0].prompt === "First message" && sends[0].telegramConnectionId === "connection", "First message did not start exactly once with the connection guard");
   check(reviews.some((review) => review.chatMessages.some((item: any) => item.body === "First message")), "Incoming message was not saved to the workspace");
   await event(0, "assistantMessageCompleted", { finalText: "Checking **tasks**.", message: "commentary" });
@@ -60,8 +65,28 @@ try {
   await event(0, "assistantMessageCompleted", { finalText: "Looking further." });
   await event(0, "toolStarted");
   check(replies.includes("Looking further."), "A progress message without a phase was not delivered when work continued");
-  await act(async () => sends[0].events.onmessage({ type: "approvalRequested", payload: { requestId: 42, title: "Allow?", description: "Synthetic", source: "agent", serverName: null } })); await settle();
-  check(replies.some((text) => text.includes("approval in Lotse")), "Approval notice was not sent");
+  await act(async () => sends[0].events.onmessage({ type: "approvalRequested", payload: { requestId: 42, title: "Allow?", description: "Synthetic", command: "echo **synthetic**", source: "agent", serverName: null } })); await settle();
+  const approvalNotice = replies.find((text) => text.includes("Approval required")) ?? "";
+  const approvalToken = approvalNotice.match(/\/allow ([a-f0-9-]+)/)?.[1];
+  check(approvalToken && approvalNotice.includes("Synthetic") && approvalNotice.includes("echo **synthetic**"), "Exact approval details were not sent");
+  await incoming(3, "ALLOW", sentMessages.find((item) => item.text === approvalNotice));
+  check(approvals.length === 1 && approvals[0].requestId === 42 && approvals[0].approved === true, `Approval did not reach the agent: ${JSON.stringify({ approvals, replies: replies.slice(-3) })}`);
+  await incoming(4, `/allow ${approvalToken}`);
+  check(approvals.length === 1 && replies.some((text) => text.includes("expired request")), "A stale approval was accepted twice");
+  await act(async () => sends[0].events.onmessage({ type: "userInputRequested", payload: { requestId: 43, threadId: "thread-1", turnId: "turn-1", itemId: "item", isBlocking: true, questions: [{ id: "first", header: "Choice", question: "Choose?", isOther: false, isSecret: false, options: [{ label: "Yes", description: "Proceed" }, { label: "No", description: "Stop" }] }, { id: "second", header: "Text", question: "Why?", isOther: true, isSecret: false, options: null }] } })); await settle();
+  const questionNotice = replies.find((text) => text.includes("Choose?")) ?? "";
+  const questionToken = questionNotice.match(/\/answer ([a-f0-9-]+)/)?.[1];
+  check(questionToken && questionNotice.includes("Why?"), "Question details were not sent");
+  await incoming(5, "1\nBecause", sentMessages.find((item) => item.text === questionNotice));
+  check(answers.length === 1 && answers[0].requestId === 43 && answers[0].answers.first[0] === "Yes" && answers[0].answers.second[0] === "Because", "Question answers did not reach the agent");
+  await incoming(6, "2\nAgain", sentMessages.find((item) => item.text === questionNotice));
+  check(answers.length === 1, "A stale answer was accepted twice");
+  await incoming(7, "ALLOW", { messageId: 99999, text: "[Lotse request] expired approval" });
+  check(approvals.length === 1 && sends.length === 1, "An unknown old request was routed as a workspace instruction");
+  await act(async () => sends[0].events.onmessage({ type: "userInputRequested", payload: { requestId: 44, threadId: "thread-1", turnId: "turn-1", itemId: "secret", isBlocking: true, questions: [{ id: "secret", header: "Secret", question: "Private secret?", isOther: true, isSecret: true, options: null }] } })); await settle();
+  check(!replies.some((text) => text.includes("Private secret?")) && replies.some((text) => text.includes("sensitive question")), "Sensitive question was forwarded");
+  await act(async () => sends[0].events.onmessage({ type: "approvalRequested", payload: { requestId: 45, title: "Sensitive command", description: "Synthetic", command: "API_KEY=synthetic-value run", source: "agent", serverName: null } })); await settle();
+  check(!replies.some((text) => text.includes("synthetic-value")) && replies.some((text) => text.includes("potentially sensitive approval")), "Sensitive approval was forwarded");
   check(sends.length === 1, "Queued message started before the previous turn finished");
   await event(0, "assistantMessageCompleted", { finalText: "First answer" }); await event(0, "completed");
   check(replies.includes("First answer"), "Answer was not sent to Telegram");
