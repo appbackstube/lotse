@@ -4,6 +4,7 @@ import { idleVoice, RealtimeConversation, type VoiceDelegation, type VoiceReply,
 import { conversationVoice, conversationVoiceKey } from "./conversationVoices";
 import { fileStore } from "./fileStore";
 import { watchConversationPlayback } from "./conversationPlayback";
+import { processMicrophone } from "./conversationNoise";
 import type { ChatMessage } from "./types";
 
 export function useConversation({ available, context, messages, running, blocked, replies, onSend }: {
@@ -29,6 +30,7 @@ export function useConversation({ available, context, messages, running, blocked
         return navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
       },
       peer: () => new RTCPeerConnection(),
+      processMicrophone,
       audio: () => new Audio(),
       watchPlayback: watchConversationPlayback,
       connect: sdp => invoke<string>("start_conversation", { sdp, voice: conversationVoice(fileStore.getItem(conversationVoiceKey)) }),

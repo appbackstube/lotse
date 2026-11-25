@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import { RealtimeConversation, idleVoice, voiceHistory, type VoiceSnapshot, type VoiceDelegation } from "../src/conversation.ts";
 import type { ChatMessage } from "../src/types.ts";
 import { conversationVoice } from "../src/conversationVoices.ts";
 import { watchConversationPlayback } from "../src/conversationPlayback.ts";
+import { processMicrophone } from "../src/conversationNoise.ts";
 
-function harness() {
+function harness(processMicrophone?: ConstructorParameters<typeof RealtimeConversation>[0]["processMicrophone"], microphoneReady?: Promise<void>) {
   let snapshot: VoiceSnapshot = idleVoice;
   const sent: Record<string, any>[] = [];
   const requests: Omit<VoiceDelegation, "workspaceKey">[] = [];
@@ -15,10 +16,12 @@ function harness() {
   const stream = { getTracks: () => [track], getAudioTracks: () => [track] } as unknown as MediaStream;
   const channel = { readyState: "open", onmessage: null as any, onclose: null as any,
     send: (text: string) => sent.push(JSON.parse(text)), close() { this.readyState = "closed"; this.onclose?.(); } };
-  const peer = { closed: false, ontrack: null as any, connectionState: "connected", iceGatheringState: "complete", localDescription: { sdp: "v=0\r\noffer" }, addTrack() {}, createDataChannel: () => channel,
+  const sender = { track: null as MediaStreamTrack | null, async replaceTrack(next: MediaStreamTrack) { this.track = next; } };
+  const peer = { closed: false, ontrack: null as any, connectionState: "connected", iceGatheringState: "complete", localDescription: { sdp: "v=0\r\noffer" }, addTrack(next: MediaStreamTrack) { sender.track = next; }, getSenders: () => [sender], createDataChannel: () => channel,
     createOffer: async () => ({ type: "offer", sdp: "v=0\r\noffer" }), setLocalDescription: async () => {}, setRemoteDescription: async () => {}, close() { this.closed = true; } };
   const audio = { muted: false, paused: false, srcObject: null, pause() { this.paused = true; }, play: async () => {} };
-  const voice = new RealtimeConversation({ microphone: async () => stream, peer: () => peer as unknown as RTCPeerConnection,
+  const voice = new RealtimeConversation({ microphone: () => microphoneReady?.then(() => stream) ?? Promise.resolve(stream), peer: () => peer as unknown as RTCPeerConnection,
+    processMicrophone,
     audio: () => audio as unknown as HTMLAudioElement, connect: async () => "v=0\r\nanswer",
     watchPlayback: (_stream, report) => { onPlayback = report; return () => { playbackWatchStopped = true; }; },
     delegate: async request => { requests.push(request); return true; }, changed: value => { snapshot = value; } });
@@ -32,9 +35,149 @@ function harness() {
   };
   const start = async () => { await voice.start(); event({ type: "session.started" }); };
   const stop = () => { voice.stop(); if (channel.readyState === "open") event({ type: "session.closed" }); };
-  return { voice, event, backend, call, start, stop, sent, requests, track, stream, peer, audio, channel,
+  return { voice, event, backend, call, start, stop, sent, requests, track, stream, peer, sender, audio, channel,
     level: (active: boolean, time: number) => onPlayback?.(active, time), get playbackWatchStopped() { return playbackWatchStopped; }, get state() { return snapshot; } };
 }
+
+test("processed microphone is muted and stopped with the original", async () => {
+  let stopped = false;
+  const processedTrack = { enabled: true, stop() {} };
+  const processedStream = { getTracks: () => [processedTrack], getAudioTracks: () => [processedTrack] } as unknown as MediaStream;
+  const h = harness(async () => ({ stream: processedStream, onFailure() {}, stop() { stopped = true; } }));
+  await h.start();
+  h.voice.setMuted(true);
+  assert.equal(h.track.enabled, false);
+  assert.equal(processedTrack.enabled, false);
+  h.stop();
+  assert.equal(stopped, true);
+  assert.equal(h.track.stopped, true);
+});
+
+test("a filter initialization error falls back to the microphone", async () => {
+  const h = harness(async () => { throw new Error("unavailable"); });
+  await h.start();
+  assert.match(h.state.error, /standard processing/);
+  assert.equal(h.state.phase, "listening");
+  h.stop();
+});
+
+function mockPendingWorklet(context: TestContext, fetchWasm: typeof fetch = async () => new Response()) {
+  const workletStarted = Promise.withResolvers<void>();
+  const workletLoaded = Promise.withResolvers<void>();
+  const closeAudioContext = context.mock.fn(async () => {});
+  const createWorklet = context.mock.fn();
+  const module = new WebAssembly.Module(Uint8Array.of(0, 97, 115, 109, 1, 0, 0, 0));
+  context.mock.method(globalThis, "fetch", fetchWasm);
+  context.mock.method(WebAssembly, "compile", async () => module);
+  for (const [key, value] of Object.entries({
+    AudioContext: class {
+      sampleRate = 48000;
+      audioWorklet = { addModule: () => { workletStarted.resolve(); return workletLoaded.promise; } };
+      close = closeAudioContext;
+    },
+    AudioWorkletNode: class { constructor() { createWorklet(); } },
+  })) {
+    const previous = Object.getOwnPropertyDescriptor(globalThis, key);
+    Object.defineProperty(globalThis, key, { value, configurable: true });
+    context.after(() => {
+      if (previous) Object.defineProperty(globalThis, key, previous);
+      else Reflect.deleteProperty(globalThis, key);
+    });
+  }
+  return { workletStarted, workletLoaded, closeAudioContext, createWorklet };
+}
+
+test("a stalled worklet falls back to the raw microphone even after a late permission grant", async context => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  const { workletStarted, workletLoaded, closeAudioContext, createWorklet } = mockPendingWorklet(context);
+  const microphoneReady = Promise.withResolvers<void>();
+  const talk = harness(processMicrophone, microphoneReady.promise);
+  context.after(talk.stop);
+  const started = talk.voice.start();
+  context.mock.timers.tick(29_000);
+  microphoneReady.resolve();
+  await workletStarted.promise;
+  context.mock.timers.tick(5_000);
+  await started;
+  assert.equal(talk.state.phase, "connecting");
+  assert.equal(closeAudioContext.mock.callCount(), 1);
+  assert.equal(talk.sender.track, talk.track);
+  assert.equal(talk.track.stopped, false);
+  assert.match(talk.state.error, /standard processing/);
+  talk.event({ type: "session.started" });
+  assert.equal(talk.state.phase, "listening");
+
+  workletLoaded.resolve();
+  await new Promise<void>(resolve => queueMicrotask(resolve));
+  assert.equal(createWorklet.mock.callCount(), 0);
+});
+
+test("ending Talk during worklet loading releases the context without connecting", async context => {
+  const { workletStarted, workletLoaded, closeAudioContext, createWorklet } = mockPendingWorklet(context);
+  const talk = harness(processMicrophone);
+  context.after(() => talk.voice.stop());
+  const started = talk.voice.start();
+  await workletStarted.promise;
+
+  talk.voice.stop();
+  assert.equal(closeAudioContext.mock.callCount(), 1);
+  assert.equal(talk.track.stopped, true);
+  await started;
+  workletLoaded.resolve();
+  await Promise.resolve();
+  assert.equal(closeAudioContext.mock.callCount(), 1);
+  assert.equal(createWorklet.mock.callCount(), 0);
+  assert.equal(talk.sender.track, null);
+  assert.deepEqual(talk.state, idleVoice);
+});
+
+test("ending Talk aborts an in-flight WASM fetch", async context => {
+  const fetchStarted = Promise.withResolvers<AbortSignal>();
+  const { closeAudioContext, createWorklet } = mockPendingWorklet(context, (_input, options) => {
+    assert.ok(options?.signal);
+    fetchStarted.resolve(options.signal);
+    return new Promise<Response>(() => {});
+  });
+  const talk = harness(processMicrophone);
+  context.after(() => talk.voice.stop());
+  const started = talk.voice.start();
+  const signal = await fetchStarted.promise;
+
+  talk.voice.stop();
+  assert.equal(signal.aborted, true);
+  await started;
+  assert.equal(closeAudioContext.mock.callCount(), 1);
+  assert.equal(createWorklet.mock.callCount(), 0);
+  assert.equal(talk.sender.track, null);
+});
+
+test("a failing filter switches the sender back to the original microphone", async () => {
+  let fail!: () => void;
+  let stopped = false;
+  const processedTrack = { enabled: true, stop() {} };
+  const processedStream = { getTracks: () => [processedTrack], getAudioTracks: () => [processedTrack] } as unknown as MediaStream;
+  const h = harness(async () => ({ stream: processedStream, onFailure(handler) { fail = handler; }, stop() { stopped = true; } }));
+  await h.start();
+  fail();
+  await Promise.resolve();
+  assert.equal(h.sender.track, h.track);
+  assert.equal(stopped, true);
+  assert.match(h.state.error, /standard processing/);
+  h.stop();
+});
+
+test("a filter completing after stop is released", async () => {
+  let finish!: (value: import("../src/conversationNoise.ts").ProcessedMicrophone) => void;
+  let stopped = false;
+  const h = harness(() => new Promise(resolve => { finish = resolve; }));
+  const start = h.voice.start();
+  await Promise.resolve();
+  h.voice.stop();
+  finish({ stream: h.stream, onFailure() {}, stop() { stopped = true; } });
+  await start;
+  assert.equal(stopped, true);
+  assert.equal(h.track.stopped, true);
+});
 
 test("voice selection has a supported default", () => {
   assert.equal(conversationVoice(null), "marin");

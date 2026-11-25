@@ -1,4 +1,5 @@
 import type { ChatMessage } from "./types";
+import type { ProcessedMicrophone } from "./conversationNoise";
 
 export type VoicePhase = "idle" | "connecting" | "listening" | "hearing" | "speaking";
 export type VoiceSnapshot = { phase: VoicePhase; muted: boolean; transcript: string; error: string; outputPaused: boolean };
@@ -61,6 +62,7 @@ type FunctionCall = { id: string; name: string; arguments: string; finished: boo
 type BackendResponse = { id: string; calls: FunctionCall[]; completed: boolean; continued: boolean };
 export type VoiceDependencies = {
   microphone: () => Promise<MediaStream>;
+  processMicrophone?: (stream: MediaStream, signal: AbortSignal) => Promise<ProcessedMicrophone>;
   peer: () => RTCPeerConnection;
   audio: () => HTMLAudioElement;
   watchPlayback?: (stream: MediaStream, onLevel: (active: boolean, time: number) => void) => () => void;
@@ -73,6 +75,8 @@ export class RealtimeConversation {
   private peer?: RTCPeerConnection;
   private channel?: RTCDataChannel;
   private microphone?: MediaStream;
+  private filterStartup?: AbortController;
+  private processedMicrophone?: ProcessedMicrophone;
   private audio?: HTMLAudioElement;
   private epoch = 0;
   private timer?: ReturnType<typeof setTimeout>;
@@ -128,6 +132,7 @@ export class RealtimeConversation {
   setMuted(muted: boolean) {
     this.update({ muted });
     this.microphone?.getAudioTracks().forEach(track => { track.enabled = !muted; });
+    this.processedMicrophone?.stream.getAudioTracks().forEach(track => { track.enabled = !muted; });
     this.send({ type: muted ? "session.input_audio.mute" : "session.input_audio.unmute", event_id: crypto.randomUUID() });
   }
   async start() {
@@ -135,14 +140,45 @@ export class RealtimeConversation {
     const epoch = this.epoch;
     this.sessionId = crypto.randomUUID();
     this.update({ ...idleVoice, phase: "connecting" });
-    this.timer = setTimeout(() => this.fail("Voice connection timed out. Try again."), 30_000);
+    const startTimeout = () => setTimeout(() => this.fail("Voice connection timed out. Try again."), 30_000);
+    this.timer = startTimeout();
     try {
       const stream = await this.deps.microphone();
       if (epoch !== this.epoch) { stream.getTracks().forEach(track => track.stop()); return; }
+      clearTimeout(this.timer);
       this.microphone = stream;
       stream.getAudioTracks().forEach(track => {
         track.onended = () => { if (epoch === this.epoch) this.fail("Microphone disconnected. Reconnect it and start Talk again."); };
       });
+      let outgoing = stream;
+      if (this.deps.processMicrophone) {
+        const startup = new AbortController();
+        this.filterStartup = startup;
+        try {
+          const processed = await this.deps.processMicrophone(stream, startup.signal);
+          if (epoch !== this.epoch) { processed.stop(); return; }
+          this.processedMicrophone = processed;
+          processed.stream.getAudioTracks().forEach(track => { track.enabled = !this.snapshot.muted; });
+          outgoing = processed.stream;
+          processed.onFailure(() => {
+            if (epoch !== this.epoch) return;
+            const sender = this.peer?.getSenders().find(item => item.track === processed.stream.getAudioTracks()[0]);
+            if (!sender) { this.fail("Noise reduction failed. Start Talk again."); return; }
+            void sender.replaceTrack(stream.getAudioTracks()[0]).then(() => {
+              if (epoch !== this.epoch) return;
+              processed.stop(); this.processedMicrophone = undefined;
+              this.update({ error: "Extra noise reduction is unavailable. Talk is using the microphone's standard processing." });
+            }).catch(() => { if (epoch === this.epoch) this.fail("Noise reduction failed. Start Talk again."); });
+          });
+        } catch {
+          if (epoch !== this.epoch) return;
+          this.update({ error: "Extra noise reduction is unavailable. Talk is using the microphone's standard processing." });
+        } finally {
+          if (this.filterStartup === startup) this.filterStartup = undefined;
+        }
+      }
+      if (epoch !== this.epoch) return;
+      this.timer = startTimeout();
       const peer = this.deps.peer();
       this.peer = peer;
       const audio = this.deps.audio();
@@ -168,7 +204,7 @@ export class RealtimeConversation {
       peer.onconnectionstatechange = () => {
         if (epoch === this.epoch && ["failed", "closed", "disconnected"].includes(peer.connectionState)) this.fail("Voice connection lost. Agent work continues in the chat.");
       };
-      stream.getTracks().forEach(track => peer.addTrack(track, stream));
+      outgoing.getTracks().forEach(track => peer.addTrack(track, outgoing));
       const channel = peer.createDataChannel("oai-events");
       this.channel = channel;
       channel.onclose = () => { if (epoch === this.epoch) this.fail("Voice connection closed. Agent work continues in the chat."); };
@@ -325,11 +361,15 @@ export class RealtimeConversation {
   stop() {
     ++this.epoch;
     clearTimeout(this.timer); clearTimeout(this.activityTimer);
+    this.filterStartup?.abort();
+    this.filterStartup = undefined;
     const channel = this.channel;
     const peer = this.peer;
     const stream = this.microphone;
     const audio = this.audio;
     this.stopPlaybackWatch?.();
+    this.processedMicrophone?.stop();
+    this.processedMicrophone = undefined;
     this.stopPlaybackWatch = undefined;
     this.quietSince = undefined;
     this.playbackReady = false;

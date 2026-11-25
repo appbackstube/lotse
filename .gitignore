@@ -11,6 +11,9 @@ node_modules
 dist
 dist-ssr
 public/excalidraw/
+/public/audio/lotse_audio_denoise.wasm
+/public/audio/licenses.txt
+/audio-denoise/target/
 *.local
 *.tsbuildinfo
 

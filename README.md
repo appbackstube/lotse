@@ -98,6 +98,8 @@ Use **⌘K** to search the current repository's tasks, comments, chats, and memo
 
 Use macOS with Git, Node.js 22, Rust through [rustup](https://rustup.rs/), and the [Tauri macOS prerequisites](https://v2.tauri.app/start/prerequisites/#macos). The repository pins its Rust toolchain in [`rust-toolchain.toml`](rust-toolchain.toml).
 
+Install the `wasm32-unknown-unknown` Rust target with `rustup target add wasm32-unknown-unknown`; development and production builds compile the local audio filter to WebAssembly.
+
 ```sh
 git clone https://github.com/appbackstube/lotse.git
 cd lotse
