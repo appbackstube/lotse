@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import { RealtimeConversation, idleVoice, voiceHistory, type VoiceSnapshot, type VoiceDelegation } from "../src/conversation.ts";
 import type { ChatMessage } from "../src/types.ts";
 import { conversationVoice } from "../src/conversationVoices.ts";
@@ -61,14 +61,13 @@ test("a filter initialization error falls back to the microphone", async () => {
   h.stop();
 });
 
-test("a stalled worklet load closes the audio context and falls back to the raw microphone", async context => {
-  context.mock.timers.enable({ apis: ["setTimeout"] });
+function mockPendingWorklet(context: TestContext, fetchWasm: typeof fetch = async () => new Response()) {
   const workletStarted = Promise.withResolvers<void>();
   const workletLoaded = Promise.withResolvers<void>();
   const closeAudioContext = context.mock.fn(async () => {});
   const createWorklet = context.mock.fn();
   const module = new WebAssembly.Module(Uint8Array.of(0, 97, 115, 109, 1, 0, 0, 0));
-  context.mock.method(globalThis, "fetch", async () => new Response());
+  context.mock.method(globalThis, "fetch", fetchWasm);
   context.mock.method(WebAssembly, "compile", async () => module);
   for (const [key, value] of Object.entries({
     AudioContext: class {
@@ -85,7 +84,12 @@ test("a stalled worklet load closes the audio context and falls back to the raw 
       else Reflect.deleteProperty(globalThis, key);
     });
   }
+  return { workletStarted, workletLoaded, closeAudioContext, createWorklet };
+}
 
+test("a stalled worklet load closes the audio context and falls back to the raw microphone", async context => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  const { workletStarted, workletLoaded, closeAudioContext, createWorklet } = mockPendingWorklet(context);
   const talk = harness(processMicrophone);
   context.after(talk.stop);
   const started = talk.start();
@@ -101,6 +105,45 @@ test("a stalled worklet load closes the audio context and falls back to the raw 
   workletLoaded.resolve();
   await new Promise<void>(resolve => queueMicrotask(resolve));
   assert.equal(createWorklet.mock.callCount(), 0);
+});
+
+test("ending Talk during worklet loading releases the context without connecting", async context => {
+  const { workletStarted, workletLoaded, closeAudioContext, createWorklet } = mockPendingWorklet(context);
+  const talk = harness(processMicrophone);
+  context.after(() => talk.voice.stop());
+  const started = talk.voice.start();
+  await workletStarted.promise;
+
+  talk.voice.stop();
+  assert.equal(closeAudioContext.mock.callCount(), 1);
+  assert.equal(talk.track.stopped, true);
+  await started;
+  workletLoaded.resolve();
+  await Promise.resolve();
+  assert.equal(closeAudioContext.mock.callCount(), 1);
+  assert.equal(createWorklet.mock.callCount(), 0);
+  assert.equal(talk.sender.track, null);
+  assert.deepEqual(talk.state, idleVoice);
+});
+
+test("ending Talk aborts an in-flight WASM fetch", async context => {
+  const fetchStarted = Promise.withResolvers<AbortSignal>();
+  const { closeAudioContext, createWorklet } = mockPendingWorklet(context, (_input, options) => {
+    assert.ok(options?.signal);
+    fetchStarted.resolve(options.signal);
+    return new Promise<Response>(() => {});
+  });
+  const talk = harness(processMicrophone);
+  context.after(() => talk.voice.stop());
+  const started = talk.voice.start();
+  const signal = await fetchStarted.promise;
+
+  talk.voice.stop();
+  assert.equal(signal.aborted, true);
+  await started;
+  assert.equal(closeAudioContext.mock.callCount(), 1);
+  assert.equal(createWorklet.mock.callCount(), 0);
+  assert.equal(talk.sender.track, null);
 });
 
 test("a failing filter switches the sender back to the original microphone", async () => {

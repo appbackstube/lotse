@@ -62,7 +62,7 @@ type FunctionCall = { id: string; name: string; arguments: string; finished: boo
 type BackendResponse = { id: string; calls: FunctionCall[]; completed: boolean; continued: boolean };
 export type VoiceDependencies = {
   microphone: () => Promise<MediaStream>;
-  processMicrophone?: (stream: MediaStream) => Promise<ProcessedMicrophone>;
+  processMicrophone?: (stream: MediaStream, signal: AbortSignal) => Promise<ProcessedMicrophone>;
   peer: () => RTCPeerConnection;
   audio: () => HTMLAudioElement;
   watchPlayback?: (stream: MediaStream, onLevel: (active: boolean, time: number) => void) => () => void;
@@ -75,6 +75,7 @@ export class RealtimeConversation {
   private peer?: RTCPeerConnection;
   private channel?: RTCDataChannel;
   private microphone?: MediaStream;
+  private filterStartup?: AbortController;
   private processedMicrophone?: ProcessedMicrophone;
   private audio?: HTMLAudioElement;
   private epoch = 0;
@@ -149,8 +150,10 @@ export class RealtimeConversation {
       });
       let outgoing = stream;
       if (this.deps.processMicrophone) {
+        const startup = new AbortController();
+        this.filterStartup = startup;
         try {
-          const processed = await this.deps.processMicrophone(stream);
+          const processed = await this.deps.processMicrophone(stream, startup.signal);
           if (epoch !== this.epoch) { processed.stop(); return; }
           this.processedMicrophone = processed;
           processed.stream.getAudioTracks().forEach(track => { track.enabled = !this.snapshot.muted; });
@@ -168,6 +171,8 @@ export class RealtimeConversation {
         } catch {
           if (epoch !== this.epoch) return;
           this.update({ error: "Extra noise reduction is unavailable. Talk is using the microphone's standard processing." });
+        } finally {
+          if (this.filterStartup === startup) this.filterStartup = undefined;
         }
       }
       const peer = this.deps.peer();
@@ -352,6 +357,8 @@ export class RealtimeConversation {
   stop() {
     ++this.epoch;
     clearTimeout(this.timer); clearTimeout(this.activityTimer);
+    this.filterStartup?.abort();
+    this.filterStartup = undefined;
     const channel = this.channel;
     const peer = this.peer;
     const stream = this.microphone;
