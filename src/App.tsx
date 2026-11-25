@@ -1280,7 +1280,13 @@ function AiChatPanel({
       {!hideHeader && <div
         data-tauri-drag-region
         onMouseDown={(event) => {
-          if ((event.target as HTMLElement).closest("button, input, select, textarea")) return;
+          const target = event.target;
+          if (
+            event.button !== 0 ||
+            !(target instanceof Element) ||
+            !event.currentTarget.contains(target) ||
+            target.closest("button, input, select, textarea")
+          ) return;
           void getCurrentWindow().startDragging().catch(() => {});
         }}
         className={`ios-chat-header flex shrink-0 items-center justify-between border-b border-[#294536] ${zenMode ? "h-[52px] pl-[88px] pr-4" : "h-12 px-4"}`}
@@ -6818,7 +6824,7 @@ function App() {
 
         <section
           className={`ios-workspace min-h-0 min-w-0 flex-col bg-[#0B110E] ${tasksTabActive ? "task-mode-list relative border-r border-[#294536]" : ""} ${tasksTabActive && !boardMode ? "mt-[-52px] h-[calc(100%+52px)]" : ""} ${memoryMode || agentChatExpanded || zenMode ? "hidden" : "flex"}`}
-          style={{ gridColumn: tasksTabActive ? "1" : repository ? undefined : "2" }}
+          style={{ gridColumn: tasksTabActive ? "1" : "2" }}
         >
           {tasksTabActive && !boardMode && <div data-tauri-drag-region onMouseDown={startDragging} className="ios-sidebar-titlebar flex h-[52px] shrink-0 items-center border-b border-[#294536] pl-[88px] pr-2"><span className="truncate text-sm font-semibold text-[#E8FFF0]">{repository?.name ?? "Tasks"}</span></div>}
           {!tasksTabActive && error && !(comparisonMode === "branch" && !comparison) && (
