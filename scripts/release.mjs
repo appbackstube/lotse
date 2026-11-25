@@ -20,54 +20,57 @@ export function githubRepository(remote) {
   return match[1];
 }
 
-function command(program, args, capture = false) {
-  const result = spawnSync(program, args, { cwd: root, encoding: "utf8", stdio: capture ? "pipe" : "inherit" });
+function command(cwd, program, args, capture = false) {
+  const result = spawnSync(program, args, { cwd, encoding: "utf8", stdio: capture ? "pipe" : "inherit" });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`${program} ${args.join(" ")} failed (exit ${result.status})${capture && result.stderr ? `: ${result.stderr.trim()}` : ""}`);
   return capture ? result.stdout.trim() : "";
 }
 
-function release() {
-  if (process.platform !== "darwin") throw new Error("Local releases require macOS.");
-  const app = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "utf8"));
-  const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-  const cargo = readFileSync(join(root, "src-tauri/Cargo.toml"), "utf8");
+export function release(checkout = root, run = command.bind(null, checkout)) {
+  const head = run("git", ["rev-parse", "HEAD"], true);
+  if (run("git", ["status", "--porcelain"], true)) throw new Error("Working tree must be clean.");
+  const app = JSON.parse(readFileSync(join(checkout, "src-tauri/tauri.conf.json"), "utf8"));
+  const packageJson = JSON.parse(readFileSync(join(checkout, "package.json"), "utf8"));
+  const cargo = readFileSync(join(checkout, "src-tauri/Cargo.toml"), "utf8");
   const tag = releaseVersion(packageJson.version, app.version, cargo.match(/^version = "([^"]+)"/m)?.[1]);
-  const repo = githubRepository(command("git", ["remote", "get-url", "origin"], true));
-  if (command("git", ["status", "--porcelain"], true)) throw new Error("Working tree must be clean.");
-  const head = command("git", ["rev-parse", "HEAD"], true);
-  const remoteMain = command("git", ["ls-remote", "--exit-code", "origin", "refs/heads/main"], true).split(/\s+/)[0];
+  const repo = githubRepository(run("git", ["remote", "get-url", "origin"], true));
+  const remoteMain = run("git", ["ls-remote", "--exit-code", "origin", "refs/heads/main"], true).split(/\s+/)[0];
   if (head !== remoteMain) throw new Error("HEAD must match origin/main on GitHub. Commit and push the release version first.");
-  const localTag = command("git", ["tag", "--list", tag], true);
-  const remoteTag = command("git", ["ls-remote", "--tags", "origin", `refs/tags/${tag}`], true);
+  const localTag = run("git", ["tag", "--list", tag], true);
+  const remoteTag = run("git", ["ls-remote", "--tags", "origin", `refs/tags/${tag}`], true);
   if (localTag || remoteTag) throw new Error(`Tag ${tag} already exists; choose a new version.`);
-  command("gh", ["auth", "status"]);
-  if (!existsSync(join(root, "node_modules/.bin/tauri"))) throw new Error("Dependencies missing; run npm ci first.");
+  run("gh", ["auth", "status"]);
+  if (!existsSync(join(checkout, "node_modules/.bin/tauri"))) throw new Error("Dependencies missing; run npm ci first.");
   for (const target of ["aarch64-apple-darwin", "x86_64-apple-darwin"]) {
-    if (!existsSync(join(root, `src-tauri/binaries/codex-runtime-${target}`))) {
+    if (!existsSync(join(checkout, `src-tauri/binaries/codex-runtime-${target}`))) {
       throw new Error("Both runtimes are required; run sh scripts/prepare-app-server.sh first.");
     }
   }
 
-  command("npm", ["run", "build:mac"]);
+  run("npm", ["run", "release:check"]);
+  run("npm", ["run", "build:mac"]);
   const directory = mkdtempSync(join(tmpdir(), "lotse-release-"));
   try {
     const assets = [["aarch64", "Lotse_Apple_Silicon.dmg"], ["x86_64", "Lotse_Intel.dmg"]];
     const sums = [];
     for (const [suffix, name] of assets) {
-      const source = join(root, "src-tauri/target/share", `${app.productName}_${app.version}_${suffix}.dmg`);
+      const source = join(checkout, "src-tauri/target/share", `${app.productName}_${app.version}_${suffix}.dmg`);
       if (!statSync(source).size) throw new Error(`Empty build artifact: ${source}`);
       const destination = join(directory, name);
       copyFileSync(source, destination);
       sums.push(`${createHash("sha256").update(readFileSync(destination)).digest("hex")}  ${name}`);
     }
     writeFileSync(join(directory, "SHA256SUMS.txt"), `${sums.join("\n")}\n`);
-    command("git", ["tag", "-a", tag, "-m", "lotse-local-release"]);
-    command("git", ["push", "origin", `refs/tags/${tag}`]);
+    if (run("git", ["status", "--porcelain"], true) || run("git", ["rev-parse", "HEAD"], true) !== head) {
+      throw new Error("HEAD or working tree changed during release preparation. Start again from a clean checkout of origin/main.");
+    }
+    run("git", ["tag", "-a", tag, "-m", "lotse-local-release", head]);
+    run("git", ["push", "origin", `refs/tags/${tag}`]);
     const notes = "Download the DMG for your Mac: Apple Silicon or Intel. Open it and drag Lotse to Applications. These local builds are not automatically notarized by Apple. SHA256SUMS.txt contains checksums for both downloads.";
-    command("gh", ["release", "create", tag, "--repo", repo, "--verify-tag", "--draft", "--title", `Lotse ${tag}`, "--notes", notes,
+    run("gh", ["release", "create", tag, "--repo", repo, "--verify-tag", "--draft", "--title", `Lotse ${tag}`, "--notes", notes,
       ...assets.map(([, name]) => join(directory, name)), join(directory, "SHA256SUMS.txt")]);
-    command("gh", ["release", "edit", tag, "--repo", repo, "--draft=false", "--latest"]);
+    run("gh", ["release", "edit", tag, "--repo", repo, "--draft=false", "--latest"]);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -75,6 +78,7 @@ function release() {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
+    if (process.platform !== "darwin") throw new Error("Local releases require macOS.");
     release();
   } catch (error) {
     console.error(`Release failed: ${error.message}\nIf a tag was created, inspect the local tag and GitHub draft before retrying.`);
