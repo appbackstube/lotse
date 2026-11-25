@@ -28,8 +28,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  release-source:
+    runs-on: ubuntu-latest
+    outputs:
+      local: ${{ steps.source.outputs.local }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: source
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]] && git for-each-ref --format='%(contents)' "$GITHUB_REF" | grep -Fxq 'lotse-local-release'; then
+            echo 'local=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'local=false' >> "$GITHUB_OUTPUT"
+          fi
   build:
     name: Build ${{ matrix.name }}
+    needs: release-source
+    if: needs.release-source.outputs.local != 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 210
     strategy:
@@ -72,7 +89,7 @@ jobs:
       - name: Check app and website
         run: |
           npm test
-          node --test scripts/marketing.test.mjs scripts/macos-build.test.mjs
+          node --test scripts/marketing.test.mjs scripts/macos-build.test.mjs scripts/release.test.mjs
       - name: Install Rust toolchain
         run: |
           rustup show active-toolchain
