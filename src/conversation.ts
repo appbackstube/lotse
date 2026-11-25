@@ -140,10 +140,12 @@ export class RealtimeConversation {
     const epoch = this.epoch;
     this.sessionId = crypto.randomUUID();
     this.update({ ...idleVoice, phase: "connecting" });
-    this.timer = setTimeout(() => this.fail("Voice connection timed out. Try again."), 30_000);
+    const startTimeout = () => setTimeout(() => this.fail("Voice connection timed out. Try again."), 30_000);
+    this.timer = startTimeout();
     try {
       const stream = await this.deps.microphone();
       if (epoch !== this.epoch) { stream.getTracks().forEach(track => track.stop()); return; }
+      clearTimeout(this.timer);
       this.microphone = stream;
       stream.getAudioTracks().forEach(track => {
         track.onended = () => { if (epoch === this.epoch) this.fail("Microphone disconnected. Reconnect it and start Talk again."); };
@@ -175,6 +177,8 @@ export class RealtimeConversation {
           if (this.filterStartup === startup) this.filterStartup = undefined;
         }
       }
+      if (epoch !== this.epoch) return;
+      this.timer = startTimeout();
       const peer = this.deps.peer();
       this.peer = peer;
       const audio = this.deps.audio();
