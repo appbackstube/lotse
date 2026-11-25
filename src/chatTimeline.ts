@@ -39,7 +39,30 @@ export function applyChatEvent(timeline: ChatMessage[], event: AiChatEvent): Cha
 }
 
 export function persistedChatEntries(timeline: ChatMessage[]): ChatMessage[] {
-  return timeline.filter((entry) => entry.body.trim() || entry.appliedDiffs?.length);
+  return timeline.filter((entry) => entry.body.trim() || entry.appliedDiffs?.length || entry.attachments?.length);
+}
+
+export class AssistantSteerBoundary {
+  private streamedText = "";
+  private savedPrefix = "";
+
+  markSteered() {
+    this.savedPrefix = this.streamedText;
+  }
+
+  update(event: AiChatEvent): AiChatEvent {
+    if (event.kind === "assistantDelta") this.streamedText += event.delta ?? "";
+    if (event.kind === "assistantMessageStarted" || event.kind === "assistantMessageCompleted") {
+      const prefix = this.savedPrefix;
+      this.streamedText = "";
+      this.savedPrefix = "";
+      if (event.kind === "assistantMessageCompleted" && prefix && event.finalText) {
+        const finalText = event.finalText.startsWith(prefix) ? event.finalText.slice(prefix.length) : undefined;
+        return { ...event, finalText };
+      }
+    }
+    return event;
+  }
 }
 
 export function finalizePlanOutput(timeline: ChatMessage[]): { timeline: ChatMessage[]; isPlan: boolean } {

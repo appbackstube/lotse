@@ -154,7 +154,7 @@ import { chatQueueStorageKey, loadChatQueues, moveQueuedMessage, saveChatQueues,
 import { isLargeCodeDocument } from "./codeMirror";
 import { findCodeLanguage } from "./codeLanguage";
 import { chatEfforts, chatConfigurationError, chatModelLabel, modelEfforts, normalizeChatDefaults, normalizeChatModelFavorites, validChatModel, type ChatModel, type ChatDefaults, type ChatEffort } from "./chatDefaults";
-import { applyChatEvent, carryReviewChat, finalizePlanOutput, persistedChatEntries } from "./chatTimeline";
+import { applyChatEvent, AssistantSteerBoundary, carryReviewChat, finalizePlanOutput, persistedChatEntries } from "./chatTimeline";
 import { diffChangeBlocks, isVeryLargeChangedFile, isVeryLargeDiff, isVeryLargePatch, parseUnifiedDiff, unchangedLineCount, type DiffChangeBlock } from "./diff";
 import { defaultTaskColumnRatios, resizeTaskColumn, taskColumnPixels, type TaskColumnRatios, type TaskDivider } from "./taskColumns";
 import { parseFileReference, type FileReference } from "./fileReference";
@@ -2421,6 +2421,7 @@ function App() {
   const taskRunsRef = useRef<Record<string, TaskRun>>({});
   const taskDeltaBufferRef = useRef(new Map<string, string>());
   const pendingSteerEventsRef = useRef(new Map<string, AgentTurnEvent[]>());
+  const assistantSteerBoundariesRef = useRef(new WeakMap<AiChatAccepted, AssistantSteerBoundary>());
   const taskDeltaFrameRef = useRef<number | null>(null);
   const taskControlConfirmationRef = useRef<(() => void) | null>(null);
   const systemNotificationsRef = useRef(systemNotifications);
@@ -3129,7 +3130,7 @@ function App() {
 
   useEffect(() => { syncTelegramAttention(); }, [telegram.status?.enabled, telegram.status?.remoteControlEnabled, telegram.status?.connectionId]);
 
-  const handleMainChatEvent = (update: AiChatEvent) => {
+  const handleMainChatEvent = (update: AiChatEvent, timelineUpdate: AiChatEvent) => {
     handleVoiceChatEvent(update);
     const telegramRun = telegramRunsRef.current.get(update.requestId);
     if (telegramRun && update.kind === "assistantMessageCompleted" && update.finalText?.trim()) {
@@ -3143,7 +3144,7 @@ function App() {
     if (update.kind === "status") { if (update.label) setAiChatStatus(update.label); return; }
     if (update.kind === "planUpdated") { setAiChatPlan({ explanation: update.explanation, plan: update.plan ?? [] }); return; }
     if (update.kind === "assistantMessageStarted" || update.kind === "fileChanged" || update.kind === "assistantMessageCompleted") {
-      const timeline = applyChatEvent(aiChatTimelineRef.current, update);
+      const timeline = applyChatEvent(aiChatTimelineRef.current, timelineUpdate);
       aiChatTimelineRef.current = timeline;
       setAiChatTimeline(timeline);
       return;
@@ -3204,12 +3205,15 @@ function App() {
   };
 
   const handleTurnEvent = (event: AgentTurnEvent, taskId?: string) => {
-    const pendingSteer = pendingSteerEventsRef.current.get(taskId ?? "");
+    const accepted = taskId ? taskRunsRef.current[taskId]?.accepted : aiChatTurnRef.current;
+    const pendingSteer = accepted && pendingSteerEventsRef.current.get(accepted.requestId);
     if (pendingSteer) { pendingSteer.push(event); return; }
     if (!(event.type === "chat" && event.payload.kind === "assistantDelta")) {
       if (taskId) flushTaskDeltas(taskId); else flushAiChatDeltas();
     }
     if (event.type === "chat") {
+      const boundary = accepted && assistantSteerBoundariesRef.current.get(accepted);
+      const timelineUpdate = boundary?.update(event.payload) ?? event.payload;
       if (event.payload.kind === "completed" || event.payload.kind === "cancelled" || event.payload.kind === "failed") {
         clearTelegramAttention(taskId ?? null);
         setMcpApprovals((current) => current.filter((approval) => approval.taskId !== (taskId ?? null)));
@@ -3225,8 +3229,8 @@ function App() {
             const next = { ...run, status: event.payload.label };
             taskRunsRef.current = { ...taskRunsRef.current, [taskId]: next }; setTaskRuns(taskRunsRef.current);
           }
-        } else handleTaskEvent(taskId, event.payload);
-      } else handleMainChatEvent(event.payload);
+        } else handleTaskEvent(taskId, timelineUpdate);
+      } else handleMainChatEvent(event.payload, timelineUpdate);
       return;
     }
     if (event.type === "approvalRequested") {
@@ -4420,6 +4424,7 @@ function App() {
       }, (event) => { if (runReady) dispatchEvent(event); else earlyEvents.push(event); });
       acceptedRequestId = result.requestId;
       aiChatTurnRef.current = result;
+      assistantSteerBoundariesRef.current.set(result, new AssistantSteerBoundary());
       const voiceWork = queuedItem && voiceWorkRef.current.get(queuedItem.id);
       if (voiceWork) voiceWork.requestId = result.requestId;
       onAccepted?.(result);
@@ -4748,6 +4753,7 @@ function App() {
       setTaskChangesRevision((value) => value + 1);
       const run: TaskRun = { pipeline: queuedItem?.pipeline, messageId: userMessage.id, coordinationPath: queuedItem?.coordinationPath ?? [task.id], schedule, accepted, mode, status: mode === "plan" ? "Planning…" : "Implementing…", timeline: [], plan: null, input: null, approval: null };
       taskRunsRef.current = { ...taskRunsRef.current, [task.id]: run };
+      assistantSteerBoundariesRef.current.set(accepted, new AssistantSteerBoundary());
       setTaskRuns(taskRunsRef.current);
       if (queuedItem?.pipeline) updatePipelineMessage(taskQueueKey(root, task.id), queuedItem.pipeline.runId, queuedItem.id, "running");
       runReady = true;
@@ -5192,11 +5198,13 @@ function App() {
     queueBusyRef.current.add(key);
     if (task) flushTaskDeltas(task.id); else flushAiChatDeltas();
     const pendingEvents: AgentTurnEvent[] = [];
-    pendingSteerEventsRef.current.set(task?.id ?? "", pendingEvents);
+    pendingSteerEventsRef.current.set(accepted.requestId, pendingEvents);
+    const isCurrentTurn = () => accepted === (task ? taskRunsRef.current[task.id]?.accepted : aiChatTurnRef.current);
     const voiceWork = voiceWorkRef.current.get(id);
     if (voiceWork) { voiceWork.requestId = accepted.requestId; voiceWork.pendingEvents = []; }
     try {
       await invoke("ai_chat_steer", { input: { requestId: accepted.requestId, prompt: item.body, chatContext: item.context, taskId: task?.id ?? null, allowLongPrompt: !!task || !!item.telegram, comments: review?.comments ?? [] } });
+      if (!isCurrentTurn()) { removeQueued(key, id); return; }
       if (voiceWork) {
         const events = voiceWork.pendingEvents ?? [];
         delete voiceWork.pendingEvents;
@@ -5208,6 +5216,7 @@ function App() {
         if (run) {
           const entries = persistedChatEntries([...run.timeline, userMessage]);
           updateTask(task.id, (current) => ({ ...current, chatMessages: [...current.chatMessages, ...entries].slice(-100) }));
+          assistantSteerBoundariesRef.current.get(accepted)?.markSteered();
           taskRunsRef.current = { ...taskRunsRef.current, [task.id]: { ...run, timeline: [] } }; setTaskRuns(taskRunsRef.current);
         }
       } else {
@@ -5215,6 +5224,7 @@ function App() {
         if (!source) throw new Error("The review conversation is unavailable.");
         const next = { ...source, chatMessages: [...source.chatMessages, ...persistedChatEntries([...aiChatTimelineRef.current, userMessage])].slice(-100) };
         reviewRunSessionRef.current = next;
+        assistantSteerBoundariesRef.current.get(accepted)?.markSteered();
         aiChatTimelineRef.current = []; setAiChatTimeline([]);
         const visible = reviewRef.current && reviewQueueKey(reviewRef.current) === key;
         const saved = visible ? await persistReview(next) : await invoke("save_review", { session: next }).then(() => true).catch((reason) => { setError(message(reason)); return false; });
@@ -5226,8 +5236,11 @@ function App() {
       setError(message(reason));
     }
     finally {
-      pendingSteerEventsRef.current.delete(task?.id ?? "");
-      pendingEvents.forEach((event) => handleTurnEvent(event, task?.id));
+      pendingSteerEventsRef.current.delete(accepted.requestId);
+      for (const event of pendingEvents) {
+        if (!isCurrentTurn()) break;
+        handleTurnEvent(event, task?.id);
+      }
       queueBusyRef.current.delete(key);
       if (chatQueuesRef.current[key]?.length && !pausedQueueKeysRef.current.has(key)) queueMicrotask(() => queueDispatchRef.current(key));
     }

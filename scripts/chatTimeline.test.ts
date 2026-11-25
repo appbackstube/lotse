@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { applyChatEvent, carryReviewChat, finalizePlanOutput, persistedChatEntries } from "../src/chatTimeline.ts";
-import type { ChatMessage, ReviewSession } from "../src/types.ts";
+import { applyChatEvent, AssistantSteerBoundary, carryReviewChat, finalizePlanOutput, persistedChatEntries } from "../src/chatTimeline.ts";
+import type { AiChatEvent, ChatMessage, ReviewSession } from "../src/types.ts";
 
 const entry = (body: string, appliedDiffs?: ChatMessage["appliedDiffs"]): ChatMessage => ({
   id: body || "diff",
@@ -38,6 +38,57 @@ assert.deepEqual(persistedChatEntries(afterSteer).map(({ role, body }) => [role,
   ["assistant", "final"], ["assistant", "second"], ["user", "Follow-up"], ["assistant", "Later response"],
 ]);
 assert.deepEqual(persistedChatEntries(JSON.parse(JSON.stringify(afterSteer))).map(({ body }) => body), ["final", "second", "Follow-up", "Later response"]);
+
+const attachmentOnlySteer: ChatMessage = { ...steer, id: "attachment-steer", body: "", attachments: [{ kind: "taskAsset", id: "asset", name: "image.png", image: true }] };
+
+const eventIds = { requestId: "r", threadId: "t", turnId: "1" };
+const start = { ...eventIds, kind: "assistantMessageStarted" } as const;
+const delta = (text: string): AiChatEvent => ({ ...eventIds, kind: "assistantDelta", delta: text });
+const complete = (text: string): AiChatEvent => ({ ...eventIds, kind: "assistantMessageCompleted", finalText: text });
+const boundary = new AssistantSteerBoundary();
+let liveTimeline: ChatMessage[] = [];
+const receive = (event: AiChatEvent) => { liveTimeline = applyChatEvent(liveTimeline, boundary.update(event)); };
+receive(start);
+receive(delta("First part"));
+const beforeFirstSteer = persistedChatEntries([...liveTimeline, steer]);
+boundary.markSteered();
+liveTimeline = [];
+receive(delta(" and second part"));
+const afterSecondSteer = [...beforeFirstSteer, ...persistedChatEntries([...liveTimeline, attachmentOnlySteer])];
+boundary.markSteered();
+liveTimeline = [];
+receive(complete("First part and second part and last part"));
+receive(start);
+receive(complete("First part of a new message"));
+const savedHistory: ChatMessage[] = JSON.parse(JSON.stringify([...afterSecondSteer, ...persistedChatEntries(liveTimeline)]));
+assert.deepEqual(savedHistory.map(({ role, body }) => [role, body]), [
+  ["assistant", "First part"], ["user", "Follow-up"], ["assistant", " and second part"],
+  ["user", ""], ["assistant", "and last part"], ["assistant", "First part of a new message"],
+]);
+assert.deepEqual(savedHistory[3].attachments, attachmentOnlySteer.attachments);
+
+receive(start);
+receive(delta("Already shown"));
+boundary.markSteered();
+liveTimeline = [];
+receive(complete("Already shown"));
+assert.deepEqual(liveTimeline, []);
+
+receive(start);
+receive(delta("Saved prefix"));
+boundary.markSteered();
+liveTimeline = [];
+receive(delta(" draft suffix"));
+receive(complete("Saved prefix final suffix"));
+assert.deepEqual(liveTimeline.map(({ body }) => body), ["final suffix"]);
+
+receive(start);
+receive(delta("Original wording"));
+boundary.markSteered();
+liveTimeline = [];
+receive(delta(" streamed suffix"));
+receive(complete("Revised wording and suffix"));
+assert.deepEqual(liveTimeline.map(({ body }) => body), [" streamed suffix"]);
 
 const plan = finalizePlanOutput([entry("<proposed_plan>\n## Plan\n\nShip it.\n</proposed_plan>")]);
 assert.equal(plan.isPlan, true);
