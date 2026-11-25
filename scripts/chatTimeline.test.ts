@@ -32,6 +32,13 @@ const twoMessages = applyChatEvent(
 );
 assert.deepEqual(twoMessages.map(({ body }) => body), ["final", "second"]);
 
+const steer = { ...entry("Follow-up"), id: "steer", role: "user" as const };
+const afterSteer = applyChatEvent([...twoMessages, steer], { requestId: "r", threadId: "t", turnId: "1", kind: "assistantDelta", delta: "Later response" });
+assert.deepEqual(persistedChatEntries(afterSteer).map(({ role, body }) => [role, body]), [
+  ["assistant", "final"], ["assistant", "second"], ["user", "Follow-up"], ["assistant", "Later response"],
+]);
+assert.deepEqual(persistedChatEntries(JSON.parse(JSON.stringify(afterSteer))).map(({ body }) => body), ["final", "second", "Follow-up", "Later response"]);
+
 const plan = finalizePlanOutput([entry("<proposed_plan>\n## Plan\n\nShip it.\n</proposed_plan>")]);
 assert.equal(plan.isPlan, true);
 assert.equal(plan.timeline[0].body, "## Plan\n\nShip it.");
