@@ -96,6 +96,29 @@ assert.equal(plan.timeline[0].body, "## Plan\n\nShip it.");
 assert.equal(plan.timeline[0].plan, true);
 assert.equal(plan.timeline[0].canImplementPlan, true);
 
+const fullPlan = "<proposed_plan>\nFirst step.\nSecond step.\n</proposed_plan>";
+for (const [prefix, expectedBody] of [
+  ["<proposed", "First step.\nSecond step."],
+  ["<proposed_plan>\nFirst step.", "Second step."],
+  [fullPlan, "See the plan above."],
+]) {
+  receive(start);
+  liveTimeline = [];
+  receive(delta(prefix));
+  const savedPrefix = persistedChatEntries([...liveTimeline, steer]);
+  boundary.markSteered();
+  liveTimeline = [];
+  receive(complete(fullPlan));
+  const finalized = finalizePlanOutput(liveTimeline, boundary.splitPlan);
+  assert.equal(finalized.isPlan, true);
+  assert.deepEqual([...savedPrefix, ...persistedChatEntries(finalized.timeline)].map(({ body }) => body), [prefix, steer.body, expectedBody]);
+  assert.equal(finalized.timeline[0].canImplementPlan, true);
+}
+
+receive(start);
+receive(complete("A later assistant message"));
+assert.equal(finalizePlanOutput(liveTimeline, boundary.splitPlan).isPlan, false);
+
 for (const body of ["A normal response", "Before <proposed_plan>Plan</proposed_plan>", "<proposed_plan>Plan"]) {
   const result = finalizePlanOutput([entry(body)]);
   assert.equal(result.isPlan, false);

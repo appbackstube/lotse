@@ -42,36 +42,60 @@ export function persistedChatEntries(timeline: ChatMessage[]): ChatMessage[] {
   return timeline.filter((entry) => entry.body.trim() || entry.appliedDiffs?.length || entry.attachments?.length);
 }
 
+const proposedPlanPattern = /^<proposed_plan>\s*([\s\S]+?)\s*<\/proposed_plan>$/;
+
+type SplitPlan = { body: string; hasLiveText: boolean };
+
 export class AssistantSteerBoundary {
   private streamedText = "";
   private savedPrefix = "";
+  splitPlan: SplitPlan | undefined;
 
   markSteered() {
     this.savedPrefix = this.streamedText;
+    if (this.splitPlan) this.splitPlan = { body: "", hasLiveText: false };
   }
 
   update(event: AiChatEvent): AiChatEvent {
-    if (event.kind === "assistantDelta") this.streamedText += event.delta ?? "";
+    if (event.kind === "assistantDelta" && event.delta) {
+      this.streamedText += event.delta;
+      if (event.delta.trim()) this.splitPlan = undefined;
+    }
     if (event.kind === "assistantMessageStarted" || event.kind === "assistantMessageCompleted") {
       const prefix = this.savedPrefix;
+      const streamedSuffix = this.streamedText.slice(prefix.length);
       this.streamedText = "";
       this.savedPrefix = "";
-      if (event.kind === "assistantMessageCompleted" && prefix && event.finalText) {
-        const finalText = event.finalText.startsWith(prefix) ? event.finalText.slice(prefix.length) : undefined;
-        return { ...event, finalText };
+      if (event.kind === "assistantMessageCompleted" && event.finalText?.trim()) {
+        this.splitPlan = undefined;
+        if (prefix) {
+          const fullText = event.finalText;
+          const finalText = fullText.startsWith(prefix) ? fullText.slice(prefix.length) : undefined;
+          if (proposedPlanPattern.test(fullText.trim())) {
+            const body = finalText === undefined ? streamedSuffix.replace(/<\/proposed_plan>\s*$/, "")
+              : fullText.slice(Math.max(prefix.length, fullText.indexOf(">") + 1), fullText.lastIndexOf("</proposed_plan>"));
+            this.splitPlan = { body: body.trim(), hasLiveText: !!(finalText?.trim() || streamedSuffix.trim()) };
+          }
+          return { ...event, finalText };
+        }
       }
     }
     return event;
   }
 }
 
-export function finalizePlanOutput(timeline: ChatMessage[]): { timeline: ChatMessage[]; isPlan: boolean } {
+export function finalizePlanOutput(timeline: ChatMessage[], splitPlan?: SplitPlan): { timeline: ChatMessage[]; isPlan: boolean } {
   const next = [...timeline];
-  const index = [...next].map((entry, index) => [entry, index] as const).reverse().find(([entry]) => entry.role === "assistant" && entry.body.trim())?.[1];
-  if (index === undefined) return { timeline: next, isPlan: false };
+  let index = -1;
+  if (!splitPlan || splitPlan.hasLiveText) {
+    for (index = next.length - 1; index >= 0; index--) {
+      if (next[index].role === "assistant" && next[index].body.trim()) break;
+    }
+  }
   const entry = next[index];
-  const match = entry.body.trim().match(/^<proposed_plan>\s*([\s\S]+?)\s*<\/proposed_plan>$/);
-  if (!match) return { timeline: next, isPlan: false };
-  next[index] = { ...entry, body: match[1].trim(), final: true, plan: true, canImplementPlan: true };
+  const body = splitPlan?.body ?? entry?.body.trim().match(proposedPlanPattern)?.[1].trim();
+  if (body === undefined) return { timeline: next, isPlan: false };
+  const planEntry = { ...(entry ?? assistantEntry()), body: body || "See the plan above.", final: true, plan: true, canImplementPlan: true };
+  if (index < 0) next.push(planEntry); else next[index] = planEntry;
   return { timeline: next, isPlan: true };
 }

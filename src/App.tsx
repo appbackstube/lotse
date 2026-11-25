@@ -2674,9 +2674,14 @@ function App() {
     setAiChatTimeline([]);
   };
 
+  const visibleReviewRunSession = () => {
+    const current = reviewRef.current;
+    return current && reviewQueueKey(current) === reviewRunQueueKeyRef.current ? current : null;
+  };
+
   const persistAiChatTimeline = async () => {
     const entries = persistedChatEntries(aiChatTimelineRef.current);
-    const current = reviewRunSessionRef.current ?? reviewRef.current;
+    const current = visibleReviewRunSession() ?? reviewRunSessionRef.current;
     let saved = true;
     if (entries.length && current) {
       const next = { ...current, chatMessages: [...current.chatMessages, ...entries].slice(-100) };
@@ -2961,7 +2966,9 @@ function App() {
     }
     if (update.kind === "completed" || update.kind === "cancelled" || update.kind === "failed") {
       const runStatus = update.kind;
-      const plan = run.mode === "plan" && update.kind === "completed" ? finalizePlanOutput(timeline) : null;
+      const plan = run.mode === "plan" && update.kind === "completed"
+        ? finalizePlanOutput(timeline, assistantSteerBoundariesRef.current.get(run.accepted)?.splitPlan)
+        : null;
       timeline = plan?.timeline ?? timeline;
       const messages = update.kind === "failed" ? [] : persistedChatEntries(timeline);
       const updateTasks = (current: RepositoryTask[]) => current.map((task) => task.id === taskId ? {
@@ -3158,7 +3165,8 @@ function App() {
     if (update.kind === "toolFinished") setAiChatStatus("Continuing…");
     if (update.kind === "completed") {
       if (aiChatTurnModeRef.current === "plan") {
-        const plan = finalizePlanOutput(aiChatTimelineRef.current);
+        const accepted = aiChatTurnRef.current;
+        const plan = finalizePlanOutput(aiChatTimelineRef.current, accepted ? assistantSteerBoundariesRef.current.get(accepted)?.splitPlan : undefined);
         aiChatTimelineRef.current = plan.timeline;
         setAiChatTimeline(plan.timeline);
       }
@@ -4429,7 +4437,7 @@ function App() {
       if (voiceWork) voiceWork.requestId = result.requestId;
       onAccepted?.(result);
       reviewRunSessionRef.current = {
-        ...(reviewRunSessionRef.current ?? pendingReview),
+        ...(visibleReviewRunSession() ?? reviewRunSessionRef.current ?? pendingReview),
         agentThreadId: result.threadId,
       };
       if (reviewRef.current && reviewQueueKey(reviewRef.current) === reviewRunQueueKeyRef.current) await persistReview(reviewRunSessionRef.current);
@@ -5193,8 +5201,9 @@ function App() {
     const item = chatQueuesRef.current[key]?.find((entry) => entry.id === id);
     if (item?.telegram) { setError("Telegram messages must stay in the queue and cannot steer a running agent."); return; }
     const task = taskMode ? tasksRef.current.find((entry) => entry.id === selectedTaskId) : null;
+    const root = repositoryRef.current?.rootPath;
     const accepted = task ? taskRunsRef.current[task.id]?.accepted : aiChatTurnRef.current;
-    if (!item || !accepted || (!task && reviewRunQueueKeyRef.current !== key) || queueBusyRef.current.has(key)) return;
+    if (!item || !accepted || (task ? !root || taskQueueKey(root, task.id) !== key : reviewRunQueueKeyRef.current !== key) || queueBusyRef.current.has(key)) return;
     queueBusyRef.current.add(key);
     if (task) flushTaskDeltas(task.id); else flushAiChatDeltas();
     const pendingEvents: AgentTurnEvent[] = [];
@@ -5211,23 +5220,23 @@ function App() {
         events.forEach(event => handleVoiceChatEvent(event, id));
       }
       const userMessage: ChatMessage = { id: item.id, role: "user", body: item.body, createdAt: new Date().toISOString(), selection: item.selection, snapshotId: comparison?.snapshotId ?? null, suggestions: [], contexts: [], attachments: item.context.attachments };
-      if (task) {
+      if (task && root) {
         const run = taskRunsRef.current[task.id];
         if (run) {
           const entries = persistedChatEntries([...run.timeline, userMessage]);
-          updateTask(task.id, (current) => ({ ...current, chatMessages: [...current.chatMessages, ...entries].slice(-100) }));
+          updateTaskAtRoot(root, task.id, (current) => ({ ...current, chatMessages: [...current.chatMessages, ...entries].slice(-100) }));
           assistantSteerBoundariesRef.current.get(accepted)?.markSteered();
           taskRunsRef.current = { ...taskRunsRef.current, [task.id]: { ...run, timeline: [] } }; setTaskRuns(taskRunsRef.current);
         }
       } else {
-        const source = reviewRunSessionRef.current ?? reviewRef.current;
+        const visibleReview = visibleReviewRunSession();
+        const source = visibleReview ?? reviewRunSessionRef.current;
         if (!source) throw new Error("The review conversation is unavailable.");
         const next = { ...source, chatMessages: [...source.chatMessages, ...persistedChatEntries([...aiChatTimelineRef.current, userMessage])].slice(-100) };
         reviewRunSessionRef.current = next;
         assistantSteerBoundariesRef.current.get(accepted)?.markSteered();
         aiChatTimelineRef.current = []; setAiChatTimeline([]);
-        const visible = reviewRef.current && reviewQueueKey(reviewRef.current) === key;
-        const saved = visible ? await persistReview(next) : await invoke("save_review", { session: next }).then(() => true).catch((reason) => { setError(message(reason)); return false; });
+        const saved = visibleReview ? await persistReview(next) : await invoke("save_review", { session: next }).then(() => true).catch((reason) => { setError(message(reason)); return false; });
         if (saved) for (const attachment of item.context.attachments) if (isChatUpload(attachment)) void invoke("release_chat_image_reference", { path: attachment.path }).catch((reason) => setError(message(reason)));
       }
       removeQueued(key, id);
