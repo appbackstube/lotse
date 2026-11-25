@@ -6,6 +6,7 @@ on:
     tags: ["v*"]
     paths:
       - "src/**"
+      - "audio-denoise/**"
       - "src-tauri/**"
       - "public/**"
       - "vendor/**"
@@ -63,6 +64,10 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
+      - name: Install Rust toolchain
+        run: |
+          rustup show active-toolchain
+          rustup target add "${{ matrix.target }}" wasm32-unknown-unknown
       - name: Check release version
         if: startsWith(github.ref, 'refs/tags/')
         env:
@@ -73,10 +78,6 @@ jobs:
         run: |
           npm test
           node --test scripts/marketing.test.mjs scripts/macos-build.test.mjs
-      - name: Install Rust toolchain
-        run: |
-          rustup show active-toolchain
-          rustup target add "${{ matrix.target }}"
       - name: Cache patched runtime
         id: runtime
         uses: actions/cache/restore@v4

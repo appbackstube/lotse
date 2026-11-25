@@ -59,18 +59,27 @@ mockIPC(async (command, args: any) => {
 
 let channel: any;
 let track: any;
+let sentTrack: MediaStreamTrack;
 let peer: any;
 const audioEvents: any[] = [];
 Object.defineProperty(navigator.mediaDevices, "getUserMedia", { configurable: true, value: async () => {
-  track = { enabled: true, stopped: false, stop() { this.stopped = true; } };
-  return { getTracks: () => [track], getAudioTracks: () => [track] };
+  const context = new AudioContext({ sampleRate: 48000 });
+  const oscillator = context.createOscillator();
+  const destination = context.createMediaStreamDestination();
+  oscillator.connect(destination); oscillator.start();
+  await context.resume();
+  track = destination.stream.getAudioTracks()[0];
+  track.stopped = false;
+  const stop = track.stop.bind(track);
+  track.stop = () => { track.stopped = true; stop(); oscillator.stop(); void context.close(); };
+  return destination.stream;
 } });
 Object.assign(globalThis, { RTCPeerConnection: class {
   closed = false;
   iceGatheringState = "complete";
   localDescription = { sdp: "v=0\r\nsynthetic offer" };
   constructor() { peer = this; }
-  addTrack() {}
+  addTrack(outgoing: MediaStreamTrack) { sentTrack = outgoing; }
   createDataChannel() { channel = { readyState: "open", close() { this.readyState = "closed"; this.onclose?.(); }, send: (text: string) => audioEvents.push(JSON.parse(text)) }; return channel; }
   async createOffer() { return { type: "offer", sdp: "v=0\r\nsynthetic offer" }; }
   async setLocalDescription() {}
@@ -121,6 +130,7 @@ try {
   await change(draft, "Unfinished text draft");
   check(!(button("Start conversation") as HTMLButtonElement).disabled, `Talk unexpectedly disabled: ${document.body.textContent}`);
   await click(button("Start conversation"));
+  check(sentTrack && sentTrack !== track, `Talk must send the processed microphone track (sent=${!!sentTrack}, microphone=${!!track}, alerts=${[...document.querySelectorAll('[role="alert"]')].map(element => element.textContent).join("; ")})`);
   check(connectionVoices[0] === "cedar", "The saved voice must be used for a new session");
   const composer = document.querySelector<HTMLElement>('[aria-label="Voice composer"]')!;
   check(connects === 1 && composer && visible(composer) && composer.getBoundingClientRect().height < 200, `Talk must stay within composer size (connections=${connects}, height=${composer?.getBoundingClientRect().height}, alerts=${[...document.querySelectorAll('[role="alert"]')].map(e => e.textContent).join("; ")})`);
@@ -172,7 +182,7 @@ try {
   check(sends.length === 2, "A clear follow-up must start without an extra confirmation");
   await click(button("Stop workspace agent work")); await click(button("Stop work"));
   check(cancellations.length === 1 && cancellations[0] === "run", "Stopping work must target the active run");
-  await click(button("Mute microphone")); check(!track.enabled, "Mute must disable the microphone");
+  await click(button("Mute microphone")); check(!track.enabled && !sentTrack.enabled, "Mute must disable both microphone tracks");
   await click(button("Switch to typing"));
   await voiceEvent({ type: "session.closed" });
   check(cancellations.length === 1, "Ending Talk must not issue another agent cancellation");
@@ -227,5 +237,5 @@ try {
   check(failures.length === 0, `Unexpected commands: ${failures.join(", ")}`);
   document.getElementById("result")!.textContent = "PASS: key and voice settings, simulated GPT-Live delegation, typed/voice steering, queued result attribution, transcript recovery, draft preservation, interruption, mute and cleanup.";
 } catch (error) {
-  document.getElementById("result")!.textContent = `FAIL: ${error instanceof Error ? error.stack : error}`;
+  document.getElementById("result")!.textContent = `FAIL: ${error instanceof Error ? `${error.message}\n${error.stack}` : error}`;
 } finally { await act(async () => root.unmount()); }

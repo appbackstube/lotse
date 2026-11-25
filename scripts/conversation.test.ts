@@ -5,7 +5,7 @@ import type { ChatMessage } from "../src/types.ts";
 import { conversationVoice } from "../src/conversationVoices.ts";
 import { watchConversationPlayback } from "../src/conversationPlayback.ts";
 
-function harness() {
+function harness(processMicrophone?: ConstructorParameters<typeof RealtimeConversation>[0]["processMicrophone"]) {
   let snapshot: VoiceSnapshot = idleVoice;
   const sent: Record<string, any>[] = [];
   const requests: Omit<VoiceDelegation, "workspaceKey">[] = [];
@@ -15,10 +15,12 @@ function harness() {
   const stream = { getTracks: () => [track], getAudioTracks: () => [track] } as unknown as MediaStream;
   const channel = { readyState: "open", onmessage: null as any, onclose: null as any,
     send: (text: string) => sent.push(JSON.parse(text)), close() { this.readyState = "closed"; this.onclose?.(); } };
-  const peer = { closed: false, ontrack: null as any, connectionState: "connected", iceGatheringState: "complete", localDescription: { sdp: "v=0\r\noffer" }, addTrack() {}, createDataChannel: () => channel,
+  const sender = { track: null as MediaStreamTrack | null, async replaceTrack(next: MediaStreamTrack) { this.track = next; } };
+  const peer = { closed: false, ontrack: null as any, connectionState: "connected", iceGatheringState: "complete", localDescription: { sdp: "v=0\r\noffer" }, addTrack(next: MediaStreamTrack) { sender.track = next; }, getSenders: () => [sender], createDataChannel: () => channel,
     createOffer: async () => ({ type: "offer", sdp: "v=0\r\noffer" }), setLocalDescription: async () => {}, setRemoteDescription: async () => {}, close() { this.closed = true; } };
   const audio = { muted: false, paused: false, srcObject: null, pause() { this.paused = true; }, play: async () => {} };
   const voice = new RealtimeConversation({ microphone: async () => stream, peer: () => peer as unknown as RTCPeerConnection,
+    processMicrophone,
     audio: () => audio as unknown as HTMLAudioElement, connect: async () => "v=0\r\nanswer",
     watchPlayback: (_stream, report) => { onPlayback = report; return () => { playbackWatchStopped = true; }; },
     delegate: async request => { requests.push(request); return true; }, changed: value => { snapshot = value; } });
@@ -32,9 +34,59 @@ function harness() {
   };
   const start = async () => { await voice.start(); event({ type: "session.started" }); };
   const stop = () => { voice.stop(); if (channel.readyState === "open") event({ type: "session.closed" }); };
-  return { voice, event, backend, call, start, stop, sent, requests, track, stream, peer, audio, channel,
+  return { voice, event, backend, call, start, stop, sent, requests, track, stream, peer, sender, audio, channel,
     level: (active: boolean, time: number) => onPlayback?.(active, time), get playbackWatchStopped() { return playbackWatchStopped; }, get state() { return snapshot; } };
 }
+
+test("processed microphone is muted and stopped with the original", async () => {
+  let stopped = false;
+  const processedTrack = { enabled: true, stop() {} };
+  const processedStream = { getTracks: () => [processedTrack], getAudioTracks: () => [processedTrack] } as unknown as MediaStream;
+  const h = harness(async () => ({ stream: processedStream, onFailure() {}, stop() { stopped = true; } }));
+  await h.start();
+  h.voice.setMuted(true);
+  assert.equal(h.track.enabled, false);
+  assert.equal(processedTrack.enabled, false);
+  h.stop();
+  assert.equal(stopped, true);
+  assert.equal(h.track.stopped, true);
+});
+
+test("a filter initialization error falls back to the microphone", async () => {
+  const h = harness(async () => { throw new Error("unavailable"); });
+  await h.start();
+  assert.match(h.state.error, /standard processing/);
+  assert.equal(h.state.phase, "listening");
+  h.stop();
+});
+
+test("a failing filter switches the sender back to the original microphone", async () => {
+  let fail!: () => void;
+  let stopped = false;
+  const processedTrack = { enabled: true, stop() {} };
+  const processedStream = { getTracks: () => [processedTrack], getAudioTracks: () => [processedTrack] } as unknown as MediaStream;
+  const h = harness(async () => ({ stream: processedStream, onFailure(handler) { fail = handler; }, stop() { stopped = true; } }));
+  await h.start();
+  fail();
+  await Promise.resolve();
+  assert.equal(h.sender.track, h.track);
+  assert.equal(stopped, true);
+  assert.match(h.state.error, /standard processing/);
+  h.stop();
+});
+
+test("a filter completing after stop is released", async () => {
+  let finish!: (value: import("../src/conversationNoise.ts").ProcessedMicrophone) => void;
+  let stopped = false;
+  const h = harness(() => new Promise(resolve => { finish = resolve; }));
+  const start = h.voice.start();
+  await Promise.resolve();
+  h.voice.stop();
+  finish({ stream: h.stream, onFailure() {}, stop() { stopped = true; } });
+  await start;
+  assert.equal(stopped, true);
+  assert.equal(h.track.stopped, true);
+});
 
 test("voice selection has a supported default", () => {
   assert.equal(conversationVoice(null), "marin");
