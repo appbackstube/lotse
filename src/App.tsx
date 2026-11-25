@@ -1033,6 +1033,7 @@ function AiChatPanel({
   centered,
   zenMode,
   hideHeader = false,
+  headerControls,
   approvalReviewer,
   error,
   images,
@@ -1126,6 +1127,7 @@ function AiChatPanel({
   centered: boolean;
   zenMode: boolean;
   hideHeader?: boolean;
+  headerControls?: ReactNode;
   approvalReviewer: ApprovalReviewer;
   error: string;
   images: ChatAttachment[];
@@ -1278,12 +1280,19 @@ function AiChatPanel({
       {!hideHeader && <div
         data-tauri-drag-region
         onMouseDown={(event) => {
-          if ((event.target as HTMLElement).closest("button, input, select, textarea")) return;
+          const target = event.target;
+          if (
+            event.button !== 0 ||
+            !(target instanceof Element) ||
+            !event.currentTarget.contains(target) ||
+            target.closest("button, input, select, textarea")
+          ) return;
           void getCurrentWindow().startDragging().catch(() => {});
         }}
         className={`ios-chat-header flex shrink-0 items-center justify-between border-b border-[#294536] ${zenMode ? "h-[52px] pl-[88px] pr-4" : "h-12 px-4"}`}
       >
         {taskMode && <span className="text-sm font-semibold text-[#E8FFF0]">Chat</span>}
+        {headerControls}
         {taskMode && !zenMode ? <DropdownMenu>
           <DropdownMenuTrigger className="task-modal-icon ml-auto" aria-label="Chat actions" title="Chat actions"><Ellipsis size={18} /></DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-52">
@@ -5808,7 +5817,8 @@ function App() {
     void getCurrentWindow().startDragging().catch((reason) => setError(message(reason)));
   };
 
-  const agentChatExpanded = !zenMode && workspaceMode === "workspace" && !!repository && !terminalOpen && comparison?.mode === "workingCopy" && !comparison.files.length;
+  const emptyWorkspaceComparison = workspaceMode === "workspace" && !!repository && !!comparison && comparison.files.length === 0;
+  const agentChatExpanded = !zenMode && emptyWorkspaceComparison && !terminalOpen;
   const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? null;
   const searchChatMessage = useMemo(() => {
     if (!searchSource) return undefined;
@@ -6710,13 +6720,15 @@ function App() {
             ? "minmax(0, 1fr)"
             : tasksTabActive && repository
             ? `${taskColumns.tasks}px minmax(0, 1fr) ${taskColumns.changes}px`
+            : emptyWorkspaceComparison
+            ? agentChatExpanded ? "0px minmax(0, 1fr) 0px" : `0px minmax(0, 1fr) min(${sidebarWidths.right}px, 100%)`
             : repository
             ? `${sidebarWidths.left}px minmax(0, 1fr) min(${sidebarWidths.right}px, max(0px, calc(100% - ${sidebarWidths.left}px)))`
             : `${sidebarWidths.left}px minmax(0, 1fr)`,
         }}
       >
         {repository && <MemoryWorkspace key={repository.rootPath} repositoryRoot={repository.rootPath} flushRef={memoryFlushRef} openRef={memoryOpenRef} visible={memoryMode} />}
-        {!zenMode && !tasksTabActive && !memoryMode && <aside className="ios-file-list relative z-10 mt-[-52px] flex h-[calc(100%+52px)] min-h-0 flex-col border-r border-[#294536] bg-[#0B110E]">
+        {!zenMode && !tasksTabActive && !memoryMode && !emptyWorkspaceComparison && <aside className="ios-file-list relative z-10 mt-[-52px] flex h-[calc(100%+52px)] min-h-0 flex-col border-r border-[#294536] bg-[#0B110E]">
           <div
             data-tauri-drag-region
             onMouseDown={startDragging}
@@ -6734,72 +6746,6 @@ function App() {
                   <DropdownMenuItem onClick={() => setExpandedFolders(new Set())}>Collapse all</DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
-            </div>
-            <div className="ios-sidebar-context mt-2 flex-col items-stretch gap-1">
-              <span className="ios-comparison-selector-wrap">
-                <GitBranch size={13} className="ios-comparison-selector-icon" />
-                <Popover open={branchPickerOpen} onOpenChange={(open) => {
-                  setBranchPickerOpen(open);
-                  if (open) void invoke<BranchRefs>("list_branch_refs").then(setBranchRefs).catch((reason) => setError(message(reason)));
-                  else setBranchFilter("");
-                }}>
-                  <PopoverTrigger disabled={branchActionBusy} aria-label="Switch branch" className="ios-comparison-selector flex items-center">
-                    <span className="flex-1 truncate text-left">{branchSwitching ? "Switching branch…" : repository?.currentBranch ?? "Detached HEAD"}</span>
-                    {branchSwitching ? <LoaderCircle size={14} className="animate-spin" /> : <ChevronDown size={14} />}
-                  </PopoverTrigger>
-                  <PopoverContent align="start" className="ios-branch-menu">
-                    <div className="ios-branch-filter">
-                      <Input autoFocus value={branchFilter} onChange={(event) => setBranchFilter(event.currentTarget.value)} placeholder="Filter branches" aria-label="Filter branches" />
-                      {repository?.hasOrigin && <div className="ios-branch-sync-actions">
-                        <button type="button" disabled={branchActionBusy} onClick={() => void fetchBranches()} className="ios-branch-fetch">
-                          {branchesFetching ? <LoaderCircle size={14} className="animate-spin" /> : <RefreshCw size={14} />} {branchesFetching ? "Fetching…" : "Fetch"}
-                        </button>
-                        <button type="button" disabled={branchActionBusy} onClick={() => discardFileEdit(() => void pullBranch())} className="ios-branch-fetch">
-                          {branchPulling ? <LoaderCircle size={14} className="animate-spin" /> : <ArrowDown size={14} />} {branchPulling ? "Pulling…" : "Pull"}
-                          {branchRefs?.pullCount != null && branchRefs.pullCount > 0 && ` (${branchRefs.pullCount})`}
-                        </button>
-                        <button type="button" disabled={branchActionBusy || !repository.currentBranch} onClick={() => void pushBranch()} className="ios-branch-fetch">
-                          {branchPushing ? <LoaderCircle size={14} className="animate-spin" /> : <ArrowUp size={14} />} {branchPushing ? "Pushing…" : "Push"}
-                          {branchRefs?.pushCount != null && branchRefs.pushCount > 0 && ` (${branchRefs.pushCount})`}
-                        </button>
-                      </div>}
-                    </div>
-                    <div className="ios-branch-separator" />
-                    <div className="ios-branch-list">
-                      <p className="ios-branch-heading">Local branches</p>
-                      <BranchTreeView tree={localBranchTree} parentPath="local" depth={0} expandedFolders={expandedBranchFolders} forceExpanded={!!branchFilterTerm} currentBranch={repository?.currentBranch} disabled={branchActionBusy} onToggle={toggleBranchFolder} onSelect={(branch) => discardFileEdit(() => void switchBranch(branch))} />
-                      {remoteBranches.length ? <>
-                        <div className="ios-branch-separator" />
-                        <p className="ios-branch-heading">Remote branches</p>
-                        <BranchTreeView tree={remoteBranchTree} parentPath="origin" depth={0} expandedFolders={expandedBranchFolders} forceExpanded={!!branchFilterTerm} currentBranch={repository?.currentBranch ? `origin/${repository.currentBranch}` : null} disabled={branchActionBusy} onToggle={toggleBranchFolder} onSelect={(branch) => discardFileEdit(() => void switchBranch(branch))} />
-                      </> : null}
-                      {!localBranches.length && !remoteBranches.length && <p className="px-2 py-3 text-sm text-[#7C9B88]">No matching branches</p>}
-                    </div>
-                  </PopoverContent>
-                </Popover>
-              </span>
-              <div className="ios-sidebar-divider" aria-hidden="true" />
-              <span className="ios-comparison-selector-wrap">
-                <GitCompareArrows size={13} className="ios-comparison-selector-icon" />
-                <Select value={comparisonMode === "branch" ? baseRef : "workingCopy"} onValueChange={(value) => {
-                  if (value === null) return;
-                  if (value === "workingCopy") switchComparisonMode("workingCopy");
-                  else selectBranchComparison(value);
-                }}>
-                  <SelectTrigger aria-label="Comparison context" className="ios-comparison-selector"><SelectValue>{(value) => value === "workingCopy" ? "Working Copy" : repository?.currentBranch ? `${value} → ${repository.currentBranch}` : value}</SelectValue></SelectTrigger>
-                  <SelectContent className="ios-select-content ios-comparison-select-content">
-                    <SelectItem value="workingCopy">{repository?.currentBranch ? `Working Copy · ${repository.currentBranch}` : "Working Copy"}</SelectItem>
-                    {repository?.currentBranch && branchRefs?.refs.some((ref) => ref !== repository.currentBranch) && (
-                      <SelectGroup>
-                        <SelectLabel>Compare with {repository.currentBranch}</SelectLabel>
-                        {branchRefs.refs.filter((ref) => ref !== repository.currentBranch).map((ref) => (
-                          <SelectItem key={ref} value={ref}>{ref} → {repository.currentBranch}</SelectItem>
-                        ))}
-                      </SelectGroup>
-                    )}
-                  </SelectContent>
-                </Select>
-              </span>
             </div>
             <div className="ios-sidebar-divider ios-sidebar-search-divider" aria-hidden="true" />
             <label className="ios-sidebar-search mt-2">
@@ -6878,7 +6824,7 @@ function App() {
 
         <section
           className={`ios-workspace min-h-0 min-w-0 flex-col bg-[#0B110E] ${tasksTabActive ? "task-mode-list relative border-r border-[#294536]" : ""} ${tasksTabActive && !boardMode ? "mt-[-52px] h-[calc(100%+52px)]" : ""} ${memoryMode || agentChatExpanded || zenMode ? "hidden" : "flex"}`}
-          style={{ gridColumn: tasksTabActive ? "1" : repository ? undefined : "2" }}
+          style={{ gridColumn: tasksTabActive ? "1" : "2" }}
         >
           {tasksTabActive && !boardMode && <div data-tauri-drag-region onMouseDown={startDragging} className="ios-sidebar-titlebar flex h-[52px] shrink-0 items-center border-b border-[#294536] pl-[88px] pr-2"><span className="truncate text-sm font-semibold text-[#E8FFF0]">{repository?.name ?? "Tasks"}</span></div>}
           {!tasksTabActive && error && !(comparisonMode === "branch" && !comparison) && (
@@ -7080,7 +7026,7 @@ function App() {
                 </div>
                 <h1 className="text-[28px] font-bold tracking-tight">{loading ? "Loading diff" : "Compare branches"}</h1>
                 <p className="mt-2 text-[15px] leading-6 text-[#7C9B88]">
-                  {loading ? "Loading the selected branch comparison." : "Choose another comparison from the Changes header."}
+                  {loading ? "Loading the selected branch comparison." : "Choose another comparison from the chat header."}
                 </p>
                 {error && <p role="alert" className="mt-3 text-sm text-[#FB7185]">{error}</p>}
                 {error && <button type="button" disabled={loading} onClick={() => void loadComparison(repository, false, "branch", baseRef, compareRef)} className="accent-button mt-5 px-4">
@@ -7196,6 +7142,73 @@ function App() {
             centered={zenMode || (!taskMode && agentChatExpanded)}
             zenMode={zenMode}
             hideHeader={boardMode && !inlineTaskMode}
+            headerControls={!taskMode && !zenMode && repository ? (
+            <div className="ios-workspace-comparison-controls">
+              <span className="ios-comparison-selector-wrap">
+                <GitBranch size={13} className="ios-comparison-selector-icon" />
+                <Popover open={branchPickerOpen} onOpenChange={(open) => {
+                  setBranchPickerOpen(open);
+                  if (open) void invoke<BranchRefs>("list_branch_refs").then(setBranchRefs).catch((reason) => setError(message(reason)));
+                  else setBranchFilter("");
+                }}>
+                  <PopoverTrigger disabled={branchActionBusy} aria-label="Switch branch" className="ios-comparison-selector flex items-center">
+                    <span className="flex-1 truncate text-left">{branchSwitching ? "Switching branch…" : repository?.currentBranch ?? "Detached HEAD"}</span>
+                    {branchSwitching ? <LoaderCircle size={14} className="animate-spin" /> : <ChevronDown size={14} />}
+                  </PopoverTrigger>
+                  <PopoverContent align="start" className="ios-branch-menu">
+                    <div className="ios-branch-filter">
+                      <Input autoFocus value={branchFilter} onChange={(event) => setBranchFilter(event.currentTarget.value)} placeholder="Filter branches" aria-label="Filter branches" />
+                      {repository?.hasOrigin && <div className="ios-branch-sync-actions">
+                        <button type="button" disabled={branchActionBusy} onClick={() => void fetchBranches()} className="ios-branch-fetch">
+                          {branchesFetching ? <LoaderCircle size={14} className="animate-spin" /> : <RefreshCw size={14} />} {branchesFetching ? "Fetching…" : "Fetch"}
+                        </button>
+                        <button type="button" disabled={branchActionBusy} onClick={() => discardFileEdit(() => void pullBranch())} className="ios-branch-fetch">
+                          {branchPulling ? <LoaderCircle size={14} className="animate-spin" /> : <ArrowDown size={14} />} {branchPulling ? "Pulling…" : "Pull"}
+                          {branchRefs?.pullCount != null && branchRefs.pullCount > 0 && ` (${branchRefs.pullCount})`}
+                        </button>
+                        <button type="button" disabled={branchActionBusy || !repository.currentBranch} onClick={() => void pushBranch()} className="ios-branch-fetch">
+                          {branchPushing ? <LoaderCircle size={14} className="animate-spin" /> : <ArrowUp size={14} />} {branchPushing ? "Pushing…" : "Push"}
+                          {branchRefs?.pushCount != null && branchRefs.pushCount > 0 && ` (${branchRefs.pushCount})`}
+                        </button>
+                      </div>}
+                    </div>
+                    <div className="ios-branch-separator" />
+                    <div className="ios-branch-list">
+                      <p className="ios-branch-heading">Local branches</p>
+                      <BranchTreeView tree={localBranchTree} parentPath="local" depth={0} expandedFolders={expandedBranchFolders} forceExpanded={!!branchFilterTerm} currentBranch={repository?.currentBranch} disabled={branchActionBusy} onToggle={toggleBranchFolder} onSelect={(branch) => discardFileEdit(() => void switchBranch(branch))} />
+                      {remoteBranches.length ? <>
+                        <div className="ios-branch-separator" />
+                        <p className="ios-branch-heading">Remote branches</p>
+                        <BranchTreeView tree={remoteBranchTree} parentPath="origin" depth={0} expandedFolders={expandedBranchFolders} forceExpanded={!!branchFilterTerm} currentBranch={repository?.currentBranch ? `origin/${repository.currentBranch}` : null} disabled={branchActionBusy} onToggle={toggleBranchFolder} onSelect={(branch) => discardFileEdit(() => void switchBranch(branch))} />
+                      </> : null}
+                      {!localBranches.length && !remoteBranches.length && <p className="px-2 py-3 text-sm text-[#7C9B88]">No matching branches</p>}
+                    </div>
+                  </PopoverContent>
+                </Popover>
+              </span>
+              <span className="ios-comparison-selector-wrap">
+                <GitCompareArrows size={13} className="ios-comparison-selector-icon" />
+                <Select value={comparisonMode === "branch" ? baseRef : "workingCopy"} onValueChange={(value) => {
+                  if (value === null) return;
+                  if (value === "workingCopy") switchComparisonMode("workingCopy");
+                  else selectBranchComparison(value);
+                }}>
+                  <SelectTrigger aria-label="Comparison context" className="ios-comparison-selector"><SelectValue>{(value) => value === "workingCopy" ? "Working Copy" : repository?.currentBranch ? `${value} → ${repository.currentBranch}` : value}</SelectValue></SelectTrigger>
+                  <SelectContent className="ios-select-content ios-comparison-select-content">
+                    <SelectItem value="workingCopy">{repository?.currentBranch ? `Working Copy · ${repository.currentBranch}` : "Working Copy"}</SelectItem>
+                    {repository?.currentBranch && branchRefs?.refs.some((ref) => ref !== repository.currentBranch) && (
+                      <SelectGroup>
+                        <SelectLabel>Compare with {repository.currentBranch}</SelectLabel>
+                        {branchRefs.refs.filter((ref) => ref !== repository.currentBranch).map((ref) => (
+                          <SelectItem key={ref} value={ref}>{ref} → {repository.currentBranch}</SelectItem>
+                        ))}
+                      </SelectGroup>
+                    )}
+                  </SelectContent>
+                </Select>
+              </span>
+            </div>
+            ) : null}
             approvalReviewer={activeApprovalReviewer}
             error={error}
             images={taskMode ? selectedTask?.attachments ?? [] : aiChatUploads}
