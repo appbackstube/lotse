@@ -18,8 +18,9 @@ test("release accepts GitHub origin URLs only", () => {
 });
 
 const verifiedHead = "a".repeat(40);
+const prepareRuntimes = "sh scripts/prepare-app-server.sh";
 
-function releaseFixture(context, { checkError, headAfterBuild = verifiedHead, statusAfterBuild = "" } = {}) {
+function releaseFixture(context, { checkError, runtimeError, headAfterBuild = verifiedHead, statusAfterBuild = "" } = {}) {
   const checkout = mkdtempSync(join(tmpdir(), "lotse-release-test-"));
   context.after(() => rmSync(checkout, { recursive: true, force: true }));
   for (const [name, contents] of Object.entries({
@@ -27,8 +28,8 @@ function releaseFixture(context, { checkError, headAfterBuild = verifiedHead, st
     "src-tauri/tauri.conf.json": '{"productName":"Lotse","version":"1.2.3"}',
     "src-tauri/Cargo.toml": 'version = "1.2.3"\n',
     "node_modules/.bin/tauri": "",
-    "src-tauri/binaries/codex-runtime-aarch64-apple-darwin": "",
-    "src-tauri/binaries/codex-runtime-x86_64-apple-darwin": "",
+    "src-tauri/binaries/codex-runtime-aarch64-apple-darwin/bin/codex-app-server": "stale Apple Silicon runtime",
+    "src-tauri/binaries/codex-runtime-x86_64-apple-darwin/bin/codex-app-server": "stale Intel runtime",
     "src-tauri/target/share/Lotse_1.2.3_aarch64.dmg": "Apple Silicon fixture",
     "src-tauri/target/share/Lotse_1.2.3_x86_64.dmg": "Intel fixture",
   })) {
@@ -52,6 +53,7 @@ function releaseFixture(context, { checkError, headAfterBuild = verifiedHead, st
     }
     actions.push(invocation);
     if (invocation === "npm run release:check" && checkError) throw checkError;
+    if (invocation === prepareRuntimes && runtimeError) throw runtimeError;
     if (invocation === "npm run build:mac") built = true;
   }
   return { actions, execute: () => release(checkout, run) };
@@ -64,6 +66,13 @@ test("failed release checks prevent building and publishing", (context) => {
   assert.deepEqual(actions, ["npm run release:check"]);
 });
 
+test("runtime preparation failure prevents building and publishing even with runtimes on disk", (context) => {
+  const runtimeError = new Error("runtime preparation failed");
+  const { actions, execute } = releaseFixture(context, { runtimeError });
+  assert.throws(execute, runtimeError);
+  assert.deepEqual(actions, ["npm run release:check", prepareRuntimes]);
+});
+
 for (const [change, result] of Object.entries({
   "HEAD moves": { headAfterBuild: "b".repeat(40) },
   "working tree becomes dirty": { statusAfterBuild: " M package.json" },
@@ -71,15 +80,16 @@ for (const [change, result] of Object.entries({
   test(`nothing is published when the ${change} during the build`, (context) => {
     const { actions, execute } = releaseFixture(context, result);
     assert.throws(execute, /HEAD or working tree changed/);
-    assert.deepEqual(actions, ["npm run release:check", "npm run build:mac"]);
+    assert.deepEqual(actions, ["npm run release:check", prepareRuntimes, "npm run build:mac"]);
   });
 }
 
 test("a clean release tags the verified commit explicitly after checks and build", (context) => {
   const { actions, execute } = releaseFixture(context);
   execute();
-  assert.deepEqual(actions.slice(0, 4), [
+  assert.deepEqual(actions.slice(0, 5), [
     "npm run release:check",
+    prepareRuntimes,
     "npm run build:mac",
     `git tag -a v1.2.3 -m lotse-local-release ${verifiedHead}`,
     "git push origin refs/tags/v1.2.3",

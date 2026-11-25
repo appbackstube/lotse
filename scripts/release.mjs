@@ -42,13 +42,9 @@ export function release(checkout = root, run = command.bind(null, checkout)) {
   if (localTag || remoteTag) throw new Error(`Tag ${tag} already exists; choose a new version.`);
   run("gh", ["auth", "status"]);
   if (!existsSync(join(checkout, "node_modules/.bin/tauri"))) throw new Error("Dependencies missing; run npm ci first.");
-  for (const target of ["aarch64-apple-darwin", "x86_64-apple-darwin"]) {
-    if (!existsSync(join(checkout, `src-tauri/binaries/codex-runtime-${target}`))) {
-      throw new Error("Both runtimes are required; run sh scripts/prepare-app-server.sh first.");
-    }
-  }
 
   run("npm", ["run", "release:check"]);
+  run("sh", ["scripts/prepare-app-server.sh"]);
   run("npm", ["run", "build:mac"]);
   const directory = mkdtempSync(join(tmpdir(), "lotse-release-"));
   try {
