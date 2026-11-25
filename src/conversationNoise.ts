@@ -4,60 +4,68 @@ export type ProcessedMicrophone = {
   stop: () => void;
 };
 
+const FILTER_STARTUP_TIMEOUT_MS = 5_000;
+
 export async function processMicrophone(stream: MediaStream): Promise<ProcessedMicrophone> {
   const context = new AudioContext({ sampleRate: 48000 });
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => reject(new Error("Noise filter timed out")), FILTER_STARTUP_TIMEOUT_MS);
+  });
+  const duringStartup = <Result>(operation: Promise<Result>) => Promise.race([operation, deadline]);
   let output: MediaStream | undefined;
   let node: AudioWorkletNode | undefined;
+  let source: MediaStreamAudioSourceNode | undefined;
+  const stop = () => {
+    if (node) {
+      node.port.onmessage = null;
+      node.onprocessorerror = null;
+      node.disconnect();
+    }
+    source?.disconnect();
+    output?.getTracks().forEach(track => track.stop());
+    void context.close().catch(() => {});
+  };
   try {
     if (context.sampleRate !== 48000) throw new Error("Unsupported sample rate");
-    const base = import.meta.env.BASE_URL;
-    const response = await fetch(`${base}audio/lotse_audio_denoise.wasm`);
+    const base = import.meta.env?.BASE_URL ?? "/";
+    const response = await duringStartup(fetch(`${base}audio/lotse_audio_denoise.wasm`, { signal: controller.signal }));
     if (!response.ok) throw new Error("Noise filter unavailable");
-    const module = await WebAssembly.compile(await response.arrayBuffer());
-    await context.audioWorklet.addModule(`${base}audio/denoise-worklet.js`);
+    const bytes = await duringStartup(response.arrayBuffer());
+    const module = await duringStartup(WebAssembly.compile(bytes));
+    await duringStartup(context.audioWorklet.addModule(`${base}audio/denoise-worklet.js`));
     node = new AudioWorkletNode(context, "lotse-denoise", {
       numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
       channelCount: 1, channelCountMode: "explicit", processorOptions: { module },
     });
     const processor = node;
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("Noise filter timed out")), 5000);
+    await duringStartup(new Promise<void>((resolve, reject) => {
       processor.port.onmessage = event => {
-        if (event.data === "ready") { clearTimeout(timeout); resolve(); }
+        if (event.data === "ready") resolve();
       };
-      processor.onprocessorerror = () => { clearTimeout(timeout); reject(new Error("Noise filter failed")); };
-    });
+      processor.onprocessorerror = () => reject(new Error("Noise filter failed"));
+    }));
+    processor.port.onmessage = null;
     let failed = false;
     let failureHandler: (() => void) | undefined;
     processor.onprocessorerror = () => { failed = true; failureHandler?.(); };
-    const source = context.createMediaStreamSource(stream);
+    source = context.createMediaStreamSource(stream);
     const destination = context.createMediaStreamDestination();
-    source.connect(node).connect(destination);
     output = destination.stream;
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await Promise.race([
-        context.resume(),
-        new Promise<never>((_resolve, reject) => { timeout = setTimeout(() => reject(new Error("Audio context timed out")), 5000); }),
-      ]);
-    } finally {
-      clearTimeout(timeout);
-    }
+    source.connect(node).connect(destination);
+    await duringStartup(context.resume());
     if (failed) throw new Error("Noise filter failed");
     return {
       stream: output,
       onFailure: handler => { failureHandler = handler; if (failed) queueMicrotask(handler); },
-      stop: () => {
-        processor.onprocessorerror = null;
-        processor.disconnect(); source.disconnect();
-        destination.stream.getTracks().forEach(track => track.stop());
-        void context.close();
-      },
+      stop,
     };
   } catch (error) {
-    node?.disconnect();
-    output?.getTracks().forEach(track => track.stop());
-    void context.close();
+    controller.abort();
+    stop();
     throw error;
+  } finally {
+    clearTimeout(timeout);
   }
 }

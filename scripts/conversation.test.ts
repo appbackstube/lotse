@@ -4,6 +4,7 @@ import { RealtimeConversation, idleVoice, voiceHistory, type VoiceSnapshot, type
 import type { ChatMessage } from "../src/types.ts";
 import { conversationVoice } from "../src/conversationVoices.ts";
 import { watchConversationPlayback } from "../src/conversationPlayback.ts";
+import { processMicrophone } from "../src/conversationNoise.ts";
 
 function harness(processMicrophone?: ConstructorParameters<typeof RealtimeConversation>[0]["processMicrophone"]) {
   let snapshot: VoiceSnapshot = idleVoice;
@@ -58,6 +59,48 @@ test("a filter initialization error falls back to the microphone", async () => {
   assert.match(h.state.error, /standard processing/);
   assert.equal(h.state.phase, "listening");
   h.stop();
+});
+
+test("a stalled worklet load closes the audio context and falls back to the raw microphone", async context => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  const workletStarted = Promise.withResolvers<void>();
+  const workletLoaded = Promise.withResolvers<void>();
+  const closeAudioContext = context.mock.fn(async () => {});
+  const createWorklet = context.mock.fn();
+  const module = new WebAssembly.Module(Uint8Array.of(0, 97, 115, 109, 1, 0, 0, 0));
+  context.mock.method(globalThis, "fetch", async () => new Response());
+  context.mock.method(WebAssembly, "compile", async () => module);
+  for (const [key, value] of Object.entries({
+    AudioContext: class {
+      sampleRate = 48000;
+      audioWorklet = { addModule: () => { workletStarted.resolve(); return workletLoaded.promise; } };
+      close = closeAudioContext;
+    },
+    AudioWorkletNode: class { constructor() { createWorklet(); } },
+  })) {
+    const previous = Object.getOwnPropertyDescriptor(globalThis, key);
+    Object.defineProperty(globalThis, key, { value, configurable: true });
+    context.after(() => {
+      if (previous) Object.defineProperty(globalThis, key, previous);
+      else Reflect.deleteProperty(globalThis, key);
+    });
+  }
+
+  const talk = harness(processMicrophone);
+  context.after(talk.stop);
+  const started = talk.start();
+  await workletStarted.promise;
+  context.mock.timers.tick(5_000);
+  await started;
+  assert.equal(closeAudioContext.mock.callCount(), 1);
+  assert.equal(talk.sender.track, talk.track);
+  assert.equal(talk.track.stopped, false);
+  assert.equal(talk.state.phase, "listening");
+  assert.match(talk.state.error, /standard processing/);
+
+  workletLoaded.resolve();
+  await new Promise<void>(resolve => queueMicrotask(resolve));
+  assert.equal(createWorklet.mock.callCount(), 0);
 });
 
 test("a failing filter switches the sender back to the original microphone", async () => {

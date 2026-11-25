@@ -2,9 +2,9 @@ import { copyFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } fro
 import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 
-mkdirSync("public/audio", { recursive: true });
-copyFileSync("audio-denoise/target/wasm32-unknown-unknown/release/lotse_audio_denoise.wasm", "public/audio/lotse_audio_denoise.wasm");
 const metadata = JSON.parse(execFileSync("cargo", ["metadata", "--offline", "--locked", "--format-version", "1", "--filter-platform", "wasm32-unknown-unknown", "--manifest-path", "audio-denoise/Cargo.toml"], { encoding: "utf8" }));
+mkdirSync("public/audio", { recursive: true });
+copyFileSync(join(metadata.target_directory, "wasm32-unknown-unknown", "release", "lotse_audio_denoise.wasm"), "public/audio/lotse_audio_denoise.wasm");
 const notices = [];
 for (const dependency of metadata.packages.filter(item => item.source)) {
   const directory = dirname(dependency.manifest_path);
