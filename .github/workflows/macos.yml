@@ -29,8 +29,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  release-source:
+    runs-on: ubuntu-latest
+    outputs:
+      local: ${{ steps.source.outputs.local }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: source
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]] && git for-each-ref --format='%(contents)' "$GITHUB_REF" | grep -Fxq 'lotse-local-release'; then
+            echo 'local=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'local=false' >> "$GITHUB_OUTPUT"
+          fi
   build:
     name: Build ${{ matrix.name }}
+    needs: release-source
+    if: needs.release-source.outputs.local != 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 210
     strategy:
@@ -75,9 +92,7 @@ jobs:
         run: |
           node --input-type=module -e 'import { readFileSync } from "node:fs"; const version = JSON.parse(readFileSync("src-tauri/tauri.conf.json", "utf8")).version; const npmVersion = JSON.parse(readFileSync("package.json", "utf8")).version; const cargoVersion = readFileSync("src-tauri/Cargo.toml", "utf8").match(/^version = "([^"]+)"/m)?.[1]; if (!/^\d+\.\d+\.\d+$/.test(version) || process.env.RELEASE_TAG !== `v${version}` || npmVersion !== version || cargoVersion !== version) throw new Error("Release tag and all app versions must match a stable version");'
       - name: Check app and website
-        run: |
-          npm test
-          node --test scripts/marketing.test.mjs scripts/macos-build.test.mjs
+        run: npm run release:check
       - name: Cache patched runtime
         id: runtime
         uses: actions/cache/restore@v4

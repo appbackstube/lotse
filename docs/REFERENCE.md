@@ -188,6 +188,12 @@ Each build includes only its matching Codex runtime. The script packages the `.a
 
 Code signing with a Developer ID and Apple notarization are separate release steps; these local builds are not notarized automatically.
 
+### Publish a local GitHub release
+
+On macOS, install the project dependencies (`npm ci`) and authenticate the GitHub CLI (`gh auth login`) with permission to create releases and push tags. Set the same new stable version in `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml`, update the lockfiles as needed, commit it, and push it to `origin/main`. Then run `npm run release` from that exact clean commit. After the release checks pass, the command replaces both local Codex runtimes using the checked-in manifest and Lotse patch before building the DMGs.
+
+The command runs the same app, website, and packaging tests as the GitHub macOS workflow, then builds and verifies both DMGs locally. It checks that the checkout is still clean and at the verified commit before tagging that commit explicitly. It pushes the annotated tag, creates a draft GitHub release, uploads both downloads and their SHA-256 checksums, then publishes it as latest. The annotated tag tells the GitHub workflow to skip its own build and release, preventing it from replacing the local artifacts. If publishing fails after the tag is pushed, inspect the tag and draft release on GitHub before completing the release manually; the command does not overwrite existing tags or releases. Local builds are not automatically notarized.
+
 ### Automatic GitHub builds and releases
 
 [Build Lotse for macOS](https://github.com/appbackstube/lotse/actions/workflows/macos.yml) builds Apple Silicon and Intel DMGs on separate native macOS runners. App changes on `main` start builds automatically; **Run workflow** can start one manually. Each successful architecture is available as an Actions artifact for 14 days.
