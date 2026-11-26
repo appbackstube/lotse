@@ -374,7 +374,15 @@ try {
       await tap({ ...target, taskId: "deleted-task" });
       check(visible(dialog()) && dialog().textContent?.includes(task.title), "A deleted task notification must preserve the current task");
     }
-    document.getElementById("result")!.textContent = "PASS: Notification clicks open task dialogs and chat from List/Kanban/Gantt, restore panels, mark results read, focus the correct window, open Workspace, and ignore invalid or unrelated actions.";
+    await click(dialog().querySelector<HTMLButtonElement>('[aria-label="Close task modal"]')!);
+    await click(button("Workspace"));
+    await click(button("Dismiss"));
+    await click(button("Memory"));
+    await tap({ ...target, taskId: "deleted-task" });
+    const memoryError = document.querySelector('[aria-label="Memory editor"] [role="alert"]');
+    check(button("Memory").getAttribute("aria-pressed") === "true", "A deleted task notification must leave Memory open");
+    check(visible(memoryError) && memoryError?.textContent?.includes("The task for this notification is no longer available."), "A deleted task notification must show its error in Memory");
+    document.getElementById("result")!.textContent = "PASS: Notification clicks open task dialogs and chat from List/Kanban/Gantt, restore panels, mark results read, focus the correct window, open Workspace, ignore invalid or unrelated actions, and show unavailable tasks in Memory without navigating.";
   } else if (chatScrollCheck) {
     await click(button("Tasks"));
     await click(document.querySelector<HTMLElement>(`[aria-label="Drag ${task.title}"]`)!);
