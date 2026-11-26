@@ -1,11 +1,13 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
+import { emit, TauriEvent } from "@tauri-apps/api/event";
 import { mockConvertFileSrc, mockWindows } from "@tauri-apps/api/mocks";
 import { mockIPC } from "./mockTauri";
 import { fileStore, initializeFileStore } from "../src/fileStore";
 import { chatQueueStorageKey } from "../src/chatQueue";
-import { voiceAutoSendKey, voiceModelKey } from "../src/components/VoiceSettings";
+import { voiceAutoSendKey, voiceLanguageKey, voiceModelKey } from "../src/components/VoiceSettings";
 import { normalizeTask, taskStorageKey } from "../src/tasks";
+import type { ChatAttachment } from "../src/types";
 import App from "../src/App";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -18,6 +20,7 @@ const pausedQueue = { [taskQueueKey]: [queuedPrompt] };
 const storage: Record<string, string> = { "chaoticreview.auth-onboarding-v1": "complete", [voiceModelKey]: "synthetic/audio-model", [taskStorageKey(repo.rootPath)]: JSON.stringify([task]), [chatQueueStorageKey]: JSON.stringify(pausedQueue) };
 const existingDraft = "    indented code\n\nText with trailing spaces  ";
 let resolveTranscript: ((text: string) => void) | undefined;
+let resolveImport: ((attachments: ChatAttachment[]) => void) | undefined;
 let transcriptions = 0;
 let sends = 0;
 let stopped = 0;
@@ -55,6 +58,7 @@ mockIPC(async (command, args: any) => {
     return new Promise(resolve => { resolveTranscript = resolve; });
   }
   if (command === "ai_chat_send") { sends++; return { requestId: "synthetic", threadId: "synthetic", turnId: "synthetic" }; }
+  if (command === "import_chat_files") return new Promise(resolve => { resolveImport = resolve; });
   if (command === "voice_key_configured") return true;
   if (command === "voice_models") return [["synthetic/audio-model", "Original model"], ["synthetic/replacement-model", "Replacement model"]];
   if (command === "load_ai_settings") return { activeProvider: "openrouter", providers: [{ id: "openrouter", name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", envKey: "OPENROUTER_API_KEY" }], repositoryProviders: {}, ripgrepAvailable: true, mcpUrl: "" };
@@ -94,6 +98,9 @@ const check = (condition: unknown, message: string) => { if (!condition) throw n
 const settle = async () => { await act(async () => { await new Promise(resolve => setTimeout(resolve, 650)); }); };
 const button = (label: string) => [...document.querySelectorAll<HTMLButtonElement>("button")].find(item => item.getBoundingClientRect().width > 0 && (item.textContent?.trim() === label || item.getAttribute("aria-label") === label));
 const click = async (label: string) => { const item = button(label); check(item, `Missing button: ${label}`); await act(async () => item!.click()); await settle(); };
+const updateOtherWindowSetting = async (key: string, value: string | null) => {
+  await act(async () => emit("frontend-storage-changed", { key, value, source: "another-window" }));
+};
 const evidence = new URLSearchParams(location.search).has("evidence");
 const holdForEvidence = async () => { if (evidence) await new Promise(resolve => setTimeout(resolve, 1000)); };
 const root = createRoot(document.getElementById("root")!);
@@ -179,15 +186,22 @@ try {
         taskDraft!.dispatchEvent(new Event("input", { bubbles: true }));
         fileStore.setItem(voiceAutoSendKey, "true");
       });
-      await click("Record voice message"); await click("Transcribe for review");
+      await click("Record voice message"); await click("Transcribe and send if possible");
       await click("Open voice settings");
       const model = document.querySelector<HTMLSelectElement>("#voice-model");
+      const language = document.querySelector<HTMLSelectElement>("#voice-language");
       check(model?.getBoundingClientRect().width && !model.disabled, "The task's failed clip must lead to voice settings");
       const autoSend = model!.closest("section")?.querySelector('[role="switch"]');
       check(autoSend?.getAttribute("aria-checked") === "true", "Voice settings must show auto-send as enabled");
-      await act(async () => window.dispatchEvent(new StorageEvent("storage", { key: voiceAutoSendKey, newValue: "false" })));
+      await updateOtherWindowSetting(voiceAutoSendKey, "false");
       check(autoSend?.getAttribute("aria-checked") === "false", "The auto-send switch must reflect a change from another window");
-      await act(async () => window.dispatchEvent(new StorageEvent("storage", { key: voiceAutoSendKey, newValue: "true" })));
+      await updateOtherWindowSetting(voiceAutoSendKey, "true");
+      await updateOtherWindowSetting(voiceModelKey, "synthetic/replacement-model");
+      await updateOtherWindowSetting(voiceLanguageKey, "de");
+      check(model?.value === "synthetic/replacement-model" && language?.value === "de", "The model and language must reflect changes from another window");
+      await updateOtherWindowSetting(voiceModelKey, "synthetic/audio-model");
+      await updateOtherWindowSetting(voiceLanguageKey, null);
+      check(model?.value === "synthetic/audio-model" && language?.value === "system", "The settings must show the previous model and the default language after resetting them");
       await act(async () => {
         model!.value = "synthetic/replacement-model";
         model!.dispatchEvent(new Event("change", { bubbles: true }));
@@ -195,10 +209,35 @@ try {
       await settle();
       check(storage[voiceModelKey] === "synthetic/replacement-model", "Updated settings must be persisted before retry");
       await click("Settings");
-      await click("Retry transcription");
+      await click("Retry and send if possible");
       check(taskDraft?.value === "Transcript for paused queue" && button("Resume") && sends === 0 && JSON.stringify(JSON.parse(storage[chatQueueStorageKey])) === JSON.stringify(pausedQueue), "A paused queue must stay paused and unchanged while the transcript remains in the composer");
       await holdForEvidence();
-      document.getElementById("result")!.textContent = "PASS: voice drafts, same-clip retry including after Settings, paused queue, discard, pending send and cancel, errors, task switch and close, and recorder interruption";
+      await click("Close task modal"); await click("Workspace");
+      const workspaceDraft = document.querySelector<HTMLTextAreaElement>('[aria-label="Review Agent message"]')!;
+      const clearWorkspaceDraft = async () => {
+        await act(async () => {
+          Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(workspaceDraft, "");
+          workspaceDraft.dispatchEvent(new Event("input", { bubbles: true }));
+        });
+      };
+      await clearWorkspaceDraft();
+      await updateOtherWindowSetting(voiceAutoSendKey, "false");
+      resolveTranscript = undefined;
+      await click("Record voice message"); await click("Transcribe for review");
+      check(resolveTranscript, "Expected a pending review-only transcription");
+      await updateOtherWindowSetting(voiceAutoSendKey, "true");
+      await act(async () => resolveTranscript!("Review-only transcript")); await settle();
+      check(workspaceDraft.value === "Review-only transcript" && sends === 0, "Enabling auto-send after submission must not send a review-only transcript");
+      await clearWorkspaceDraft();
+      resolveTranscript = undefined;
+      await click("Record voice message"); await click("Transcribe and send if possible");
+      check(resolveTranscript, "Expected pending auto-send transcription");
+      await act(async () => emit(TauriEvent.DRAG_DROP, { paths: ["/synthetic/report.txt"], position: { x: 1, y: 1 } }));
+      check(resolveImport, "Expected a pending file import");
+      await act(async () => resolveTranscript!("Transcript during file import")); await settle();
+      await act(async () => resolveImport!([{ kind: "localFile", path: "/managed/report.txt", name: "report.txt" }])); await settle();
+      check(workspaceDraft.value === "Transcript during file import" && document.body.textContent?.includes("report.txt") && sends === 0, "A pending import must keep the transcript and attachment in the composer");
+      document.getElementById("result")!.textContent = "PASS: voice drafts, same-clip retry, settings sync, auto-send guards, discard, errors, task switch and close, and recorder interruption";
       await act(async () => root.unmount());
     }
   }

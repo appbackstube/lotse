@@ -1,11 +1,19 @@
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowUp, Mic, Square, X } from "lucide-react";
 import { fileStore } from "../fileStore";
 import { startVoiceWaveform } from "./voiceWaveform";
-import { voiceLanguageKey, voiceModelKey } from "./VoiceSettings";
+import { voiceAutoSendKey, voiceLanguageKey, voiceModelKey } from "./VoiceSettings";
 
 const maximumBytes = 20 * 1024 * 1024;
+
+function subscribeToAutoSend(notify: () => void) {
+  const onStorage = (event: StorageEvent) => { if (event.key === voiceAutoSendKey) notify(); };
+  window.addEventListener("storage", onStorage);
+  return () => window.removeEventListener("storage", onStorage);
+}
+
+const readAutoSend = () => fileStore.getItem(voiceAutoSendKey) === "true";
 
 type VoicePhase = "idle" | "starting" | "recording" | "stopping" | "recorded" | "transcribing" | "retry";
 
@@ -14,8 +22,9 @@ export function useVoiceMessage({ context, suspended, disabled, onOpenSettings, 
   suspended: boolean;
   disabled: boolean;
   onOpenSettings: () => void;
-  onTranscript: (text: string) => void;
+  onTranscript: (text: string, autoSendRequested: boolean) => void;
 }) {
+  const autoSend = useSyncExternalStore(subscribeToAutoSend, readAutoSend);
   const [error, setError] = useState("");
   const [phase, setPhase] = useState<VoicePhase>("idle");
   const phaseRef = useRef<VoicePhase>("idle");
@@ -24,6 +33,7 @@ export function useVoiceMessage({ context, suspended, disabled, onOpenSettings, 
   const recorder = useRef<MediaRecorder | null>(null);
   const audioContext = useRef<AudioContext | null>(null);
   const audio = useRef<Blob | null>(null);
+  const autoSendRequested = useRef(false);
   const stopWaveform = useRef<(() => void) | null>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const recordButton = useRef<HTMLButtonElement>(null);
@@ -153,6 +163,7 @@ export function useVoiceMessage({ context, suspended, disabled, onOpenSettings, 
   };
 
   const transcribe = (blob: Blob, attempt: number) => {
+    const sendAfterTranscription = autoSendRequested.current;
     const failTranscription = (message: string) => {
       if (attempt !== generation.current) return;
       setError(message);
@@ -169,7 +180,7 @@ export function useVoiceMessage({ context, suspended, disabled, onOpenSettings, 
       const language = /^[a-z]{2}$/.test(languageCode) ? languageCode : null;
       void invoke<string>("transcribe_voice_stt", { audio: encoded, model, language }).then(text => {
         if (attempt !== generation.current) return;
-        transcriptCallback.current(text);
+        transcriptCallback.current(text, sendAfterTranscription);
         audio.current = null;
         changePhase("idle");
       }).catch(reason => failTranscription(String(reason)));
@@ -187,6 +198,7 @@ export function useVoiceMessage({ context, suspended, disabled, onOpenSettings, 
 
   const submitRecording = () => {
     if (disabled || suspended) return;
+    autoSendRequested.current = autoSend;
     if (phaseRef.current === "recording") stop("transcribing");
     else if ((phaseRef.current === "recorded" || phaseRef.current === "retry") && audio.current) {
       setError("");
@@ -198,7 +210,9 @@ export function useVoiceMessage({ context, suspended, disabled, onOpenSettings, 
   const busy = !!context && phase !== "idle";
   const retrying = phase === "retry";
   const status = phase === "starting" ? "Waiting for microphone…" : phase === "transcribing" ? "Transcribing…" : phase === "stopping" ? "Stopping recording…" : retrying ? "Recording kept" : "";
-  const transcribeLabel = retrying ? "Retry transcription" : "Transcribe for review";
+  const transcribeLabel = autoSend
+    ? (retrying ? "Retry and send if possible" : "Transcribe and send if possible")
+    : (retrying ? "Retry transcription" : "Transcribe for review");
   return {
     busy,
     isBusy: () => phaseRef.current !== "idle",

@@ -24,11 +24,13 @@ export function VoiceSettings() {
   };
 
   useEffect(() => {
-    const syncAutoSend = (event: StorageEvent) => {
+    const syncVoiceSettings = (event: StorageEvent) => {
+      if (event.key === voiceModelKey) setModel(event.newValue ?? "");
+      if (event.key === voiceLanguageKey) setLanguage(event.newValue ?? "system");
       if (event.key === voiceAutoSendKey) setAutoSend(event.newValue === "true");
     };
-    window.addEventListener("storage", syncAutoSend);
-    return () => window.removeEventListener("storage", syncAutoSend);
+    window.addEventListener("storage", syncVoiceSettings);
+    return () => window.removeEventListener("storage", syncVoiceSettings);
   }, []);
 
   useEffect(() => {

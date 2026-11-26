@@ -1211,14 +1211,15 @@ function AiChatPanel({
     suspended: voiceSuspended,
     disabled: !comparison || sendPending || !taskSelected || !!variablePrompt,
     onOpenSettings: onOpenVoiceSettings,
-    onTranscript: (text) => {
+    onTranscript: (text, autoSendRequested) => {
       setAutoSendError("");
       const next = composerDraft ? `${composerDraft}\n\n${text}` : text;
       composerDraftRef.current = next;
       focusTranscript.current = true;
       setComposerDraft(next);
       onDraftChange(next);
-      if (fileStore.getItem(voiceAutoSendKey) === "true" && !queuePaused && !composerDraft.trim() && !images.length && !selectedAssetIds.length && comparison && !sendPendingRef.current && !variablePrompt && (!taskMode || taskSelected)) {
+      if (!autoSendRequested || fileStore.getItem(voiceAutoSendKey) !== "true") return;
+      if (!queuePaused && !composerDraft.trim() && !images.length && !selectedAssetIds.length && comparison && !sendPendingRef.current && !variablePrompt && (!taskMode || taskSelected)) {
         const submittedContext = voiceContext;
         sendPendingRef.current = true;
         setSendPending(true);
@@ -1234,9 +1235,9 @@ function AiChatPanel({
         }).catch(() => {
           if (currentVoiceContext.current === submittedContext) setAutoSendError("Automatic sending could not be confirmed. Check the chat before retrying; your transcript is still in the composer.");
         }).finally(() => { sendPendingRef.current = false; setSendPending(false); });
-      } else if (fileStore.getItem(voiceAutoSendKey) === "true" && queuePaused) {
+      } else if (queuePaused) {
         setAutoSendError("Automatic sending was skipped because the queue is paused.");
-      } else if (fileStore.getItem(voiceAutoSendKey) === "true" && (composerDraft.trim() || images.length || selectedAssetIds.length)) {
+      } else if (composerDraft.trim() || images.length || selectedAssetIds.length) {
         setAutoSendError("Automatic sending was skipped because the composer already contains a draft or attachments.");
       }
     },
@@ -1252,7 +1253,7 @@ function AiChatPanel({
   const [editingQueued, setEditingQueued] = useState<QueuedChatMessage | null>(null);
   const [queuedEditDraft, setQueuedEditDraft] = useState("");
   const addFilesRef = useRef(onAddFiles);
-  const dropEnabledRef = useRef({ comparison: !!comparison && active, running: sendPending });
+  const dropEnabledRef = useRef(!!comparison && active);
   useLayoutEffect(() => {
     const scroll = scrollRef.current;
     if (running && !wasRunningRef.current) {
@@ -1288,7 +1289,7 @@ function AiChatPanel({
   };
   useEffect(() => { setComposerDraft(draft); }, [draft]);
   useEffect(() => { addFilesRef.current = onAddFiles; }, [onAddFiles]);
-  useEffect(() => { dropEnabledRef.current = { comparison: !!comparison && active, running: sendPending }; }, [comparison, sendPending, active]);
+  useEffect(() => { dropEnabledRef.current = !!comparison && active; }, [comparison, active]);
   useEffect(() => { if (active && followChatRef.current) requestAnimationFrame(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }); }, [active]);
 
   useEffect(() => {
@@ -1297,7 +1298,7 @@ function AiChatPanel({
     void getCurrentWindow().onDragDropEvent((event) => {
       if (event.payload.type === "leave") { setDragging(false); return; }
       if (nativeDropHits("task-assets-dropzone", event.payload.position)) { setDragging(false); return; }
-      const enabled = dropEnabledRef.current.comparison && !dropEnabledRef.current.running;
+      const enabled = dropEnabledRef.current && !sendPendingRef.current;
       setDragging(enabled);
       // Native drop coordinates are window-relative and vary with title-bar mode;
       // accept drops while Agent Chat is visible instead of rejecting valid drops.
@@ -4844,8 +4845,9 @@ function App() {
     const task = taskMode ? tasksRef.current.find((item) => item.id === selectedTaskId) : null;
     const key = activeQueueKey;
     if (!comparison || !review || !key || (taskMode && !task)) return false;
-    if (source === "voice-auto" && pausedQueueKeysRef.current.has(key)) return false;
     const attachments = task ? [...task.attachments, ...taskAssetAttachments(task, taskAssetSelections[task.id] ?? [])] : chatRequestContext.attachments;
+    if (source === "voice-auto" && (pausedQueueKeysRef.current.has(key) || aiChatImageImportingRef.current
+      || (task ? attachments.length > 0 : attachments.some(isChatUpload)))) return false;
     const prompt = draft.trim();
     if (!prompt && !attachments.some((attachment) => isChatUpload(attachment) || attachment.kind === "taskAsset")) return false;
     if (!task && prompt.length > 20_000) { setError("Messages can be up to 20,000 characters."); return false; }
