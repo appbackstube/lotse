@@ -6755,7 +6755,6 @@ pub fn run() {
             telegram::telegram_download_image,
             telegram::telegram_download_video,
             telegram::telegram_transcribe_voice,
-            telegram::transcribe_composer_voice,
             telegram::voice_key_configured,
             telegram::save_voice_key,
             telegram::voice_models,

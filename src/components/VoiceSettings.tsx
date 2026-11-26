@@ -14,6 +14,7 @@ export function VoiceSettings() {
   const [model, setModel] = useState(() => fileStore.getItem(voiceModelKey) ?? "");
   const [language, setLanguage] = useState(() => fileStore.getItem(voiceLanguageKey) ?? "system");
   const [autoSend, setAutoSend] = useState(() => fileStore.getItem(voiceAutoSendKey) === "true");
+  const [loadingInitialModels, setLoadingInitialModels] = useState(true);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
@@ -42,7 +43,8 @@ export function VoiceSettings() {
         const loaded = await invoke<[string, string][]>("voice_models");
         if (active) setModels(loaded);
       }
-    }).catch((reason: unknown) => { if (active) setError(String(reason)); });
+    }).catch((reason: unknown) => { if (active) setError(String(reason)); })
+      .finally(() => { if (active) setLoadingInitialModels(false); });
     return () => { active = false; };
   }, []);
 
@@ -78,7 +80,7 @@ export function VoiceSettings() {
     <div className="overflow-hidden rounded-xl border border-[#294536] bg-[#111A15] px-5">
       <div className="flex flex-wrap items-center justify-between gap-5 py-5">
         <div><label className="font-semibold" htmlFor="voice-key">OpenRouter API key</label><p className="mt-1 text-sm text-[#7C9B88]">Used only for voice transcription. Stored in ~/.lotse/credentials.json.</p></div>
-        <div className="flex gap-2"><input id="voice-key" className="h-9 rounded-lg border border-[#294536] bg-[#050807] px-3" type="password" autoComplete="off" value={key} placeholder={configured ? "Key configured" : "Enter API key"} onChange={event => setKey(event.currentTarget.value)} /><button className="quiet-button" disabled={busy || !key.trim()} onClick={() => void saveKey()}>Save</button></div>
+        <div className="flex gap-2"><input id="voice-key" className="h-9 rounded-lg border border-[#294536] bg-[#050807] px-3" type="password" autoComplete="off" value={key} placeholder={configured ? "Key configured" : "Enter API key"} onChange={event => setKey(event.currentTarget.value)} /><button className="quiet-button" disabled={loadingInitialModels || busy || !key.trim()} onClick={() => void saveKey()}>Save</button></div>
       </div>
       <div className="flex flex-wrap items-center justify-between gap-5 border-t border-[#294536] py-5">
         <div><label htmlFor="voice-model" className="font-semibold">Transcription model</label><p className="mt-1 text-sm text-[#7C9B88]">Only models compatible with Lotse recordings are listed.</p></div>

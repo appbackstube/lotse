@@ -28,6 +28,9 @@ let microphoneDenied = false;
 let activeRecorder: FakeRecorder | undefined;
 let modelUsed = "";
 let failedAudio: string | undefined;
+let rejectInitialModelLookup: ((reason: Error) => void) | undefined;
+let deferInitialModelLookup = false;
+let voiceKeySaves = 0;
 mockWindows("main"); mockConvertFileSrc("macos");
 mockIPC(async (command, args: any) => {
   if (command === "load_frontend_storage") return storage;
@@ -60,7 +63,11 @@ mockIPC(async (command, args: any) => {
   if (command === "ai_chat_send") { sends++; return { requestId: "synthetic", threadId: "synthetic", turnId: "synthetic" }; }
   if (command === "import_chat_files") return new Promise(resolve => { resolveImport = resolve; });
   if (command === "voice_key_configured") return true;
-  if (command === "voice_models") return [["synthetic/audio-model", "Original model"], ["synthetic/replacement-model", "Replacement model"]];
+  if (command === "save_voice_key") { voiceKeySaves++; return; }
+  if (command === "voice_models") {
+    if (deferInitialModelLookup) return new Promise((_resolve, reject) => { rejectInitialModelLookup = reject; });
+    return [["synthetic/audio-model", "Original model"], ["synthetic/replacement-model", "Replacement model"]];
+  }
   if (command === "load_ai_settings") return { activeProvider: "openrouter", providers: [{ id: "openrouter", name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", envKey: "OPENROUTER_API_KEY" }], repositoryProviders: {}, ripgrepAvailable: true, mcpUrl: "" };
   if (command === "current_repository" || command === "refresh_repository") return repo;
   if (command === "list_branch_refs") return { refs: ["main"], remoteRefs: [], defaultBase: "main", pullCount: 0, pushCount: 0 };
@@ -187,7 +194,22 @@ try {
         fileStore.setItem(voiceAutoSendKey, "true");
       });
       await click("Record voice message"); await click("Transcribe and send if possible");
+      deferInitialModelLookup = true;
       await click("Open voice settings");
+      const voiceKey = document.querySelector<HTMLInputElement>("#voice-key")!;
+      const saveKey = voiceKey.parentElement!.querySelector("button")!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(voiceKey, "synthetic-replacement-key");
+        voiceKey.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      check(rejectInitialModelLookup && saveKey.disabled, "The key must not be saved while the initial model lookup is pending");
+      await holdForEvidence();
+      deferInitialModelLookup = false;
+      await act(async () => rejectInitialModelLookup!(new Error("Synthetic initial model lookup failure")));
+      check(!saveKey.disabled, "A failed initial lookup must re-enable key saving");
+      await act(async () => saveKey.click()); await settle();
+      check(voiceKeySaves === 1 && !voiceKey.value && document.body.textContent?.includes("transcription models refreshed"), "Saving the replacement key must refresh the models");
+      await holdForEvidence();
       const model = document.querySelector<HTMLSelectElement>("#voice-model");
       const language = document.querySelector<HTMLSelectElement>("#voice-language");
       check(model?.getBoundingClientRect().width && !model.disabled, "The task's failed clip must lead to voice settings");

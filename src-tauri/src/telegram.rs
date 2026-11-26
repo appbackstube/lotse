@@ -383,30 +383,6 @@ fn composer_voice_input(audio: &str, model: &str) -> Result<(TranscriptionSettin
 }
 
 #[tauri::command]
-pub async fn transcribe_composer_voice(audio: String, model: String, app: AppHandle, window: WebviewWindow, state: State<'_, AppState>) -> Result<String, String> {
-    let (settings, bytes, format) = composer_voice_input(&audio, &model)?;
-    let root = repository_path(&state, &window)?;
-    let label = window.label().to_owned();
-    run_blocking(move || {
-        if repository_path_for_label(&app.state::<AppState>(), &label)? != root { return Err("The workspace changed before transcription.".to_owned()); }
-        let key = crate::agent_runtime::openrouter_secret(&app)?;
-        let client = Client::builder().timeout(Duration::from_secs(120)).build().map_err(|_| "Cannot initialize voice transcription.")?;
-        let response = client.post("https://openrouter.ai/api/v1/chat/completions").bearer_auth(key)
-            .json(&transcription_request(&settings, format, &bytes)).send()
-            .map_err(|_| "OpenRouter transcription failed; charges may have occurred.")?;
-        if !response.status().is_success() { return Err("OpenRouter rejected voice transcription. Check the model, audio format, key, and credits.".to_owned()); }
-        let mut body = Vec::new();
-        response.take(1_048_577).read_to_end(&mut body).map_err(|_| "Cannot read the OpenRouter transcription.")?;
-        if body.len() > 1_048_576 { return Err("OpenRouter transcription is too large.".to_owned()); }
-        let value: Value = serde_json::from_slice(&body).map_err(|_| "OpenRouter returned an invalid transcription.")?;
-        let text = value.pointer("/choices/0/message/content").and_then(Value::as_str).map(str::trim)
-            .filter(|text| !text.is_empty() && text.len() <= 100_000).ok_or("OpenRouter returned an empty or invalid transcription.")?;
-        if repository_path_for_label(&app.state::<AppState>(), &label)? != root { return Err("The workspace changed during transcription.".to_owned()); }
-        Ok(text.to_owned())
-    }).await
-}
-
-#[tauri::command]
 pub fn voice_key_configured(app: AppHandle) -> Result<bool, String> {
     Ok(crate::credentials::load(&app, VOICE_CREDENTIAL_KEY)?.is_some_and(|value| !value.is_empty()))
 }
