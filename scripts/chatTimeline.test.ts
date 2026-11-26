@@ -51,11 +51,11 @@ const receive = (event: AiChatEvent) => { liveTimeline = applyChatEvent(liveTime
 receive(start);
 receive(delta("First part"));
 const beforeFirstSteer = persistedChatEntries([...liveTimeline, steer]);
-boundary.markSteered();
+boundary.markSteered(liveTimeline);
 liveTimeline = [];
 receive(delta(" and second part"));
 const afterSecondSteer = [...beforeFirstSteer, ...persistedChatEntries([...liveTimeline, attachmentOnlySteer])];
-boundary.markSteered();
+boundary.markSteered(liveTimeline);
 liveTimeline = [];
 receive(complete("First part and second part and last part"));
 receive(start);
@@ -69,14 +69,14 @@ assert.deepEqual(savedHistory[3].attachments, attachmentOnlySteer.attachments);
 
 receive(start);
 receive(delta("Already shown"));
-boundary.markSteered();
+boundary.markSteered(liveTimeline);
 liveTimeline = [];
 receive(complete("Already shown"));
 assert.deepEqual(liveTimeline, []);
 
 receive(start);
 receive(delta("Saved prefix"));
-boundary.markSteered();
+boundary.markSteered(liveTimeline);
 liveTimeline = [];
 receive(delta(" draft suffix"));
 receive(complete("Saved prefix final suffix"));
@@ -84,7 +84,7 @@ assert.deepEqual(liveTimeline.map(({ body }) => body), ["final suffix"]);
 
 receive(start);
 receive(delta("Original wording"));
-boundary.markSteered();
+boundary.markSteered(liveTimeline);
 liveTimeline = [];
 receive(delta(" streamed suffix"));
 receive(complete("Revised wording and suffix"));
@@ -106,10 +106,10 @@ for (const [prefix, expectedBody] of [
   liveTimeline = [];
   receive(delta(prefix));
   const savedPrefix = persistedChatEntries([...liveTimeline, steer]);
-  boundary.markSteered();
+  boundary.markSteered(liveTimeline);
   liveTimeline = [];
   receive(complete(fullPlan));
-  const finalized = finalizePlanOutput(liveTimeline, boundary.splitPlan);
+  const finalized = finalizePlanOutput(liveTimeline, boundary.steeredPlan);
   assert.equal(finalized.isPlan, true);
   assert.deepEqual([...savedPrefix, ...persistedChatEntries(finalized.timeline)].map(({ body }) => body), [prefix, steer.body, expectedBody]);
   assert.equal(finalized.timeline[0].canImplementPlan, true);
@@ -117,7 +117,26 @@ for (const [prefix, expectedBody] of [
 
 receive(start);
 receive(complete("A later assistant message"));
-assert.equal(finalizePlanOutput(liveTimeline, boundary.splitPlan).isPlan, false);
+assert.equal(finalizePlanOutput(liveTimeline, boundary.steeredPlan).isPlan, false);
+
+receive(start);
+liveTimeline = [];
+receive(delta(fullPlan));
+receive(complete(fullPlan));
+const savedPlanId = liveTimeline[0].id;
+boundary.markSteered(liveTimeline);
+liveTimeline = [];
+boundary.markSteered(liveTimeline);
+const finalizedSavedPlan = finalizePlanOutput(liveTimeline, boundary.steeredPlan);
+assert.equal(finalizedSavedPlan.isPlan, true);
+assert.deepEqual(finalizedSavedPlan.timeline, []);
+assert.equal(finalizedSavedPlan.savedPlan?.id, savedPlanId);
+assert.equal(finalizedSavedPlan.savedPlan?.body, "First step.\nSecond step.");
+assert.equal(finalizedSavedPlan.savedPlan?.canImplementPlan, true);
+
+receive(start);
+receive(complete("A later assistant message"));
+assert.equal(finalizePlanOutput(liveTimeline, boundary.steeredPlan).isPlan, false);
 
 for (const body of ["A normal response", "Before <proposed_plan>Plan</proposed_plan>", "<proposed_plan>Plan"]) {
   const result = finalizePlanOutput([entry(body)]);

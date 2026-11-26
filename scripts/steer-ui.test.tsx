@@ -4,6 +4,7 @@ import { mockConvertFileSrc, mockWindows } from "@tauri-apps/api/mocks";
 import { mockIPC } from "./mockTauri";
 import App from "../src/App";
 import { fileStore, initializeFileStore } from "../src/fileStore";
+import { loadPipelineRuns } from "../src/pipelineRuns";
 import { pipelinesStorageKey } from "../src/pipelines";
 import { normalizeTask, taskStorageKey } from "../src/tasks";
 import type { AgentTurnEvent, AiChatAccepted, AiChatEvent, Comparison, ReviewSession } from "../src/types";
@@ -96,10 +97,12 @@ try {
   await acknowledge();
   await click("Another task"); await click(task.title);
   await act(async () => { await fileStore.flush(); });
-  const saved = JSON.parse(storage[taskKey]).find((entry: typeof task) => entry.id === task.id);
+  const saved: typeof task = JSON.parse(storage[taskKey]).find((entry: typeof task) => entry.id === task.id);
   const expected = ["Inspect the changes.", "I checked the summary.", "Also verify the heading.", "The heading is correct."];
   check(JSON.stringify(saved.chatMessages.map((entry: { body: string }) => entry.body)) === JSON.stringify(expected), "The pipeline's saved chat must preserve the exact steer order");
   check(saved.chatMessages[0].runStatus === "completed" && runs.length === 1, "The pipeline must complete without resending the steer");
+  const results = loadPipelineRuns(JSON.stringify([repo.rootPath, "task", task.id]))[0]?.messages[0]?.resultIds;
+  check(JSON.stringify(results) === JSON.stringify(saved.chatMessages.filter((entry) => entry.role === "assistant").map((entry) => entry.id)), "Pipeline result IDs must reference both assistant entries in order, not the user's steer");
   const displayed = [...document.querySelectorAll<HTMLElement>("[data-search-message] .chat-markdown")].filter(visible).map((element) => element.textContent?.trim());
   check(JSON.stringify(displayed) === JSON.stringify(expected), "The reopened pipeline chat must show the saved order");
   await checkpoint();
@@ -118,7 +121,22 @@ try {
   check(reviews.saved?.approvedFileSnapshots[path] === "file-snapshot" && findButton("Approved")?.getAttribute("aria-pressed") === "true", "The file approval must stay saved and visible after steering");
   check(findButton("Implement now") && !findButton("Implement now")?.disabled, "A split final plan must remain actionable");
   check(reviews.saved?.chatMessages.filter((entry) => entry.body.includes("Update the summary.")).length === 1 && reviews.saved?.chatMessages.at(-1)?.body === "Verify the heading.", "Saved plan text must not repeat the prefix");
-  result.textContent = "PASS: ordered pipeline history after delayed steer acknowledgement; Workspace approval and split plan preserved.";
+
+  await send("Propose a separate plan for the introduction.", "Send Review Agent message");
+  const completedPlanBody = "Rewrite the introduction.";
+  await event(2, { kind: "assistantMessageCompleted", finalText: `<proposed_plan>\n${completedPlanBody}\n</proposed_plan>` });
+  await send("Keep the title.", "Queue Review Agent message");
+  await steer(); await acknowledge();
+  const findSavedPlan = () => reviews.saved?.chatMessages.find((entry) => entry.body.includes(completedPlanBody));
+  const completedPlanId = findSavedPlan()?.id;
+  check(completedPlanId && !findSavedPlan()?.canImplementPlan, "The saved plan must wait for turn completion");
+  await event(2, { kind: "completed" });
+  check(findSavedPlan()?.id === completedPlanId && findSavedPlan()?.body === completedPlanBody && findSavedPlan()?.canImplementPlan, "Turn completion must make the saved plan actionable in place without further text");
+  check(reviews.saved?.chatMessages.at(-1)?.body === "Keep the title.", "The saved plan must remain before the steer");
+  const planArticle = [...document.querySelectorAll<HTMLElement>("[data-search-message]")].find((element) => element.dataset.searchMessage === completedPlanId);
+  check(planArticle?.querySelector<HTMLButtonElement>(".ios-chat-plan-header button")?.disabled === false, "The saved plan must show an enabled Implement now button");
+  await checkpoint();
+  result.textContent = "PASS: ordered pipeline result IDs; Workspace approval, split plan and completed-before-steer plan preserved.";
 } catch (error) {
   result.textContent = `FAIL: ${String(error)}`;
 } finally {

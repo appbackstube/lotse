@@ -277,6 +277,7 @@ const isSlackMcp = (url: string) => {
 const openRouterProvider: ProviderSettingsEntry = { id: "openrouter", name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", envKey: "OPENROUTER_API_KEY" };
 type TaskRun = {
   pipeline?: QueuedChatMessage["pipeline"];
+  savedResultIds?: string[];
   messageId: string;
   coordinationPath?: string[];
   schedule?: Pick<PromptSchedule, "id" | "latestRun">;
@@ -2679,12 +2680,13 @@ function App() {
     return current && reviewQueueKey(current) === reviewRunQueueKeyRef.current ? current : null;
   };
 
-  const persistAiChatTimeline = async () => {
+  const persistAiChatTimeline = async (savedPlan?: ChatMessage) => {
     const entries = persistedChatEntries(aiChatTimelineRef.current);
     const current = visibleReviewRunSession() ?? reviewRunSessionRef.current;
     let saved = true;
-    if (entries.length && current) {
-      const next = { ...current, chatMessages: [...current.chatMessages, ...entries].slice(-100) };
+    if ((entries.length || savedPlan) && current) {
+      const previous = savedPlan ? current.chatMessages.map((entry) => entry.id === savedPlan.id ? savedPlan : entry) : current.chatMessages;
+      const next = { ...current, chatMessages: [...previous, ...entries].slice(-100) };
       if (reviewRef.current && reviewQueueKey(reviewRef.current) === reviewQueueKey(next)) { reviewRef.current = next; setReview(next); }
       try { await invoke("save_review", { session: next }); }
       catch (reason) { setError(message(reason)); saved = false; }
@@ -2967,13 +2969,13 @@ function App() {
     if (update.kind === "completed" || update.kind === "cancelled" || update.kind === "failed") {
       const runStatus = update.kind;
       const plan = run.mode === "plan" && update.kind === "completed"
-        ? finalizePlanOutput(timeline, assistantSteerBoundariesRef.current.get(run.accepted)?.splitPlan)
+        ? finalizePlanOutput(timeline, assistantSteerBoundariesRef.current.get(run.accepted)?.steeredPlan)
         : null;
       timeline = plan?.timeline ?? timeline;
       const messages = update.kind === "failed" ? [] : persistedChatEntries(timeline);
       const updateTasks = (current: RepositoryTask[]) => current.map((task) => task.id === taskId ? {
         ...task,
-        chatMessages: [...task.chatMessages.map((entry) => entry.id === run.messageId ? { ...entry, runStatus, runError: update.kind === "failed" ? update.message : undefined } : entry), ...messages].slice(-100),
+        chatMessages: [...task.chatMessages.map((entry) => entry.id === run.messageId ? { ...entry, runStatus, runError: update.kind === "failed" ? update.message : undefined } : entry.id === plan?.savedPlan?.id ? plan.savedPlan : entry), ...messages].slice(-100),
         planReady: plan?.isPlan ?? false,
         unreadAgentResult: update.kind !== "cancelled",
       } : task);
@@ -2986,7 +2988,7 @@ function App() {
       const nextRuns = { ...taskRunsRef.current }; delete nextRuns[taskId]; taskRunsRef.current = nextRuns; setTaskRuns(nextRuns);
       const key = repositoryRef.current ? taskQueueKey(repositoryRef.current.rootPath, taskId) : null;
       if (key && run.pipeline) {
-        updatePipelineMessage(key, run.pipeline.runId, run.messageId, update.kind, update.kind === "failed" ? update.message ?? "Agent failed" : null, messages.map((m) => m.id));
+        updatePipelineMessage(key, run.pipeline.runId, run.messageId, update.kind, update.kind === "failed" ? update.message ?? "Agent failed" : null, [...(run.savedResultIds ?? []), ...messages.map((entry) => entry.id)]);
         if (update.kind === "completed") removeQueued(key, run.messageId);
       }
       if (key && update.kind === "completed") window.setTimeout(() => queueDispatchRef.current(key), 0);
@@ -3164,13 +3166,15 @@ function App() {
     if (update.kind === "toolStarted") setAiChatStatus(update.label ?? "Using repository tools…");
     if (update.kind === "toolFinished") setAiChatStatus("Continuing…");
     if (update.kind === "completed") {
-      if (aiChatTurnModeRef.current === "plan") {
-        const accepted = aiChatTurnRef.current;
-        const plan = finalizePlanOutput(aiChatTimelineRef.current, accepted ? assistantSteerBoundariesRef.current.get(accepted)?.splitPlan : undefined);
+      const accepted = aiChatTurnRef.current;
+      const plan = aiChatTurnModeRef.current === "plan"
+        ? finalizePlanOutput(aiChatTimelineRef.current, accepted ? assistantSteerBoundariesRef.current.get(accepted)?.steeredPlan : undefined)
+        : null;
+      if (plan) {
         aiChatTimelineRef.current = plan.timeline;
         setAiChatTimeline(plan.timeline);
       }
-      const saved = persistAiChatTimeline();
+      const saved = persistAiChatTimeline(plan?.savedPlan);
       aiChatTimelineRef.current = [];
       setAiChatTimeline([]);
       aiChatRunningRef.current = false;
@@ -5223,18 +5227,20 @@ function App() {
       if (task && root) {
         const run = taskRunsRef.current[task.id];
         if (run) {
-          const entries = persistedChatEntries([...run.timeline, userMessage]);
-          updateTaskAtRoot(root, task.id, (current) => ({ ...current, chatMessages: [...current.chatMessages, ...entries].slice(-100) }));
-          assistantSteerBoundariesRef.current.get(accepted)?.markSteered();
-          taskRunsRef.current = { ...taskRunsRef.current, [task.id]: { ...run, timeline: [] } }; setTaskRuns(taskRunsRef.current);
+          const entries = persistedChatEntries(run.timeline);
+          updateTaskAtRoot(root, task.id, (current) => ({ ...current, chatMessages: [...current.chatMessages, ...entries, userMessage].slice(-100) }));
+          assistantSteerBoundariesRef.current.get(accepted)?.markSteered(entries);
+          const savedResultIds = run.pipeline ? [...(run.savedResultIds ?? []), ...entries.map((entry) => entry.id)] : undefined;
+          taskRunsRef.current = { ...taskRunsRef.current, [task.id]: { ...run, savedResultIds, timeline: [] } }; setTaskRuns(taskRunsRef.current);
         }
       } else {
         const visibleReview = visibleReviewRunSession();
         const source = visibleReview ?? reviewRunSessionRef.current;
         if (!source) throw new Error("The review conversation is unavailable.");
-        const next = { ...source, chatMessages: [...source.chatMessages, ...persistedChatEntries([...aiChatTimelineRef.current, userMessage])].slice(-100) };
+        const entries = persistedChatEntries(aiChatTimelineRef.current);
+        const next = { ...source, chatMessages: [...source.chatMessages, ...entries, userMessage].slice(-100) };
         reviewRunSessionRef.current = next;
-        assistantSteerBoundariesRef.current.get(accepted)?.markSteered();
+        assistantSteerBoundariesRef.current.get(accepted)?.markSteered(entries);
         aiChatTimelineRef.current = []; setAiChatTimeline([]);
         const saved = visibleReview ? await persistReview(next) : await invoke("save_review", { session: next }).then(() => true).catch((reason) => { setError(message(reason)); return false; });
         if (saved) for (const attachment of item.context.attachments) if (isChatUpload(attachment)) void invoke("release_chat_image_reference", { path: attachment.path }).catch((reason) => setError(message(reason)));

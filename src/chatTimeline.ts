@@ -44,22 +44,32 @@ export function persistedChatEntries(timeline: ChatMessage[]): ChatMessage[] {
 
 const proposedPlanPattern = /^<proposed_plan>\s*([\s\S]+?)\s*<\/proposed_plan>$/;
 
-type SplitPlan = { body: string; hasLiveText: boolean };
+type SteeredPlan = { body: string; hasLiveText: boolean; savedEntry?: ChatMessage };
+
+function lastAssistantTextIndex(timeline: ChatMessage[]): number {
+  for (let index = timeline.length - 1; index >= 0; index--) {
+    if (timeline[index].role === "assistant" && timeline[index].body.trim()) return index;
+  }
+  return -1;
+}
 
 export class AssistantSteerBoundary {
   private streamedText = "";
   private savedPrefix = "";
-  splitPlan: SplitPlan | undefined;
+  steeredPlan: SteeredPlan | undefined;
 
-  markSteered() {
+  markSteered(timeline: ChatMessage[]) {
     this.savedPrefix = this.streamedText;
-    if (this.splitPlan) this.splitPlan = { body: "", hasLiveText: false };
+    const entry = timeline[lastAssistantTextIndex(timeline)];
+    if (!entry) return;
+    const body = this.steeredPlan?.hasLiveText ? this.steeredPlan.body : entry.body.trim().match(proposedPlanPattern)?.[1].trim();
+    if (body !== undefined) this.steeredPlan = { body, hasLiveText: false, savedEntry: entry };
   }
 
   update(event: AiChatEvent): AiChatEvent {
     if (event.kind === "assistantDelta" && event.delta) {
       this.streamedText += event.delta;
-      if (event.delta.trim()) this.splitPlan = undefined;
+      if (event.delta.trim()) this.steeredPlan = undefined;
     }
     if (event.kind === "assistantMessageStarted" || event.kind === "assistantMessageCompleted") {
       const prefix = this.savedPrefix;
@@ -67,14 +77,14 @@ export class AssistantSteerBoundary {
       this.streamedText = "";
       this.savedPrefix = "";
       if (event.kind === "assistantMessageCompleted" && event.finalText?.trim()) {
-        this.splitPlan = undefined;
+        this.steeredPlan = undefined;
         if (prefix) {
           const fullText = event.finalText;
           const finalText = fullText.startsWith(prefix) ? fullText.slice(prefix.length) : undefined;
           if (proposedPlanPattern.test(fullText.trim())) {
             const body = finalText === undefined ? streamedSuffix.replace(/<\/proposed_plan>\s*$/, "")
               : fullText.slice(Math.max(prefix.length, fullText.indexOf(">") + 1), fullText.lastIndexOf("</proposed_plan>"));
-            this.splitPlan = { body: body.trim(), hasLiveText: !!(finalText?.trim() || streamedSuffix.trim()) };
+            this.steeredPlan = { body: body.trim(), hasLiveText: !!(finalText?.trim() || streamedSuffix.trim()) };
           }
           return { ...event, finalText };
         }
@@ -84,18 +94,14 @@ export class AssistantSteerBoundary {
   }
 }
 
-export function finalizePlanOutput(timeline: ChatMessage[], splitPlan?: SplitPlan): { timeline: ChatMessage[]; isPlan: boolean } {
+export function finalizePlanOutput(timeline: ChatMessage[], steeredPlan?: SteeredPlan): { timeline: ChatMessage[]; isPlan: boolean; savedPlan?: ChatMessage } {
   const next = [...timeline];
-  let index = -1;
-  if (!splitPlan || splitPlan.hasLiveText) {
-    for (index = next.length - 1; index >= 0; index--) {
-      if (next[index].role === "assistant" && next[index].body.trim()) break;
-    }
-  }
+  const index = !steeredPlan || steeredPlan.hasLiveText ? lastAssistantTextIndex(next) : -1;
   const entry = next[index];
-  const body = splitPlan?.body ?? entry?.body.trim().match(proposedPlanPattern)?.[1].trim();
+  const body = steeredPlan?.body ?? entry?.body.trim().match(proposedPlanPattern)?.[1].trim();
   if (body === undefined) return { timeline: next, isPlan: false };
-  const planEntry = { ...(entry ?? assistantEntry()), body: body || "See the plan above.", final: true, plan: true, canImplementPlan: true };
+  const planEntry = { ...(steeredPlan?.savedEntry ?? entry ?? assistantEntry()), body: body || "See the plan above.", final: true, plan: true, canImplementPlan: true };
+  if (steeredPlan?.savedEntry) return { timeline: next, isPlan: true, savedPlan: planEntry };
   if (index < 0) next.push(planEntry); else next[index] = planEntry;
   return { timeline: next, isPlan: true };
 }
