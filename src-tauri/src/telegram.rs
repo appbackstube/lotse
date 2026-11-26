@@ -363,6 +363,42 @@ fn transcription_request(settings: &TranscriptionSettings, format: &str, bytes: 
     })
 }
 
+fn composer_voice_input(audio: &str, model: &str) -> Result<(TranscriptionSettings, Vec<u8>, &'static str), String> {
+    let model = model.trim();
+    if model.is_empty() || model.len() > 200 || !model.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'_' | b'.' | b':')) {
+        return Err("Enter a valid OpenRouter model ID.".to_owned());
+    }
+    if audio.len() > (MAX_CHAT_IMAGE_BYTES as usize).div_ceil(3) * 4 { return Err("Recording exceeds 20 MB.".to_owned()); }
+    let bytes = STANDARD.decode(audio).map_err(|_| "Invalid recording.")?;
+    if bytes.is_empty() || bytes.len() as u64 > MAX_CHAT_IMAGE_BYTES { return Err("Recording is empty or exceeds 20 MB.".to_owned()); }
+    let format = voice_format(&bytes).ok_or("Unsupported recording format.")?;
+    Ok((TranscriptionSettings { model: model.to_owned(), language: String::new() }, bytes, format))
+}
+
+#[tauri::command]
+pub async fn transcribe_composer_voice(audio: String, model: String, app: AppHandle, window: WebviewWindow, state: State<'_, AppState>) -> Result<String, String> {
+    let (settings, bytes, format) = composer_voice_input(&audio, &model)?;
+    let root = repository_path(&state, &window)?;
+    let label = window.label().to_owned();
+    run_blocking(move || {
+        if repository_path_for_label(&app.state::<AppState>(), &label)? != root { return Err("The workspace changed before transcription.".to_owned()); }
+        let key = crate::agent_runtime::openrouter_secret(&app)?;
+        let client = Client::builder().timeout(Duration::from_secs(120)).build().map_err(|_| "Cannot initialize voice transcription.")?;
+        let response = client.post("https://openrouter.ai/api/v1/chat/completions").bearer_auth(key)
+            .json(&transcription_request(&settings, format, &bytes)).send()
+            .map_err(|_| "OpenRouter transcription failed; charges may have occurred.")?;
+        if !response.status().is_success() { return Err("OpenRouter rejected voice transcription. Check the model, audio format, key, and credits.".to_owned()); }
+        let mut body = Vec::new();
+        response.take(1_048_577).read_to_end(&mut body).map_err(|_| "Cannot read the OpenRouter transcription.")?;
+        if body.len() > 1_048_576 { return Err("OpenRouter transcription is too large.".to_owned()); }
+        let value: Value = serde_json::from_slice(&body).map_err(|_| "OpenRouter returned an invalid transcription.")?;
+        let text = value.pointer("/choices/0/message/content").and_then(Value::as_str).map(str::trim)
+            .filter(|text| !text.is_empty() && text.len() <= 100_000).ok_or("OpenRouter returned an empty or invalid transcription.")?;
+        if repository_path_for_label(&app.state::<AppState>(), &label)? != root { return Err("The workspace changed during transcription.".to_owned()); }
+        Ok(text.to_owned())
+    }).await
+}
+
 #[tauri::command]
 pub async fn telegram_transcribe_voice(file_id: String, connection_id: String, app: AppHandle, window: WebviewWindow, state: State<'_, AppState>) -> Result<String, String> {
     if file_id.is_empty() || file_id.len() > 1024 || !file_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')) {
@@ -524,6 +560,18 @@ pub fn telegram_disconnect(app: AppHandle, window: WebviewWindow, state: State<'
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn composer_voice_validates_model_and_audio_before_provider_request() {
+        let (settings, bytes, format) = composer_voice_input(&STANDARD.encode(b"\0\0\0\x18ftypM4A "), " test/audio ").unwrap();
+        assert_eq!(settings.model, "test/audio");
+        assert_eq!(format, "m4a");
+        assert_eq!(transcription_request(&settings, format, &bytes)["messages"][0]["content"][1]["input_audio"]["format"], "m4a");
+        assert!(composer_voice_input("!!!!", "test/audio").is_err());
+        assert!(composer_voice_input(&STANDARD.encode(b"not audio"), "test/audio").is_err());
+        assert!(composer_voice_input(&STANDARD.encode(b"OggSdata"), "invalid model").is_err());
+        assert!(composer_voice_input(&"A".repeat((MAX_CHAT_IMAGE_BYTES as usize).div_ceil(3) * 4 + 4), "test/audio").is_err());
+    }
 
     #[test]
     fn voice_payload_uses_openrouter_audio_and_configured_language() {

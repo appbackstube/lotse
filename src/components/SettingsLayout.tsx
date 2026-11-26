@@ -1,5 +1,5 @@
 import { useRef, useState, type ReactNode } from "react";
-import { AudioLines, BarChart3, Blocks, Bot, CircleHelp, FolderGit2, GitPullRequest, KeyRound, ListTodo, Plug, Route, Search, Settings, SlidersHorizontal, Timer, Users, X } from "lucide-react";
+import { BarChart3, Blocks, Bot, CircleHelp, FolderGit2, GitPullRequest, KeyRound, ListTodo, Plug, Route, Search, Settings, SlidersHorizontal, Timer, Users, X } from "lucide-react";
 import { Input } from "./ui/input";
 import { Button } from "./ui/button";
 
@@ -8,7 +8,6 @@ const pages = [
   { id: "tasks", label: "Tasks", group: "Personal", icon: ListTodo, keywords: "kanban gantt list modal custom fields options statuses order default workflow" },
   { id: "pomodoro", label: "Pomodoro", group: "Personal", icon: Timer, keywords: "focus timer sessions breaks" },
   { id: "providers", label: "Model providers", group: "Agent", icon: SlidersHorizontal, keywords: "api keys openrouter global repository default credentials setup onboarding" },
-  { id: "conversation", label: "Conversation", group: "Agent", icon: AudioLines, keywords: "voice talk microphone openai realtime api key speech audio" },
   { id: "agent", label: "Agent preferences", group: "Agent", icon: Bot, keywords: "default agent role models favorites effort approval mode task location branch prefix commit user rules personalization" },
   { id: "agents", label: "Agents", group: "Agent", icon: Users, keywords: "roles prompts models approval" },
   { id: "playbooks", label: "Playbooks", group: "Agent", icon: Blocks, keywords: "prompts variables templates" },

@@ -21,8 +21,7 @@ try {
     session = `lotse-ui-${process.pid}-${suite.replace(/\W/g, "-")}`;
     try {
       await browser("set", "viewport", "1440", "1000");
-      await browser("open", `http://127.0.0.1:1430/scripts/${suite}${suite === "conversation-ui.html" ? "?gesture" : sandbox && ["task-tabs-ui.html", "task-list-ui.html"].includes(suite) ? `?sandboxUrl=${encodeURIComponent(sandbox.url)}` : ""}`);
-      if (suite === "conversation-ui.html") await browser("click", "#start");
+      await browser("open", `http://127.0.0.1:1430/scripts/${suite}${sandbox && ["task-tabs-ui.html", "task-list-ui.html"].includes(suite) ? `?sandboxUrl=${encodeURIComponent(sandbox.url)}` : ""}`);
       await browser("wait", "--fn", '/^(PASS|FAIL)|checks passed/i.test(document.querySelector("#result")?.textContent ?? "")');
       await browser("wait", "--fn", '!document.querySelector("#root")?.childElementCount');
       const result = (await browser("get", "text", "#result")).trim();
