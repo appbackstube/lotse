@@ -87,7 +87,9 @@ export class AssistantSteerBoundary {
     }
     if (event.kind === "assistantMessageStarted" || event.kind === "assistantMessageCompleted") {
       const prefix = this.savedPrefix;
-      this.completedText = event.kind === "assistantMessageStarted" ? "" : event.finalText?.trim() || this.streamedText.trim() || this.completedText;
+      if (event.kind === "assistantMessageCompleted") {
+        this.completedText = event.finalText?.trim() || this.streamedText.trim() || this.completedText;
+      }
       this.streamedText = "";
       this.savedPrefix = "";
       if (event.kind === "assistantMessageCompleted" && event.finalText?.trim()) {

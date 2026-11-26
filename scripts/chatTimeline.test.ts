@@ -60,6 +60,7 @@ liveTimeline = [];
 receive(complete("First part and second part and last part"));
 assert.equal(boundary.getSteeredResponse("default"), "First part and second part and last part");
 receive(start);
+assert.equal(boundary.getSteeredResponse("default"), "First part and second part and last part");
 receive(complete("First part of a new message"));
 assert.equal(boundary.getSteeredResponse("default"), "First part of a new message");
 const savedHistory: ChatMessage[] = JSON.parse(JSON.stringify([...afterSecondSteer, ...persistedChatEntries(liveTimeline)]));

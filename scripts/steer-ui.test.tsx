@@ -24,6 +24,7 @@ const storage: Record<string, string> = {
 const reviews: { saved: ReviewSession | null } = { saved: null };
 const telegramNotices: string[] = [];
 let acknowledgeSteer: (() => void) | undefined;
+let finishWorkspaceSave: (() => void) | undefined;
 const runs: { accepted: AiChatAccepted; emit: (event: AgentTurnEvent) => void; mode: string }[] = [];
 mockWindows("main"); mockConvertFileSrc("macos");
 mockIPC(async (command, args: any) => {
@@ -35,7 +36,16 @@ mockIPC(async (command, args: any) => {
   if (command === "compare_working_copy") return comparison;
   if (command === "load_working_file_diff") return { path, oldPath: null, hunks: [{ header: "@@ -1 +1 @@", rows: [{ kind: "changed", old: { lineNumber: 1, text: "Draft summary" }, new: { lineNumber: 1, text: "Updated summary" } }] }] };
   if (command === "load_review") return reviews.saved;
-  if (command === "save_review") { reviews.saved = structuredClone(args.session); return; }
+  if (command === "save_review") {
+    const finalBody = args.session.chatMessages.at(-1)?.body;
+    if (finalBody === "Final response: success" || finalBody === "Final response: failure") {
+      await new Promise<void>((resolve, reject) => {
+        finishWorkspaceSave = finalBody.endsWith("success") ? resolve : () => reject(new Error("Synthetic final save failed"));
+      });
+    }
+    reviews.saved = structuredClone(args.session);
+    return;
+  }
   if (command === "github_connection") return null;
   if (command === "telegram_connection") return { connected: true, enabled: true, remoteControlEnabled: true, userId: 10, chatId: 10, connectionId: "synthetic", journalId: "synthetic" };
   if (command === "telegram_poll") return new Promise(() => {});
@@ -66,7 +76,8 @@ mockIPC(async (command, args: any) => {
 
 const options = new URLSearchParams(location.search);
 const capture = options.has("evidence");
-const cancelled = options.has("cancelled");
+const cancelledAfterStart = options.has("cancelled-after-start");
+const cancelled = options.has("cancelled") || cancelledAfterStart;
 const retracted = options.has("retracted");
 const split = !options.has("revised");
 const wait = (duration: number) => new Promise((resolve) => setTimeout(resolve, duration));
@@ -101,6 +112,17 @@ const result = document.getElementById("result")!;
 try {
   await initializeFileStore();
   await act(async () => root.render(<App />)); await settle();
+  if (options.has("workspace-queue")) {
+    await click("Workspace"); await click("Add to chat");
+    await checkWorkspaceQueue();
+  } else await checkTaskSteer();
+} catch (error) {
+  result.textContent = `FAIL: ${String(error)}`;
+} finally {
+  if (!capture) await act(async () => root.unmount());
+}
+
+async function checkTaskSteer() {
   await click("Tasks"); await click(task.title);
   await click("Add to chat"); await click("Pipeline"); await click(`Start pipeline ${pipeline.title}`);
   const prefix = "I checked the summary.";
@@ -114,6 +136,10 @@ try {
   if (cancelled) {
     await acknowledge();
     await event(0, { kind: "assistantDelta", delta: ` ${suffix}` });
+    if (cancelledAfterStart) {
+      await event(0, { kind: "assistantMessageCompleted", finalText: finalResponse });
+      await event(0, { kind: "assistantMessageStarted" });
+    }
     await click("Stop Review Agent response");
   } else if (retracted) {
     await acknowledge();
@@ -133,7 +159,8 @@ try {
   await click("Another task"); await click(task.title);
   await act(async () => { await fileStore.flush(); });
   const saved: typeof task = JSON.parse(storage[taskKey]).find((entry: typeof task) => entry.id === task.id);
-  const expected = ["Inspect the changes.", prefix, "Also verify the heading.", ...(retracted ? [] : [cancelled ? ` ${suffix}` : split ? suffix : revised])];
+  const expectedSuffix = cancelled ? (cancelledAfterStart ? suffix : ` ${suffix}`) : split ? suffix : revised;
+  const expected = ["Inspect the changes.", prefix, "Also verify the heading.", ...(retracted ? [] : [expectedSuffix])];
   check(JSON.stringify(saved.chatMessages.map((entry: { body: string }) => entry.body)) === JSON.stringify(expected), "The pipeline's saved chat must preserve the exact steer order");
   check(saved.chatMessages[0].runStatus === terminalStatus && runs.length === 1, "The pipeline must end without resending the steer");
   const results = loadPipelineRuns(JSON.stringify([repo.rootPath, "task", task.id]))[0]?.messages[0]?.resultIds;
@@ -154,11 +181,8 @@ try {
     }
   } else {
     await checkWorkspacePlans();
+    await checkWorkspaceQueue();
   }
-} catch (error) {
-  result.textContent = `FAIL: ${String(error)}`;
-} finally {
-  if (!capture) await act(async () => root.unmount());
 }
 
 async function checkWorkspacePlans() {
@@ -191,5 +215,33 @@ async function checkWorkspacePlans() {
   const planArticle = [...document.querySelectorAll<HTMLElement>("[data-search-message]")].find((element) => element.dataset.searchMessage === completedPlanId);
   check(planArticle?.querySelector<HTMLButtonElement>(".ios-chat-plan-header button")?.disabled === false, "The saved plan must show an enabled Implement now button");
   await checkpoint();
-  result.textContent = "PASS: ordered pipeline result IDs; Workspace approval, split plan and completed-before-steer plan preserved.";
+}
+
+async function checkWorkspaceQueue() {
+  for (const outcome of ["success", "failure"]) {
+    const index = runs.length;
+    const followUp = `Queued follow-up: ${outcome}`;
+    const finalBody = `Final response: ${outcome}`;
+    await send(`Start Workspace run: ${outcome}`, "Send Review Agent message");
+    await event(index, { kind: "assistantDelta", delta: "Draft before Steer." });
+    await send(`Steer Workspace run: ${outcome}`, "Queue Review Agent message");
+    await send(followUp, "Queue Review Agent message");
+    await steer();
+    await event(index, { kind: "assistantMessageCompleted", finalText: finalBody });
+    await event(index, { kind: "completed" });
+    await acknowledge();
+    check(finishWorkspaceSave && runs.length === index + 1, "The Workspace queue must wait for the final save after Steer");
+    await checkpoint();
+    await act(async () => finishWorkspaceSave!());
+    finishWorkspaceSave = undefined;
+    await settle();
+    if (outcome === "success") {
+      check(runs.length === index + 2 && reviews.saved?.chatMessages.at(-1)?.body === followUp, "A successful final save must dispatch the queued follow-up exactly once");
+      await event(index + 1, { kind: "completed" });
+    } else {
+      check(runs.length === index + 1 && findButton("Resume") && document.body.textContent?.includes(followUp), "A failed final save must leave the follow-up queued and paused");
+    }
+  }
+  result.textContent = "PASS: Workspace queue waits for the final save, dispatches after success, and pauses on failure.";
+  await checkpoint();
 }

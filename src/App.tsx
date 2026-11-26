@@ -2414,6 +2414,7 @@ function App() {
   const agentApprovalRef = useRef<AgentApproval | null>(null);
   const agentInputRef = useRef<AgentUserInput | null>(null);
   const aiChatTurnRef = useRef<AiChatAccepted | null>(null);
+  const workspaceChatFinishingRef = useRef(false);
   const aiChatTurnModeRef = useRef<AiChatMode>("default");
   const aiChatTimelineRef = useRef<ChatMessage[]>([]);
   const aiChatDeltaBufferRef = useRef("");
@@ -3176,6 +3177,7 @@ function App() {
         aiChatTimelineRef.current = plan.timeline;
         setAiChatTimeline(plan.timeline);
       }
+      workspaceChatFinishingRef.current = true;
       const saved = persistAiChatTimeline(plan?.savedPlan);
       aiChatTimelineRef.current = [];
       setAiChatTimeline([]);
@@ -3194,7 +3196,8 @@ function App() {
         const nextKey = reviewRunQueueKeyRef.current ?? key;
         if (key && telegramRun) telegramSendingKeysRef.current.delete(key);
         if (nextKey) { if (ok) window.setTimeout(() => queueDispatchRef.current(nextKey), 0); else setQueuePaused(nextKey, true); }
-      }).catch((reason) => { if (key) { if (telegramRun) telegramSendingKeysRef.current.delete(key); setQueuePaused(key, true); } if (reviewRunQueueKeyRef.current) setQueuePaused(reviewRunQueueKeyRef.current, true); setError(message(reason)); });
+      }).catch((reason) => { if (key) { if (telegramRun) telegramSendingKeysRef.current.delete(key); setQueuePaused(key, true); } if (reviewRunQueueKeyRef.current) setQueuePaused(reviewRunQueueKeyRef.current, true); setError(message(reason)); })
+        .finally(() => { workspaceChatFinishingRef.current = false; });
       if (!key || !chatQueuesRef.current[key]?.length) notifyAgent(null, "Agent finished. Open the workspace to view the result.");
       return saved;
     }
@@ -4376,7 +4379,7 @@ function App() {
     const turnMode = modeOverride ?? aiChatMode;
     const prompt = (promptOverride ?? aiChatDraft).trim();
     const currentReview = reviewRef.current;
-    if (!comparison || !currentReview || aiChatRunningRef.current || (!prompt && !requestContext.attachments.some(isChatUpload))) return false;
+    if (!comparison || !currentReview || aiChatRunningRef.current || workspaceChatFinishingRef.current || (!prompt && !requestContext.attachments.some(isChatUpload))) return false;
     const configError = chatConfigurationError(configurationOverride?.model ?? aiChatModel, configurationOverride?.effort ?? aiChatEffort, chatModels, modelsLoaded);
     if (configError) { setError(configError); return false; }
     const currentSelection = queuedItem ? queuedItem.selection : selection;
@@ -5044,7 +5047,7 @@ function App() {
       return;
     }
     const task = tasksRef.current.find((entry) => taskQueueKey(repositoryRef.current!.rootPath, entry.id) === key);
-    if (task ? !!taskRunsRef.current[task.id] || taskStartingRef.current.has(task.id) : aiChatRunningRef.current || telegramSendingKeysRef.current.size > 0 || !reviewRef.current || reviewQueueKey(reviewRef.current) !== key) return;
+    if (task ? !!taskRunsRef.current[task.id] || taskStartingRef.current.has(task.id) : aiChatRunningRef.current || workspaceChatFinishingRef.current || telegramSendingKeysRef.current.size > 0 || !reviewRef.current || reviewQueueKey(reviewRef.current) !== key) return;
     if (item.telegram && (task || repositoryRef.current.rootPath !== item.telegram.repositoryRoot || !telegramRef.current.status?.enabled || telegramRef.current.status.connectionId !== item.telegram.connectionId)) return;
     queueBusyRef.current.add(key);
     void (async () => {
@@ -5259,7 +5262,6 @@ function App() {
         handleTurnEvent(event, task?.id);
       }
       queueBusyRef.current.delete(key);
-      if (chatQueuesRef.current[key]?.length && !pausedQueueKeysRef.current.has(key)) queueMicrotask(() => queueDispatchRef.current(key));
     }
   };
 
