@@ -188,6 +188,7 @@ try {
       await click("Settings");
       await click("Retry transcription");
       check(taskDraft?.value === "Transcript for paused queue" && button("Resume") && sends === 0 && JSON.stringify(JSON.parse(storage[chatQueueStorageKey])) === JSON.stringify(pausedQueue), "A paused queue must stay paused and unchanged while the transcript remains in the composer");
+      await holdForEvidence();
       document.getElementById("result")!.textContent = "PASS: voice drafts, same-clip retry including after Settings, paused queue, discard, pending send and cancel, errors, task switch and close, and recorder interruption";
       await act(async () => root.unmount());
     }
