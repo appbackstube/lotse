@@ -56,6 +56,7 @@ let contextWrites = 0;
 let agentSend: any;
 let mcpTasks: any[] = [];
 let notificationAction: (event: any) => void;
+let branchComparisonAttempts = 0;
 const windowActions: string[] = [];
 mockWindows("main");
 mockConvertFileSrc("macos");
@@ -71,6 +72,11 @@ mockIPC(async (command, args: any) => {
   if (command === "current_repository" || command === "refresh_repository") return currentRepository;
   if (command === "list_branch_refs") return { refs: ["main", "develop", "feature/monthly-report"], remoteRefs: ["origin/main", "origin/develop"], defaultBase: "main", pullCount: 0, pushCount: 0 };
   if (command === "compare_working_copy") return comparison;
+  if (notificationCheck && command === "compare_branches") {
+    branchComparisonAttempts++;
+    if (branchComparisonAttempts === 1) throw new Error("Could not compare branches.");
+    return { ...comparison, mode: "branch", baseRef: args.baseRef, compareRef: args.compareRef, compareCommitOid: comparison.baseOid };
+  }
   if (command === "load_review") return agentsCheck ? savedReview : null;
   if (command === "github_connection") return null;
   if (command === "scheduler_list" || command === "list_memory") return [];
@@ -86,6 +92,8 @@ mockIPC(async (command, args: any) => {
   if (command === "plugin:window|is_maximized") return false;
   if (command === "plugin:notification|is_permission_granted") return true;
   if (command === "plugin:notification|register_listener") { notificationAction = args.handler.onmessage; return; }
+  if (command === "plugin:notification|register_action_types") return;
+  if (command === "notification_target_window") return args.repositoryRoot === repo.rootPath ? "main" : args.originalWindow;
   if (command === "plugin:notification|remove_listener") return;
   if (command === "plugin:window|outer_size" || command === "plugin:window|inner_size") return { width: innerWidth, height: innerHeight };
   if (command.startsWith("plugin:window|")) { windowActions.push(command); return; }
@@ -347,32 +355,81 @@ try {
     document.getElementById("result")!.textContent = "PASS: agent picker placement, None defaults, manager creation/validation/save/delete/discard guard, workspace and task role prompts, persistence, fresh threads, cleared history/queues and disabled switching during runs.";
   } else if (notificationCheck) {
     const target = { windowLabel: "main", repositoryRoot: repo.rootPath, taskId: task.id };
+    const unavailableTaskAlert = (surface: ParentNode = document) => [...surface.querySelectorAll('[role="alert"]')]
+      .find((alert) => visible(alert) && alert.textContent?.includes("The task for this notification is no longer available."));
+    const dismissNotificationError = () => click(unavailableTaskAlert()?.querySelector<HTMLButtonElement>("button")!);
     const tap = async (extra: any, actionId = "tap") => {
       await act(async () => notificationAction({ actionId, notification: { extra } })); await settle();
     };
     for (const view of ["List", "Kanban", "Gantt"]) {
+      const taskSurface = () => view === "List" ? document.querySelector('[aria-label="Task workspace"]') : dialog();
+      const changesTab = () => [...(taskSurface()?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? [])].find((element) => element.textContent?.startsWith("Changes"))!;
       await click(button("Tasks"));
       await click(button(view));
       await click(button("Workspace"));
       const before = windowActions.length;
-      for (const extra of [{ ...target, windowLabel: "review-other" }, { ...target, repositoryRoot: "/other" }, { ...target, taskId: 12 }, undefined]) await tap(extra);
+      for (const extra of [{ ...target, windowLabel: "review-other", repositoryRoot: "/other" }, { ...target, taskId: 12 }, undefined]) await tap(extra);
       await tap(target, "dismiss");
       check(button("Workspace").getAttribute("aria-pressed") === "true" && windowActions.length === before, "Unrelated or invalid notification actions must not navigate or focus this window");
       await tap(target);
       check(button("Tasks").getAttribute("aria-pressed") === "true", "Task notification must switch to Tasks");
-      check(visible(dialog()) && dialog().textContent?.includes(task.title) && visible(composer()), `${view}: task notification must open the task dialog and chat`);
+      check(visible(taskSurface()) && taskSurface()?.textContent?.includes(task.title) && visible(taskSurface()?.querySelector('[aria-label="Review Agent message"]') ?? null), `${view}: task notification must open the task and chat`);
       check(windowActions.slice(before).filter((command) => ["plugin:window|show", "plugin:window|unminimize", "plugin:window|set_focus"].includes(command)).join(",") === "plugin:window|show,plugin:window|unminimize,plugin:window|set_focus", "Notification must show, unminimize and focus its window");
       check(!JSON.parse(storage[taskStorageKey(repo.rootPath)]).find((entry: any) => entry.id === task.id).unreadAgentResult, "Opening a task notification must mark its result read");
-      await click(tab("Changes"));
+      await click(changesTab());
       await tap({ ...target, taskId: null });
       check(button("Workspace").getAttribute("aria-pressed") === "true" && !visible(dialog()), "Workspace notification must open Workspace and close the task dialog");
       check(visible(document.querySelector('[aria-label="Review Agent message"]')), "Workspace chat must be visible after a workspace notification");
-      await tap(target);
-      check(visible(dialog()) && tab("Changes").getAttribute("aria-selected") === "true", "Task notifications must restore the saved task panel");
+      await tap({ ...target, windowLabel: "review-other" }, "open-agent");
+      check(visible(taskSurface()) && changesTab()?.getAttribute("aria-selected") === "true", "Task notifications must restore the saved task panel");
       await tap({ ...target, taskId: "deleted-task" });
-      check(button("Tasks").getAttribute("aria-pressed") === "true" && !visible(dialog()), "A deleted task notification must open Tasks without showing another task");
+      check(visible(taskSurface()) && taskSurface()?.textContent?.includes(task.title), "A deleted task notification must preserve the current task");
+      check(unavailableTaskAlert(view === "List" ? document : dialog()), `${view}: the notification error must be visible while the task stays open`);
+      await dismissNotificationError();
     }
-    document.getElementById("result")!.textContent = "PASS: Notification clicks open task dialogs and chat from List/Kanban/Gantt, restore panels, mark results read, focus the correct window, open Workspace, and ignore invalid or unrelated actions.";
+    await click(dialog().querySelector<HTMLButtonElement>('[aria-label="Close task modal"]')!);
+    await click(button("Workspace"));
+    await click(document.querySelector<HTMLElement>('[aria-label="Comparison context"]')!);
+    await click([...document.querySelectorAll<HTMLElement>('[role="option"]')].find((option) => option.textContent?.trim() === "develop → main")!);
+    const comparisonError = () => [...document.querySelectorAll('[role="alert"]')]
+      .some((alert) => visible(alert) && alert.textContent === "Could not compare branches.");
+    check(comparisonError(), "The failed comparison must show its own error");
+    for (const view of ["Settings", "Memory"]) {
+      const closeSettings = () => document.querySelector<HTMLElement>('[aria-label="Close settings"]');
+      await click(view === "Settings" ? document.querySelector<HTMLElement>('[aria-label="Settings"]')! : button("Memory"));
+      await act(async () => emit("repository-watch-error", "Could not watch repository."));
+      await settle();
+      const alerts = () => [...document.querySelectorAll('[role="alert"]')].filter(visible);
+      check(!alerts().some((alert) => alert.textContent?.includes("Could not compare branches.")), `${view}: the comparison failure must stay in Workspace`);
+      const watcherError = () => alerts().find((alert) => alert.textContent?.includes("Could not watch repository."));
+      await click(watcherError()?.querySelector<HTMLButtonElement>("button")!);
+      check(!watcherError(), `${view}: Dismiss must clear the workspace banner`);
+      await click(view === "Settings" ? closeSettings()! : button("Workspace"));
+      check(comparisonError() && button("Retry"), `${view}: dismissing the banner must preserve the comparison error and Retry`);
+    }
+    await tap({ ...target, taskId: "deleted-task" });
+    check(comparisonError() && unavailableTaskAlert(), "The missing-task alert must not replace the comparison error");
+    await click(button("Retry"));
+    check(branchComparisonAttempts === 2 && !comparisonError() && unavailableTaskAlert(), "Retry must reload the comparison without dismissing the notification error");
+    await dismissNotificationError();
+    await click(button("Memory"));
+    await tap({ ...target, taskId: "deleted-task" });
+    check(button("Memory").getAttribute("aria-pressed") === "true", "A deleted task notification must leave Memory open");
+    check(unavailableTaskAlert(), "A deleted task notification must show its error in Memory");
+    await dismissNotificationError();
+    await click(document.querySelector<HTMLElement>('[aria-label="Settings"]')!);
+    await tap({ ...target, taskId: "deleted-task" });
+    check(visible(document.querySelector('[aria-label="Close settings"]')) && unavailableTaskAlert(), "A deleted task notification must show its error without leaving Settings");
+    await dismissNotificationError();
+    await click(document.querySelector<HTMLElement>('[aria-label="Close settings"]')!);
+    await click(button("Tasks"));
+    for (const view of ["Kanban", "Gantt"]) {
+      await click(button(view));
+      await tap({ ...target, taskId: "deleted-task" });
+      check(button(view).getAttribute("aria-pressed") === "true" && unavailableTaskAlert(), `${view}: a deleted task notification must show its error without changing views`);
+      if (view !== "Gantt" || !new URLSearchParams(location.search).has("preview")) await dismissNotificationError();
+    }
+    document.getElementById("result")!.textContent = "PASS: Notification navigation and unavailable-task alerts independent of comparison failures.";
   } else if (chatScrollCheck) {
     await click(button("Tasks"));
     await click(document.querySelector<HTMLElement>(`[aria-label="Drag ${task.title}"]`)!);

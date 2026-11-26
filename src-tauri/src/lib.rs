@@ -3,7 +3,6 @@ compile_error!("browser-qa must never be enabled in a release build");
 
 mod agent_runtime;
 mod credentials;
-mod conversation;
 mod memory;
 mod spotlight;
 mod spotlight_index;
@@ -330,6 +329,13 @@ struct TerminalSession {
 
 #[derive(Default)]
 struct AppState(Mutex<HashMap<String, WindowState>>, AtomicBool);
+
+#[tauri::command]
+fn notification_target_window(repository_root: String, original_window: String, state: State<'_, AppState>) -> Result<String, String> {
+    let windows = state.0.lock().map_err(|_| "Repository state is unavailable".to_owned())?;
+    Ok(windows.iter().find(|(_, window)| window.repository.as_ref().is_some_and(|root| root == Path::new(&repository_root)))
+        .map(|(label, _)| label.clone()).unwrap_or(original_window))
+}
 
 #[derive(Clone)]
 struct McpContextState(
@@ -6713,9 +6719,6 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
-            conversation::conversation_settings,
-            conversation::save_conversation_key,
-            conversation::start_conversation,
             #[cfg(all(feature = "browser-qa", target_os = "macos"))]
             browser::browser_qa_fixture,
             website_credentials::list_website_credentials,
@@ -6745,6 +6748,7 @@ pub fn run() {
             telegram::telegram_download_image,
             telegram::telegram_download_video,
             telegram::telegram_transcribe_voice,
+            telegram::transcribe_composer_voice,
             telegram::telegram_set_transcription_settings,
             telegram::telegram_save_connection,
             telegram::telegram_set_enabled,
@@ -6761,6 +6765,7 @@ pub fn run() {
             set_frontend_storage,
             append_usage_event,
             new_window,
+            notification_target_window,
             current_repository,
             open_repository,
             refresh_repository,

@@ -36,13 +36,9 @@ With Vite running, `npm run test:browser -- telegram telegram-commit telegram-vo
 
 Concurrent queue edits from different repository windows are checked before saving. If they conflict, Lotse reports the failed save instead of overwriting another window's queue; restart and inspect pending messages before retrying.
 
-## Conversation
+## Voice messages
 
-Enable Talk in Settings → Conversation with an OpenAI API key. The key remains in the local credentials file; the selected AI voice is saved separately and applies to new sessions. GPT-Live receives microphone audio and the current workspace chat's saved text messages, including updates during Talk. Only a bounded recent portion is sent; long messages may be shortened, and attachments and in-progress responses are not included. A Responses model interprets delegated requests for the workspace agent. GPT-Live usage is billed by connection duration, including WebRTC initialization; Responses model and workspace agent usage are billed separately. Muting does not end the connection. If a connection fails or is ended while connecting, final closure and charges can remain unconfirmed; check OpenAI usage.
-
-Talk can continue while the workspace agent works. A clear model-interpreted request starts the agent without an additional confirmation; the interpretation can be inaccurate, and unclear requests require clarification. Agent questions and configured approvals remain in the chat and must be answered by the user. Interrupt voice mutes local playback, not agent work; after a detected output pause, playback resumes when audio starts again. The pause is an estimate, not proof of a new reply; if detection is unavailable, use Resume audio. End stops the voice connection, not agent work. Stop agent work is a separate action. Browser audio processing requests echo cancellation and noise suppression, but its effect and the naturalness of conversation require real-device audio testing. Rebuild and restart the native app after updating the voice backend.
-
-Talk splits context appends into small UTF-8 fragments to stay below GPT-Live's 500-token limit per append, while preserving the bounded workspace history. Rejected client commands show known protocol labels without exposing raw provider messages. A correlated invalid-command error keeps Talk connected; backend configuration errors and uncorrelated errors stop the local session with a neutral explanation. These errors alone do not establish an access or billing problem.
+In the Workspace or Task composer, use **Add to chat (+)** to choose an OpenRouter audio model ID, then select the microphone to record. The text draft is preserved while the compact recording bar is open. Use the square or Escape to stop recording without uploading, the arrow to transcribe for review, or × to discard. The arrow also works while recording. Audio is sent to OpenRouter and its model provider using the configured OpenRouter key; charges may apply. If transcription fails, the clip stays in the current composer. You can change the audio model before choosing **Retry** to submit the same audio again, or use × to discard it. Leaving the composer clears the clip. The transcript is added to the current draft and is sent to the agent only when you submit that draft. Discarding during transcription ignores the result; an already submitted provider request may still incur charges. Recordings require microphone permission and a supported audio format. Rebuild and restart the native app after updating the backend.
 
 ## Task statuses
 
@@ -187,6 +183,12 @@ For one architecture only, pass `aarch64-apple-darwin` or `x86_64-apple-darwin` 
 Each build includes only its matching Codex runtime. The script packages the `.app` into a compressed UDZO DMG and verifies it. Shareable files are written to `src-tauri/target/share/`. Plain `tauri build` still uses the shared configuration and includes both runtimes.
 
 Code signing with a Developer ID and Apple notarization are separate release steps; these local builds are not notarized automatically.
+
+### Publish a local GitHub release
+
+On macOS, install the project dependencies (`npm ci`) and authenticate the GitHub CLI (`gh auth login`) with permission to create releases and push tags. Set the same new stable version in `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml`, update the lockfiles as needed, commit it, and push it to `origin/main`. Then run `npm run release` from that exact clean commit. After the release checks pass, the command replaces both local Codex runtimes using the checked-in manifest and Lotse patch before building the DMGs.
+
+The command runs the same app, website, and packaging tests as the GitHub macOS workflow, then builds and verifies both DMGs locally. It checks that the checkout is still clean and at the verified commit before tagging that commit explicitly. It pushes the annotated tag, creates a draft GitHub release, uploads both downloads and their SHA-256 checksums, then publishes it as latest. The annotated tag tells the GitHub workflow to skip its own build and release, preventing it from replacing the local artifacts. If publishing fails after the tag is pushed, inspect the tag and draft release on GitHub before completing the release manually; the command does not overwrite existing tags or releases. Local builds are not automatically notarized.
 
 ### Automatic GitHub builds and releases
 

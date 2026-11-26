@@ -25,9 +25,7 @@ import { createPortal, flushSync } from "react-dom";
 import { useTaskFieldDraft } from "./useTaskFieldDraft";
 import { readTaskDrawing } from "./taskDrawing";
 import { applyTaskSandboxUpdate } from "./taskSandbox";
-import { ConversationSettings, type ConversationSettingsValue } from "./components/ConversationSettings";
-import { useConversation } from "./useConversation";
-import type { VoiceDelegation, VoiceReply } from "./conversation";
+import { useVoiceMessage } from "./components/VoiceMessage";
 import { WebsiteCredentialsSettings } from "./components/WebsiteCredentialsSettings";
 import { UsageSettings } from "./components/UsageSettings";
 import { recordUsage, type UsageItem } from "./usage";
@@ -41,7 +39,7 @@ import { TaskDrawingPanel, TaskSandboxPanel } from "./components/TaskVisualPanel
 import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { ask, open } from "@tauri-apps/plugin-dialog";
-import { isPermissionGranted, onAction, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
+import { isPermissionGranted, onAction, registerActionTypes, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { DragDropProvider, useDroppable, type DragEndEvent, type DragMoveEvent, type DragOverEvent } from "@dnd-kit/react";
@@ -82,10 +80,6 @@ import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from "@/compone
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import {
-  AudioLines,
-  Keyboard,
-  Mic,
-  MicOff,
   ArrowUp,
   ArrowDown,
   Blocks,
@@ -1034,6 +1028,7 @@ function AiChatPanel({
   centered,
   zenMode,
   hideHeader = false,
+  headerControls,
   approvalReviewer,
   error,
   images,
@@ -1094,19 +1089,9 @@ function AiChatPanel({
   taskSelected = true,
   active = true,
   searchMessage,
-  conversationEnabled = false,
-  conversationContext = "",
-  voiceReplies = [],
-  onVoiceSend,
-  voiceRunId,
-  onVoiceCancel,
+  voiceContext = "",
 }: {
-  conversationEnabled?: boolean;
-  conversationContext?: string;
-  voiceReplies?: VoiceReply[];
-  onVoiceSend?: (request: VoiceDelegation) => Promise<boolean>;
-  voiceRunId?: string;
-  onVoiceCancel?: (requestId: string) => void;
+  voiceContext?: string;
   messages: ChatMessage[];
   draft: string;
   running: boolean;
@@ -1127,6 +1112,7 @@ function AiChatPanel({
   centered: boolean;
   zenMode: boolean;
   hideHeader?: boolean;
+  headerControls?: ReactNode;
   approvalReviewer: ApprovalReviewer;
   error: string;
   images: ChatAttachment[];
@@ -1188,12 +1174,6 @@ function AiChatPanel({
   active?: boolean;
   searchMessage?: { id: string; query: string; request: number };
 }) {
-  const voiceBlocked = !!agentInput || !!agentApproval || !!variablePrompt;
-  const voice = useConversation({ available: conversationEnabled && active && !taskMode && !!comparison, context: conversationContext, messages,
-    running, blocked: voiceBlocked, replies: voiceReplies, onSend: request => onVoiceSend?.(request) ?? Promise.resolve(false) });
-  const [confirmStopVoiceWork, setConfirmStopVoiceWork] = useState<string | null>(null);
-  useEffect(() => { setConfirmStopVoiceWork(null); }, [running, conversationContext, voiceRunId]);
-  const voiceLabel = voice.muted ? "Microphone off" : ({ idle: "", connecting: "Connecting…", listening: "Listening", hearing: "Hearing you…", speaking: "GPT-Live" })[voice.phase];
   const scrollRef = useRef<HTMLDivElement>(null);
   const followChatRef = useRef(true);
   useEffect(() => {
@@ -1212,6 +1192,28 @@ function AiChatPanel({
   const [composerDraft, setComposerDraft] = useState(draft);
   const sendPendingRef = useRef(false);
   const [sendPending, setSendPending] = useState(false);
+  const draftField = useRef<HTMLTextAreaElement>(null);
+  const focusTranscript = useRef(false);
+  const [transcriptReady, setTranscriptReady] = useState(false);
+  const voice = useVoiceMessage({
+    context: active ? voiceContext : "",
+    disabled: !comparison || sendPending || !taskSelected || !!variablePrompt,
+    onTranscript: (text) => {
+      const next = composerDraft ? `${composerDraft}\n\n${text}` : text;
+      focusTranscript.current = true;
+      setTranscriptReady(true);
+      setComposerDraft(next);
+      onDraftChange(next);
+    },
+  });
+  useLayoutEffect(() => { setTranscriptReady(false); }, [voiceContext]);
+  useLayoutEffect(() => {
+    if (voice.busy || !focusTranscript.current) return;
+    focusTranscript.current = false;
+    const field = draftField.current;
+    field?.focus();
+    if (field) field.setSelectionRange(field.value.length, field.value.length);
+  }, [voice.busy]);
   const [editingQueued, setEditingQueued] = useState<QueuedChatMessage | null>(null);
   const [queuedEditDraft, setQueuedEditDraft] = useState("");
   const addFilesRef = useRef(onAddFiles);
@@ -1234,16 +1236,17 @@ function AiChatPanel({
     observer.observe(content);
     return () => observer.disconnect();
   }, []);
-  const canSend = !!comparison && !sendPending && (!!composerDraft.trim() || images.some(isChatUpload) || selectedAssetIds.length > 0) && !variablePrompt
+  const canSend = !!comparison && !sendPending && !voice.busy && (!!composerDraft.trim() || images.some(isChatUpload) || selectedAssetIds.length > 0) && !variablePrompt
     && (!taskMode || taskSelected);
   const configurationError = chatConfigurationError(model, effort, models, modelsLoaded);
   const send = async () => {
-    if (sendPendingRef.current) return;
+    if (!canSend || sendPendingRef.current || voice.isBusy()) return;
     sendPendingRef.current = true;
     setSendPending(true);
     const submitted = composerDraft;
     try {
       if (await onSend(submitted)) {
+        setTranscriptReady(false);
         onDraftChange("");
         setComposerDraft((current) => current === submitted ? "" : current);
       }
@@ -1271,7 +1274,7 @@ function AiChatPanel({
 
   const pipeline = queuedMessages.find((item) => item.pipeline)?.pipeline;
   const manualMessages = queuedMessages.filter((item) => !item.pipeline);
-  const emptyCenteredChat = !voice.active && centered && !messages.length && !running && !queuedMessages.length && !variablePrompt && !agentInput && !agentApproval;
+  const emptyCenteredChat = centered && !messages.length && !running && !queuedMessages.length && !variablePrompt && !agentInput && !agentApproval;
   const availableFavoriteModels = favoriteModels.filter((id) => models.some((entry) => entry.model === id));
 
   return (
@@ -1279,19 +1282,26 @@ function AiChatPanel({
       {!hideHeader && <div
         data-tauri-drag-region
         onMouseDown={(event) => {
-          if ((event.target as HTMLElement).closest("button, input, select, textarea")) return;
+          const target = event.target;
+          if (
+            event.button !== 0 ||
+            !(target instanceof Element) ||
+            !event.currentTarget.contains(target) ||
+            target.closest("button, input, select, textarea")
+          ) return;
           void getCurrentWindow().startDragging().catch(() => {});
         }}
         className={`ios-chat-header flex shrink-0 items-center justify-between border-b border-[#294536] ${zenMode ? "h-[52px] pl-[88px] pr-4" : "h-12 px-4"}`}
       >
         {taskMode && <span className="text-sm font-semibold text-[#E8FFF0]">Chat</span>}
+        {headerControls}
         {taskMode && !zenMode ? <DropdownMenu>
           <DropdownMenuTrigger className="task-modal-icon ml-auto" aria-label="Chat actions" title="Chat actions"><Ellipsis size={18} /></DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-52">
             <DropdownMenuItem onClick={() => onZenModeChange(true)}><Maximize2 size={14} /> Enter Zen Mode</DropdownMenuItem>
-            <DropdownMenuItem disabled={running || (!messages.length && !queuedMessages.length)} onClick={() => { voice.stop(); onClear(); }} aria-label="Clear Agent Chat conversation"><RotateCcw size={14} /> Clear conversation</DropdownMenuItem>
+            <DropdownMenuItem disabled={running || (!messages.length && !queuedMessages.length)} onClick={onClear} aria-label="Clear Agent Chat conversation"><RotateCcw size={14} /> Clear conversation</DropdownMenuItem>
           </DropdownMenuContent>
-        </DropdownMenu> : <div className="ml-auto flex items-center">{(!!messages.length || !!queuedMessages.length) && <button type="button" onClick={() => { voice.stop(); onClear(); }} disabled={running} className="quiet-button h-7 px-2 disabled:opacity-40" aria-label="Clear Agent Chat conversation">
+        </DropdownMenu> : <div className="ml-auto flex items-center">{(!!messages.length || !!queuedMessages.length) && <button type="button" onClick={onClear} disabled={running} className="quiet-button h-7 px-2 disabled:opacity-40" aria-label="Clear Agent Chat conversation">
           Clear
         </button>}
         <button
@@ -1390,15 +1400,15 @@ function AiChatPanel({
               </DropdownMenuContent></DropdownMenu>
           </div>)}
         </div>}
-        {voice.error && <div role="alert" className="conversation-error mx-auto w-full max-w-[960px]">{voice.error}{voice.transcript && <><p>{voice.transcript}</p><button type="button" onClick={() => { const text = [composerDraft.trim(), voice.transcript].filter(Boolean).join("\n\n"); setComposerDraft(text); onDraftChange(text); }}>Copy transcript to composer</button></>}</div>}
-        {voice.active && <div className="ios-chat-composer conversation-composer mx-auto w-full max-w-[960px]" aria-label="Voice composer">
-          <div className="conversation-status"><AudioLines size={32} aria-hidden="true" className={voice.phase === "speaking" || voice.phase === "hearing" ? "conversation-speaking" : ""} /><div><strong role="status">{voiceLabel}</strong><p>{voice.outputPaused ? "Audio paused. It may resume after a pause, or you can resume it now." : voiceBlocked ? "The agent needs your response in the chat." : voice.muted ? "Unmute to speak." : running ? "The workspace agent is working. You can keep talking." : "Your chat stays here. Speak naturally."}</p>{voice.transcript && <p>{voice.transcript}</p>}</div></div>
-          <div className="conversation-controls"><button type="button" className="ios-chat-add-image" aria-label="Switch to typing" onClick={voice.stop}><Keyboard size={18} /></button><span className="conversation-disclosure">GPT-Live · AI voice · OpenAI</span><span className="flex-1" />{voice.outputPaused ? <button type="button" className="quiet-button" onClick={voice.resumeAudio}>Resume audio</button> : <button type="button" className="quiet-button" disabled={voice.phase === "connecting"} onClick={voice.interrupt}>Interrupt voice</button>}<button type="button" className="quiet-button" aria-label={voice.muted ? "Unmute microphone" : "Mute microphone"} aria-pressed={voice.muted} disabled={voice.phase === "connecting"} onClick={voice.mute}>{voice.muted ? <MicOff size={17} /> : <Mic size={17} />}</button><button type="button" className="accent-button" onClick={voice.stop}><X size={15} /> End</button>{running && voiceRunId && (confirmStopVoiceWork ? <><button type="button" className="quiet-button" onClick={() => { onVoiceCancel?.(confirmStopVoiceWork); setConfirmStopVoiceWork(null); }}>Stop work</button><button type="button" className="quiet-button" onClick={() => setConfirmStopVoiceWork(null)}>Keep working</button></> : <button type="button" className="quiet-button" aria-label="Stop workspace agent work" onClick={() => setConfirmStopVoiceWork(voiceRunId)}><Square size={14} /></button>)}</div>
-        </div>}
-        <div hidden={voice.active} className={`ios-chat-composer mx-auto w-full max-w-[960px] ${dragging ? "ios-chat-composer-dropping" : ""}`}>
+        {!voice.busy && transcriptReady && composerDraft.trim() && <p role="status" className="ios-chat-voice-notice mx-auto w-full max-w-[960px]">Review the transcript, then send your message.</p>}
+        <div className={`ios-chat-composer mx-auto w-full max-w-[960px] ${voice.busy ? "ios-chat-composer-recording" : ""} ${dragging ? "ios-chat-composer-dropping" : ""}`}>
+          {voice.error}
+          {voice.bar}
+          <div hidden={voice.busy}>
           <ChatUploads images={images} removable onRemove={onRemoveImage} />
           <ChatAssetNames attachments={taskAssets.filter((asset) => selectedAssetIds.includes(asset.id)).map((asset) => ({ kind: "taskAsset", id: asset.id, name: asset.name, image: asset.image }))} />
           <Textarea
+            ref={draftField}
             value={composerDraft}
             onChange={(event) => setComposerDraft(event.currentTarget.value)}
             onBlur={() => onDraftChange(composerDraft)}
@@ -1431,6 +1441,7 @@ function AiChatPanel({
                   {taskMode && <button type="button" disabled={!taskSelected || !taskAssets.length} onClick={() => setAddMenuPage("assets")} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[#183522] disabled:opacity-40"><Folder size={15} className="text-[#7C9B88]" /><span className="flex-1">Assets</span>{selectedAssetIds.length > 0 && <span className="text-xs text-[#7C9B88]">{selectedAssetIds.length}</span>}<ChevronRight size={14} className="text-[#7C9B88]" /></button>}
                   <button type="button" role="switch" aria-checked={mode === "plan"} disabled={running || (taskMode && !taskSelected)} onClick={() => { onModeChange(mode === "plan" ? "default" : "plan"); setAddMenuOpen(false); }} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[#183522] disabled:opacity-40"><ListTodo size={15} className="text-[#7C9B88]" /><span className="flex-1">Plan</span><span className="text-xs text-[#7C9B88]">{mode === "plan" ? "On" : "Off"}</span></button>
                   <button type="button" role="switch" aria-checked={goalSettings.enabled} disabled={running || (taskMode && !taskSelected)} onClick={() => { onGoalSettingsChange({ ...goalSettings, enabled: !goalSettings.enabled }); setAddMenuOpen(false); }} className="flex w-full items-center justify-between gap-2.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[#183522] disabled:opacity-40"><span>Goal</span><span className="text-xs text-[#7C9B88]">{goalSettings.enabled ? "On" : "Off"}</span></button>
+                  {voice.settings}
                 </> : <>
                   <button type="button" onClick={() => setAddMenuPage("main")} className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs text-[#7C9B88] hover:bg-[#183522]"><ChevronLeft size={14} /> {addMenuPage === "playbooks" ? "Playbooks" : addMenuPage === "pipelines" ? "Pipelines" : "Assets"}</button>
                   {addMenuPage === "pipelines" ? <>
@@ -1499,7 +1510,7 @@ function AiChatPanel({
               {mode === "plan" && <button type="button" className="ios-chat-plan-toggle" aria-label="Disable Plan mode" aria-pressed="true" title="Disable Plan mode" disabled={running || (taskMode && !taskSelected)} onClick={() => onModeChange("default")}>Plan <span>On</span></button>}
               {goalSettings.enabled && <ChatGoalSettings value={goalSettings} disabled={running || (taskMode && !taskSelected)} onChange={onGoalSettingsChange} />}
             </div>
-              {!taskMode && conversationEnabled && <button type="button" className="quiet-button conversation-start" disabled={!comparison || sendPending || voiceBlocked || !!configurationError} onClick={voice.start} aria-label="Start conversation"><AudioLines size={16} /> Talk</button>}
+            {voice.recordButton}
             {running ? (
               <><button type="button" disabled={!canSend} onClick={send} className="accent-button ml-auto !size-[30px] shrink-0 !p-0 disabled:opacity-40" aria-label="Queue Review Agent message" title="Queue message"><ArrowUp size={14} /></button><button
                 type="button"
@@ -1522,6 +1533,7 @@ function AiChatPanel({
                 <ArrowUp size={14} />
               </button>
             )}
+          </div>
           </div>
         </div>
       </div>
@@ -2155,6 +2167,7 @@ function App() {
   const telegramRef = useRef(telegram);
   telegramRef.current = telegram;
   const [comparison, setComparison] = useState<Comparison | null>(null);
+  const [branchComparisonError, setBranchComparisonError] = useState("");
   const comparisonRef = useRef(comparison);
   comparisonRef.current = comparison;
   const [comparisonMode, setComparisonMode] = useState<"workingCopy" | "branch">("workingCopy");
@@ -2191,6 +2204,7 @@ function App() {
   const [revertRunning, setRevertRunning] = useState(false);
   const [commitGenerating, setCommitGenerating] = useState(false);
   const [error, setError] = useState("");
+  const [notificationError, setNotificationError] = useState("");
   const [sidebarWidths, setSidebarWidths] = useState(storedSidebarWidths);
   const [simulatorSpace, setSimulatorSpace] = useState(storedSimulatorSpace);
   const [taskColumnRatios, setTaskColumnRatios] = useState(storedTaskColumnRatios);
@@ -2223,10 +2237,6 @@ function App() {
   const [taskGridWidth, setTaskGridWidth] = useState(window.innerWidth);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => new Set());
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [conversationSettings, setConversationSettings] = useState<ConversationSettingsValue>({ enabled: false });
-  const [voiceReplies, setVoiceReplies] = useState<VoiceReply[]>([]);
-  const voiceWorkRef = useRef(new Map<string, { sessionId: string; delegationId: string; responseId: string; callId: string; context: string; requestId?: string; result: string; pendingEvents?: AiChatEvent[] }>());
-  useEffect(() => { void invoke<ConversationSettingsValue>("conversation_settings").then(setConversationSettings).catch(() => {}); }, []);
   const [settingsPage, setSettingsPage] = useState<SettingsPage>("general");
   const [pomodoroSettings, setPomodoroSettings] = useState(() => {
     try { return normalizePomodoroSettings(JSON.parse(fileStore.getItem(pomodoroSettingsKey) ?? "null")); }
@@ -2454,14 +2464,18 @@ function App() {
     let disposed = false;
     let unregister: (() => void) | null = null;
     const ready = onAction((event) => {
-      if (event.actionId !== "tap") return;
+      if (event.actionId !== "tap" && event.actionId !== "open-agent") return;
       const extra = event.notification?.extra;
-      if (extra?.windowLabel !== getCurrentWindow().label || typeof extra.repositoryRoot !== "string") return;
+      if (typeof extra?.windowLabel !== "string" || typeof extra.repositoryRoot !== "string") return;
       if (extra.taskId !== null && typeof extra.taskId !== "string") return;
-      openNotificationRef.current(extra as NotificationTarget);
-    }).then((listener) => {
+      const target = extra as NotificationTarget;
+      void invoke<string>("notification_target_window", { repositoryRoot: target.repositoryRoot, originalWindow: target.windowLabel })
+        .then((label) => { if (!disposed && label === getCurrentWindow().label) openNotificationRef.current(target); })
+        .catch((reason) => { if (!disposed) setNotificationError(message(reason)); });
+    }).then(async (listener) => {
       if (disposed) return listener.unregister();
       unregister = () => { void listener.unregister(); };
+      await registerActionTypes([{ id: "agent", actions: [{ id: "open-agent", title: "Open" }] }]);
     });
     notificationListenerReadyRef.current = ready;
     void ready.catch((reason) => setError(message(reason)));
@@ -2496,7 +2510,7 @@ function App() {
     void (async () => {
       if (!await notificationAllowed()) return;
       if (!systemNotificationsRef.current || repositoryRef.current?.rootPath !== target.repositoryRoot) return;
-      sendNotification({ title: `${currentRepository.name} · ${taskTitle}`, body, extra: target });
+      sendNotification({ title: `${currentRepository.name} · ${taskTitle}`, body, extra: target, actionTypeId: "agent" });
     })().catch((reason) => setError(message(reason)));
   };
 
@@ -2541,13 +2555,6 @@ function App() {
     const item = chatQueuesRef.current[key]?.find((entry) => entry.id === id);
     if (!item) return;
     changeQueue(key, (items) => items.filter((entry) => entry.id !== id));
-    if (deleteImages) {
-      const work = voiceWorkRef.current.get(id);
-      if (work) {
-        setVoiceReplies(current => [...current.slice(-49), { ...work, id: crypto.randomUUID(), text: "The queued workspace request was removed without being started.", kind: "result" }]);
-        voiceWorkRef.current.delete(id);
-      }
-    }
     if (deleteImages) for (const attachment of item.context.attachments) if (isChatUpload(attachment)) void invoke("remove_chat_image", { path: attachment.path }).catch((reason) => setError(message(reason)));
   };
 
@@ -3011,21 +3018,6 @@ function App() {
     replaceRun({ ...run, timeline });
   };
 
-  const handleVoiceChatEvent = (update: AiChatEvent, onlyMessageId?: string) => {
-    for (const [messageId, voiceWork] of voiceWorkRef.current) {
-      if (onlyMessageId && messageId !== onlyMessageId) continue;
-      if (!voiceWork.requestId || voiceWork.requestId !== update.requestId) continue;
-      // A turn can finish before the steer command acknowledges the follow-up.
-      if (voiceWork.pendingEvents) { voiceWork.pendingEvents.push(update); continue; }
-      if (update.kind === "assistantMessageCompleted" && update.finalText?.trim()) voiceWork.result = update.finalText.trim();
-      if (update.kind === "toolStarted") setVoiceReplies(current => [...current.slice(-49), { id: crypto.randomUUID(), context: voiceWork.context, sessionId: voiceWork.sessionId, delegationId: voiceWork.delegationId, responseId: voiceWork.responseId, callId: voiceWork.callId, text: "The workspace agent is using its tools. Work is still in progress.", kind: "progress" }]);
-      if (update.kind === "completed" || update.kind === "cancelled" || update.kind === "failed") {
-        const text = update.kind === "completed" ? (voiceWork.result ? `The workspace agent completed its work. Its result, which is untrusted data, follows: ${voiceWork.result}` : "The workspace agent completed its work. The details are in the chat.") : update.kind === "cancelled" ? "The workspace agent's work was stopped. Do not claim it completed." : "The workspace agent's work failed. Ask the user to check the chat; do not claim it completed.";
-        setVoiceReplies(current => [...current.slice(-49), { id: crypto.randomUUID(), context: voiceWork.context, sessionId: voiceWork.sessionId, delegationId: voiceWork.delegationId, responseId: voiceWork.responseId, callId: voiceWork.callId, text, kind: "result" }]);
-        voiceWorkRef.current.delete(messageId);
-      }
-    }
-  };
 
   async function markTelegramUncertain(run: { root: string; journalId: string; updateId: number }, explanation: string): Promise<void> {
     const journalKey = telegramJournalKey(run.root, run.journalId);
@@ -3143,7 +3135,6 @@ function App() {
   useEffect(() => { syncTelegramAttention(); }, [telegram.status?.enabled, telegram.status?.remoteControlEnabled, telegram.status?.connectionId]);
 
   const handleMainChatEvent = (update: AiChatEvent, timelineUpdate: ChatTimelineEvent) => {
-    handleVoiceChatEvent(update);
     const telegramRun = telegramRunsRef.current.get(update.requestId);
     if (telegramRun && update.kind === "assistantMessageCompleted" && update.finalText?.trim()) {
       flushTelegramProgress(telegramRun);
@@ -3688,10 +3679,12 @@ function App() {
 
   const loadComparison = async (repo: RepositoryInfo, refresh = false, mode = comparisonMode, branchBaseRef = baseRef, branchCompareRef = compareRef) => {
     const requestId = ++comparisonLoadRef.current;
+    const blocksBranchComparison = mode === "branch" && (!refresh || !comparison);
     ++fileLoadRef.current;
     if (!refresh) {
       setLoading(true);
       setError("");
+      setBranchComparisonError("");
       setFileViewMode(defaultFileViewMode);
       setComparison(null);
       setReview(null);
@@ -3807,14 +3800,16 @@ function App() {
         setFileEditDraft(null);
         setFileViewMode(defaultFileViewMode);
       }
+      if (mode === "branch") setBranchComparisonError("");
     } catch (reason) {
       if (requestId !== comparisonLoadRef.current) return;
-      if (!refresh) {
+      if (!refresh || blocksBranchComparison) {
         setComparison(null);
         setReview(null);
         delete workspaceCacheRef.current[mode];
       }
-      setError(message(reason));
+      if (blocksBranchComparison) setBranchComparisonError(message(reason));
+      else setError(message(reason));
     } finally {
       if (requestId === comparisonLoadRef.current) setLoading(false);
     }
@@ -3847,6 +3842,7 @@ function App() {
       setLoading(false);
       setDiffLoading(false);
       setError("");
+      setBranchComparisonError("");
       setSelection(null);
       const cached = workspaceCacheRef.current[next];
       if (cached) {
@@ -4369,7 +4365,7 @@ function App() {
     playbook?: UsageItem;
     }, onEvent: (event: AgentTurnEvent) => void) => {
     await syncMcpContextRef.current();
-    if (request.beforeStart && !request.beforeStart()) throw new Error("The voice request was not started because the conversation or workspace changed.");
+    if (request.beforeStart && !request.beforeStart()) throw new Error("The request was not started because the conversation or workspace changed.");
     const accepted = await invoke<AiChatAccepted>("ai_chat_send", { input: { baseOid: comparison!.baseOid, mode: comparison!.mode, baseRef: comparison!.baseRef, compareRef: comparison!.compareRef, snapshotId: comparison!.snapshotId, agentThreadId: request.threadId, model: request.model, effort: request.effort, collaborationMode: request.mode, goal: request.mode === "default" ? request.goalSettings ?? defaultChatGoal : defaultChatGoal, prompt: request.prompt, userRules, agentPrompt: request.chatAgent?.prompt ?? "", chatContext: request.context, comments: review!.comments, allowLongPrompt: request.allowLongPrompt, taskId: request.taskId, taskLocation: request.taskLocation, taskTitle: request.taskTitle, taskDescription: request.taskDescription, approvalMode: approvalForAgent(request.chatAgent, approvalReviewerOverrides[request.taskId ?? "review"], approvalReviewerDefault, request.pipeline), telegramConnectionId: request.telegramConnectionId }, events: new Channel<AgentTurnEvent>(onEvent) });
     void recordUsage({ id: accepted.requestId, kind: "run", at: Date.now(), agent: request.chatAgent ? { id: request.chatAgent.id, title: request.chatAgent.title } : { id: "unassigned", title: "No agent" }, model: request.model, playbook: request.playbook }).catch((reason) => setError(`Usage could not be saved: ${message(reason)}`));
     return accepted;
@@ -4442,8 +4438,6 @@ function App() {
       acceptedRequestId = result.requestId;
       aiChatTurnRef.current = result;
       assistantSteerBoundariesRef.current.set(result, new AssistantSteerBoundary());
-      const voiceWork = queuedItem && voiceWorkRef.current.get(queuedItem.id);
-      if (voiceWork) voiceWork.requestId = result.requestId;
       onAccepted?.(result);
       reviewRunSessionRef.current = {
         ...(visibleReviewRunSession() ?? reviewRunSessionRef.current ?? pendingReview),
@@ -4631,10 +4625,27 @@ function App() {
   };
 
   openNotificationRef.current = (target) => {
-    if (repositoryRef.current?.rootPath !== target.repositoryRoot) return;
     const window = getCurrentWindow();
-    void window.show().then(() => window.unminimize()).then(() => window.setFocus()).catch((reason) => setError(message(reason)));
+    void window.show().then(() => window.unminimize()).then(() => window.setFocus()).catch((reason) => setNotificationError(message(reason)));
+    if (repositoryRef.current?.rootPath !== target.repositoryRoot) {
+      setNotificationError("The repository for this notification is no longer open in this window.");
+      return;
+    }
+    if (target.taskId !== null && !tasksRef.current.some((task) => task.id === target.taskId)) {
+      setNotificationError("The task for this notification is no longer available.");
+      return;
+    }
     discardFileEdit(() => {
+      if (repositoryRef.current?.rootPath !== target.repositoryRoot) {
+        setNotificationError("The repository for this notification is no longer open in this window.");
+        return;
+      }
+      const task = target.taskId === null ? null : tasksRef.current.find((current) => current.id === target.taskId);
+      if (target.taskId !== null && !task) {
+        setNotificationError("The task for this notification is no longer available.");
+        return;
+      }
+      setNotificationError("");
       setSettingsOpen(false);
       setZenMode(false);
       setTerminalOpen(false);
@@ -4644,9 +4655,7 @@ function App() {
         return;
       }
       setWorkspaceMode("tasks");
-      const task = tasksRef.current.find((current) => current.id === target.taskId);
-      if (!task) { setSelectedTaskId(null); setBoardDrawerOpen(false); return; }
-      openBoardTask(task);
+      if (task) openBoardTask(task);
     });
   };
 
@@ -5218,16 +5227,9 @@ function App() {
     const pendingEvents: AgentTurnEvent[] = [];
     pendingSteerEventsRef.current.set(accepted.requestId, pendingEvents);
     const isCurrentTurn = () => accepted === (task ? taskRunsRef.current[task.id]?.accepted : aiChatTurnRef.current);
-    const voiceWork = voiceWorkRef.current.get(id);
-    if (voiceWork) { voiceWork.requestId = accepted.requestId; voiceWork.pendingEvents = []; }
     try {
       await invoke("ai_chat_steer", { input: { requestId: accepted.requestId, prompt: item.body, chatContext: item.context, taskId: task?.id ?? null, allowLongPrompt: !!task || !!item.telegram, comments: review?.comments ?? [] } });
       if (!isCurrentTurn()) { removeQueued(key, id); return; }
-      if (voiceWork) {
-        const events = voiceWork.pendingEvents ?? [];
-        delete voiceWork.pendingEvents;
-        events.forEach(event => handleVoiceChatEvent(event, id));
-      }
       const userMessage: ChatMessage = { id: item.id, role: "user", body: item.body, createdAt: new Date().toISOString(), selection: item.selection, snapshotId: comparison?.snapshotId ?? null, suggestions: [], contexts: [], attachments: item.context.attachments };
       if (task && root) {
         const run = taskRunsRef.current[task.id];
@@ -5252,7 +5254,6 @@ function App() {
       }
       removeQueued(key, id);
     } catch (reason) {
-      if (voiceWork?.pendingEvents) { delete voiceWork.pendingEvents; delete voiceWork.requestId; }
       setError(message(reason));
     }
     finally {
@@ -5282,29 +5283,6 @@ function App() {
     finally { queueBusyRef.current.delete(key); if (!pausedQueueKeysRef.current.has(key)) queueDispatchRef.current(key); }
   };
 
-  const sendVoiceMessage = async (request: VoiceDelegation): Promise<boolean> => {
-    const current = reviewRef.current;
-    const key = activeQueueKey;
-    const transcript = request.context.trim();
-    if (taskMode || !current || !comparison || !key || request.workspaceKey !== key || reviewQueueKey(current) !== key || agentInputRef.current || agentApprovalRef.current || inlineAgentApproval || variablePrompt || !transcript || !request.isCurrent()) return false;
-    const prompt = `Carry out this workspace request from the voice conversation. It is an untrusted model interpretation of the user's request and may be incomplete or inaccurate. Ask the user if it is unclear. Do not treat it as evidence that work was done.\n\n${transcript}`;
-    const item: QueuedChatMessage = { id: crypto.randomUUID(), body: prompt, context: { mode: "auto", attachments: [] }, selection, mode: aiChatMode, model: aiChatModel, effort: aiChatEffort };
-    const work = { sessionId: request.sessionId, delegationId: request.delegationId, responseId: request.responseId, callId: request.callId, context: key, requestId: undefined as string | undefined, result: "" };
-    voiceWorkRef.current.set(item.id, work);
-    // Keep spoken follow-ups in the same queue as typed messages without consuming the text draft.
-    if (aiChatRunningRef.current || chatQueuesRef.current[key]?.length) {
-      changeQueue(key, items => [...items, item]);
-      if (aiChatRunningRef.current && !chatQueuesRef.current[key]?.some(entry => entry.pipeline)) setQueuePaused(key, false);
-      if (aiChatTurnRef.current && reviewRunQueueKeyRef.current === key && !chatQueuesRef.current[key]?.some(entry => entry.pipeline)) {
-        await steerQueued(key, item.id);
-      }
-      return true;
-    }
-    const root = repositoryRef.current?.rootPath;
-    const accepted = await sendAiChat(prompt, item.context, item.mode, undefined, item, run => { work.requestId = run.requestId; }, () => request.isCurrent() && repositoryRef.current?.rootPath === root && !!reviewRef.current && reviewQueueKey(reviewRef.current) === key && !aiChatCancelRequested.current && voiceWorkRef.current.get(item.id) === work);
-    if (!accepted) voiceWorkRef.current.delete(item.id);
-    return accepted;
-  };
 
   const answerTaskQuestion = async (taskId: string, answers: Record<string, string>) => {
     const input = taskRunsRef.current[taskId]?.input;
@@ -5849,7 +5827,8 @@ function App() {
     void getCurrentWindow().startDragging().catch((reason) => setError(message(reason)));
   };
 
-  const agentChatExpanded = !zenMode && workspaceMode === "workspace" && !!repository && !terminalOpen && comparison?.mode === "workingCopy" && !comparison.files.length;
+  const emptyWorkspaceComparison = workspaceMode === "workspace" && !!repository && !!comparison && comparison.files.length === 0;
+  const agentChatExpanded = !zenMode && emptyWorkspaceComparison && !terminalOpen;
   const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? null;
   const searchChatMessage = useMemo(() => {
     if (!searchSource) return undefined;
@@ -6327,6 +6306,24 @@ function App() {
     </Tabs.Root>
   );
 
+  const workspaceErrorBanner = error && (
+    <div role="alert" className="ios-error-banner flex min-h-12 shrink-0 items-center gap-3 border-b border-[#482631] bg-[#25151b] px-4 py-2 text-sm font-medium text-[#FB7185]">
+      <CircleAlert size={16} className="shrink-0" />
+      <span className="min-w-0 flex-1 break-words">{error}</span>
+      <button type="button" onClick={() => setError("")} className="ml-4 text-[#fb7185]">
+        Dismiss
+      </button>
+    </div>
+  );
+  const boardTaskDialogOpen = boardMode && !inlineTaskMode && boardDrawerOpen && !settingsOpen && !!selectedTask;
+  const notificationErrorBanner = notificationError && (
+    <div role="alert" className="ios-error-banner flex min-h-12 shrink-0 items-center gap-3 border-t border-[#482631] bg-[#25151b] px-4 py-2 text-sm font-medium text-[#FB7185]">
+      <CircleAlert size={16} className="shrink-0" />
+      <span className="min-w-0 flex-1 break-words">{notificationError}</span>
+      <button type="button" onClick={() => setNotificationError("")} className="ml-4 text-[#fb7185]">Dismiss</button>
+    </div>
+  );
+
   return (
     <PomodoroProvider settings={pomodoroSettings} revision={pomodoroRevision} onComplete={notifyPomodoro}>
     <TooltipProvider>
@@ -6448,6 +6445,7 @@ function App() {
 
       <div className="flex min-h-0 flex-1">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      {(settingsOpen || (tasksTabActive && boardMode && !inlineTaskMode && !boardDrawerOpen)) && workspaceErrorBanner}
       {settingsOpen && (
         <SettingsLayout page={settingsPage} onPageChange={setSettingsPage} onClose={closeSettings} browserSupported={browserSupported}>
           <div hidden={settingsPage !== "general"} data-settings-page="general">
@@ -6594,7 +6592,6 @@ function App() {
               </div>
             </section>
           </div>
-          {settingsPage === "conversation" && <div data-settings-page="conversation"><ConversationSettings onChange={setConversationSettings} /></div>}
           <div hidden={settingsPage !== "agent"} data-settings-page="agent">
             <section className="mt-10">
               <h2 className="mb-4 text-[17px] font-semibold text-[#E8FFF0]">Defaults & personalization</h2>
@@ -6751,13 +6748,15 @@ function App() {
             ? "minmax(0, 1fr)"
             : tasksTabActive && repository
             ? `${taskColumns.tasks}px minmax(0, 1fr) ${taskColumns.changes}px`
+            : emptyWorkspaceComparison
+            ? agentChatExpanded ? "0px minmax(0, 1fr) 0px" : `0px minmax(0, 1fr) min(${sidebarWidths.right}px, 100%)`
             : repository
             ? `${sidebarWidths.left}px minmax(0, 1fr) min(${sidebarWidths.right}px, max(0px, calc(100% - ${sidebarWidths.left}px)))`
             : `${sidebarWidths.left}px minmax(0, 1fr)`,
         }}
       >
-        {repository && <MemoryWorkspace key={repository.rootPath} repositoryRoot={repository.rootPath} flushRef={memoryFlushRef} openRef={memoryOpenRef} visible={memoryMode} />}
-        {!zenMode && !tasksTabActive && !memoryMode && <aside className="ios-file-list relative z-10 mt-[-52px] flex h-[calc(100%+52px)] min-h-0 flex-col border-r border-[#294536] bg-[#0B110E]">
+        {repository && <MemoryWorkspace key={repository.rootPath} repositoryRoot={repository.rootPath} flushRef={memoryFlushRef} openRef={memoryOpenRef} visible={memoryMode} workspaceErrorBanner={memoryMode ? workspaceErrorBanner : null} />}
+        {!zenMode && !tasksTabActive && !memoryMode && !emptyWorkspaceComparison && <aside className="ios-file-list relative z-10 mt-[-52px] flex h-[calc(100%+52px)] min-h-0 flex-col border-r border-[#294536] bg-[#0B110E]">
           <div
             data-tauri-drag-region
             onMouseDown={startDragging}
@@ -6775,72 +6774,6 @@ function App() {
                   <DropdownMenuItem onClick={() => setExpandedFolders(new Set())}>Collapse all</DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
-            </div>
-            <div className="ios-sidebar-context mt-2 flex-col items-stretch gap-1">
-              <span className="ios-comparison-selector-wrap">
-                <GitBranch size={13} className="ios-comparison-selector-icon" />
-                <Popover open={branchPickerOpen} onOpenChange={(open) => {
-                  setBranchPickerOpen(open);
-                  if (open) void invoke<BranchRefs>("list_branch_refs").then(setBranchRefs).catch((reason) => setError(message(reason)));
-                  else setBranchFilter("");
-                }}>
-                  <PopoverTrigger disabled={branchActionBusy} aria-label="Switch branch" className="ios-comparison-selector flex items-center">
-                    <span className="flex-1 truncate text-left">{branchSwitching ? "Switching branch…" : repository?.currentBranch ?? "Detached HEAD"}</span>
-                    {branchSwitching ? <LoaderCircle size={14} className="animate-spin" /> : <ChevronDown size={14} />}
-                  </PopoverTrigger>
-                  <PopoverContent align="start" className="ios-branch-menu">
-                    <div className="ios-branch-filter">
-                      <Input autoFocus value={branchFilter} onChange={(event) => setBranchFilter(event.currentTarget.value)} placeholder="Filter branches" aria-label="Filter branches" />
-                      {repository?.hasOrigin && <div className="ios-branch-sync-actions">
-                        <button type="button" disabled={branchActionBusy} onClick={() => void fetchBranches()} className="ios-branch-fetch">
-                          {branchesFetching ? <LoaderCircle size={14} className="animate-spin" /> : <RefreshCw size={14} />} {branchesFetching ? "Fetching…" : "Fetch"}
-                        </button>
-                        <button type="button" disabled={branchActionBusy} onClick={() => discardFileEdit(() => void pullBranch())} className="ios-branch-fetch">
-                          {branchPulling ? <LoaderCircle size={14} className="animate-spin" /> : <ArrowDown size={14} />} {branchPulling ? "Pulling…" : "Pull"}
-                          {branchRefs?.pullCount != null && branchRefs.pullCount > 0 && ` (${branchRefs.pullCount})`}
-                        </button>
-                        <button type="button" disabled={branchActionBusy || !repository.currentBranch} onClick={() => void pushBranch()} className="ios-branch-fetch">
-                          {branchPushing ? <LoaderCircle size={14} className="animate-spin" /> : <ArrowUp size={14} />} {branchPushing ? "Pushing…" : "Push"}
-                          {branchRefs?.pushCount != null && branchRefs.pushCount > 0 && ` (${branchRefs.pushCount})`}
-                        </button>
-                      </div>}
-                    </div>
-                    <div className="ios-branch-separator" />
-                    <div className="ios-branch-list">
-                      <p className="ios-branch-heading">Local branches</p>
-                      <BranchTreeView tree={localBranchTree} parentPath="local" depth={0} expandedFolders={expandedBranchFolders} forceExpanded={!!branchFilterTerm} currentBranch={repository?.currentBranch} disabled={branchActionBusy} onToggle={toggleBranchFolder} onSelect={(branch) => discardFileEdit(() => void switchBranch(branch))} />
-                      {remoteBranches.length ? <>
-                        <div className="ios-branch-separator" />
-                        <p className="ios-branch-heading">Remote branches</p>
-                        <BranchTreeView tree={remoteBranchTree} parentPath="origin" depth={0} expandedFolders={expandedBranchFolders} forceExpanded={!!branchFilterTerm} currentBranch={repository?.currentBranch ? `origin/${repository.currentBranch}` : null} disabled={branchActionBusy} onToggle={toggleBranchFolder} onSelect={(branch) => discardFileEdit(() => void switchBranch(branch))} />
-                      </> : null}
-                      {!localBranches.length && !remoteBranches.length && <p className="px-2 py-3 text-sm text-[#7C9B88]">No matching branches</p>}
-                    </div>
-                  </PopoverContent>
-                </Popover>
-              </span>
-              <div className="ios-sidebar-divider" aria-hidden="true" />
-              <span className="ios-comparison-selector-wrap">
-                <GitCompareArrows size={13} className="ios-comparison-selector-icon" />
-                <Select value={comparisonMode === "branch" ? baseRef : "workingCopy"} onValueChange={(value) => {
-                  if (value === null) return;
-                  if (value === "workingCopy") switchComparisonMode("workingCopy");
-                  else selectBranchComparison(value);
-                }}>
-                  <SelectTrigger aria-label="Comparison context" className="ios-comparison-selector"><SelectValue>{(value) => value === "workingCopy" ? "Working Copy" : repository?.currentBranch ? `${value} → ${repository.currentBranch}` : value}</SelectValue></SelectTrigger>
-                  <SelectContent className="ios-select-content ios-comparison-select-content">
-                    <SelectItem value="workingCopy">{repository?.currentBranch ? `Working Copy · ${repository.currentBranch}` : "Working Copy"}</SelectItem>
-                    {repository?.currentBranch && branchRefs?.refs.some((ref) => ref !== repository.currentBranch) && (
-                      <SelectGroup>
-                        <SelectLabel>Compare with {repository.currentBranch}</SelectLabel>
-                        {branchRefs.refs.filter((ref) => ref !== repository.currentBranch).map((ref) => (
-                          <SelectItem key={ref} value={ref}>{ref} → {repository.currentBranch}</SelectItem>
-                        ))}
-                      </SelectGroup>
-                    )}
-                  </SelectContent>
-                </Select>
-              </span>
             </div>
             <div className="ios-sidebar-divider ios-sidebar-search-divider" aria-hidden="true" />
             <label className="ios-sidebar-search mt-2">
@@ -6919,18 +6852,10 @@ function App() {
 
         <section
           className={`ios-workspace min-h-0 min-w-0 flex-col bg-[#0B110E] ${tasksTabActive ? "task-mode-list relative border-r border-[#294536]" : ""} ${tasksTabActive && !boardMode ? "mt-[-52px] h-[calc(100%+52px)]" : ""} ${memoryMode || agentChatExpanded || zenMode ? "hidden" : "flex"}`}
-          style={{ gridColumn: tasksTabActive ? "1" : repository ? undefined : "2" }}
+          style={{ gridColumn: tasksTabActive ? "1" : "2" }}
         >
           {tasksTabActive && !boardMode && <div data-tauri-drag-region onMouseDown={startDragging} className="ios-sidebar-titlebar flex h-[52px] shrink-0 items-center border-b border-[#294536] pl-[88px] pr-2"><span className="truncate text-sm font-semibold text-[#E8FFF0]">{repository?.name ?? "Tasks"}</span></div>}
-          {!tasksTabActive && error && !(comparisonMode === "branch" && !comparison) && (
-            <div role="alert" className="ios-error-banner flex min-h-12 shrink-0 items-center gap-3 border-b border-[#482631] bg-[#25151b] px-4 py-2 text-sm font-medium text-[#FB7185]">
-              <CircleAlert size={16} className="shrink-0" />
-              <span className="min-w-0 flex-1 break-words">{error}</span>
-              <button type="button" onClick={() => setError("")} className="ml-4 text-[#fb7185]">
-                Dismiss
-              </button>
-            </div>
-          )}
+          {!memoryMode && !tasksTabActive && workspaceErrorBanner}
           <div className="min-h-0 flex flex-1 flex-col">
           {tasksTabActive ? (
             <>
@@ -7121,10 +7046,10 @@ function App() {
                 </div>
                 <h1 className="text-[28px] font-bold tracking-tight">{loading ? "Loading diff" : "Compare branches"}</h1>
                 <p className="mt-2 text-[15px] leading-6 text-[#7C9B88]">
-                  {loading ? "Loading the selected branch comparison." : "Choose another comparison from the Changes header."}
+                  {loading ? "Loading the selected branch comparison." : "Choose another comparison from the chat header."}
                 </p>
-                {error && <p role="alert" className="mt-3 text-sm text-[#FB7185]">{error}</p>}
-                {error && <button type="button" disabled={loading} onClick={() => void loadComparison(repository, false, "branch", baseRef, compareRef)} className="accent-button mt-5 px-4">
+                {branchComparisonError && <p role="alert" className="mt-3 text-sm text-[#FB7185]">{branchComparisonError}</p>}
+                {branchComparisonError && <button type="button" disabled={loading} onClick={() => void loadComparison(repository, false, "branch", baseRef, compareRef)} className="accent-button mt-5 px-4">
                   <GitCompareArrows size={14} /> Retry
                 </button>}
               </div>
@@ -7237,6 +7162,73 @@ function App() {
             centered={zenMode || (!taskMode && agentChatExpanded)}
             zenMode={zenMode}
             hideHeader={boardMode && !inlineTaskMode}
+            headerControls={!taskMode && !zenMode && repository ? (
+            <div className="ios-workspace-comparison-controls">
+              <span className="ios-comparison-selector-wrap">
+                <GitBranch size={13} className="ios-comparison-selector-icon" />
+                <Popover open={branchPickerOpen} onOpenChange={(open) => {
+                  setBranchPickerOpen(open);
+                  if (open) void invoke<BranchRefs>("list_branch_refs").then(setBranchRefs).catch((reason) => setError(message(reason)));
+                  else setBranchFilter("");
+                }}>
+                  <PopoverTrigger disabled={branchActionBusy} aria-label="Switch branch" className="ios-comparison-selector flex items-center">
+                    <span className="flex-1 truncate text-left">{branchSwitching ? "Switching branch…" : repository?.currentBranch ?? "Detached HEAD"}</span>
+                    {branchSwitching ? <LoaderCircle size={14} className="animate-spin" /> : <ChevronDown size={14} />}
+                  </PopoverTrigger>
+                  <PopoverContent align="start" className="ios-branch-menu">
+                    <div className="ios-branch-filter">
+                      <Input autoFocus value={branchFilter} onChange={(event) => setBranchFilter(event.currentTarget.value)} placeholder="Filter branches" aria-label="Filter branches" />
+                      {repository?.hasOrigin && <div className="ios-branch-sync-actions">
+                        <button type="button" disabled={branchActionBusy} onClick={() => void fetchBranches()} className="ios-branch-fetch">
+                          {branchesFetching ? <LoaderCircle size={14} className="animate-spin" /> : <RefreshCw size={14} />} {branchesFetching ? "Fetching…" : "Fetch"}
+                        </button>
+                        <button type="button" disabled={branchActionBusy} onClick={() => discardFileEdit(() => void pullBranch())} className="ios-branch-fetch">
+                          {branchPulling ? <LoaderCircle size={14} className="animate-spin" /> : <ArrowDown size={14} />} {branchPulling ? "Pulling…" : "Pull"}
+                          {branchRefs?.pullCount != null && branchRefs.pullCount > 0 && ` (${branchRefs.pullCount})`}
+                        </button>
+                        <button type="button" disabled={branchActionBusy || !repository.currentBranch} onClick={() => void pushBranch()} className="ios-branch-fetch">
+                          {branchPushing ? <LoaderCircle size={14} className="animate-spin" /> : <ArrowUp size={14} />} {branchPushing ? "Pushing…" : "Push"}
+                          {branchRefs?.pushCount != null && branchRefs.pushCount > 0 && ` (${branchRefs.pushCount})`}
+                        </button>
+                      </div>}
+                    </div>
+                    <div className="ios-branch-separator" />
+                    <div className="ios-branch-list">
+                      <p className="ios-branch-heading">Local branches</p>
+                      <BranchTreeView tree={localBranchTree} parentPath="local" depth={0} expandedFolders={expandedBranchFolders} forceExpanded={!!branchFilterTerm} currentBranch={repository?.currentBranch} disabled={branchActionBusy} onToggle={toggleBranchFolder} onSelect={(branch) => discardFileEdit(() => void switchBranch(branch))} />
+                      {remoteBranches.length ? <>
+                        <div className="ios-branch-separator" />
+                        <p className="ios-branch-heading">Remote branches</p>
+                        <BranchTreeView tree={remoteBranchTree} parentPath="origin" depth={0} expandedFolders={expandedBranchFolders} forceExpanded={!!branchFilterTerm} currentBranch={repository?.currentBranch ? `origin/${repository.currentBranch}` : null} disabled={branchActionBusy} onToggle={toggleBranchFolder} onSelect={(branch) => discardFileEdit(() => void switchBranch(branch))} />
+                      </> : null}
+                      {!localBranches.length && !remoteBranches.length && <p className="px-2 py-3 text-sm text-[#7C9B88]">No matching branches</p>}
+                    </div>
+                  </PopoverContent>
+                </Popover>
+              </span>
+              <span className="ios-comparison-selector-wrap">
+                <GitCompareArrows size={13} className="ios-comparison-selector-icon" />
+                <Select value={comparisonMode === "branch" ? baseRef : "workingCopy"} onValueChange={(value) => {
+                  if (value === null) return;
+                  if (value === "workingCopy") switchComparisonMode("workingCopy");
+                  else selectBranchComparison(value);
+                }}>
+                  <SelectTrigger aria-label="Comparison context" className="ios-comparison-selector"><SelectValue>{(value) => value === "workingCopy" ? "Working Copy" : repository?.currentBranch ? `${value} → ${repository.currentBranch}` : value}</SelectValue></SelectTrigger>
+                  <SelectContent className="ios-select-content ios-comparison-select-content">
+                    <SelectItem value="workingCopy">{repository?.currentBranch ? `Working Copy · ${repository.currentBranch}` : "Working Copy"}</SelectItem>
+                    {repository?.currentBranch && branchRefs?.refs.some((ref) => ref !== repository.currentBranch) && (
+                      <SelectGroup>
+                        <SelectLabel>Compare with {repository.currentBranch}</SelectLabel>
+                        {branchRefs.refs.filter((ref) => ref !== repository.currentBranch).map((ref) => (
+                          <SelectItem key={ref} value={ref}>{ref} → {repository.currentBranch}</SelectItem>
+                        ))}
+                      </SelectGroup>
+                    )}
+                  </SelectContent>
+                </Select>
+              </span>
+            </div>
+            ) : null}
             approvalReviewer={activeApprovalReviewer}
             error={error}
             images={taskMode ? selectedTask?.attachments ?? [] : aiChatUploads}
@@ -7252,12 +7244,7 @@ function App() {
             onZenModeChange={setZenMode}
             onApprovalReviewerChange={(value) => setApprovalReviewerOverrides((current) => ({ ...current, [taskMode ? selectedTask?.id ?? "" : "review"]: { mode: value, agent: activeApprovalAgent ?? null } }))}
             onSend={sendComposerMessage}
-            onVoiceSend={sendVoiceMessage}
-            voiceRunId={reviewRunQueueKeyRef.current === activeQueueKey ? aiChatTurnRef.current?.requestId : undefined}
-            onVoiceCancel={(requestId) => { void cancelAiChat(requestId); }}
-            conversationEnabled={conversationSettings.enabled && !settingsOpen && workspaceMode === "workspace"}
-            conversationContext={activeQueueKey ?? ""}
-            voiceReplies={voiceReplies}
+            voiceContext={settingsOpen || (boardMode && !inlineTaskMode && !boardDrawerOpen) ? "" : activeQueueKey ?? ""}
             queuedMessages={activeQueueKey ? chatQueues[activeQueueKey] ?? [] : []}
             queuePaused={activeQueueKey ? pausedQueueKeys.has(activeQueueKey) : false}
             canSteerQueued={taskMode ? !!selectedTaskRun : reviewRunQueueKeyRef.current === activeQueueKey}
@@ -7317,7 +7304,7 @@ function App() {
         </div>}
       </div>
       </div>
-      <Dialog open={boardMode && !inlineTaskMode && boardDrawerOpen && !settingsOpen && !!selectedTask} onOpenChange={(open) => {
+      <Dialog open={boardTaskDialogOpen} onOpenChange={(open) => {
         const finish = () => {
           if (!open) {
             if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
@@ -7332,6 +7319,7 @@ function App() {
         <DialogContent keepMounted showCloseButton={false} className="task-detail-dialog !animate-none flex h-[88vh] w-[94vw] !max-w-[1800px] min-h-0 flex-col gap-0 overflow-hidden rounded-xl border border-[#294536] bg-[var(--ios-grouped-background)] p-0 shadow-2xl shadow-black/50">
           <DialogDescription className="sr-only">Task detail, chat and changes</DialogDescription>
           {!inlineTaskMode && taskDetailContent}
+          {boardTaskDialogOpen && notificationErrorBanner}
         </DialogContent>
       </Dialog>
       {simulatorSpace.enabled && <aside className="relative flex min-h-0 shrink-0 flex-col border-l border-[#294536] bg-[#0B110E]" style={{ width: Math.min(simulatorSpace.width, Math.max(200, window.innerWidth - 320)) }} aria-label="Simulator space">
@@ -7339,6 +7327,7 @@ function App() {
         <header className="flex h-12 shrink-0 items-center border-b border-[#294536] px-4 text-sm font-semibold text-[#E8FFF0]">Simulator</header>
       </aside>}
       </div>
+      {!boardTaskDialogOpen && notificationErrorBanner}
 
 
       {runOutputOpen && (
