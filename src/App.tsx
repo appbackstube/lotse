@@ -2163,6 +2163,7 @@ function App() {
   const telegramRef = useRef(telegram);
   telegramRef.current = telegram;
   const [comparison, setComparison] = useState<Comparison | null>(null);
+  const [branchComparisonError, setBranchComparisonError] = useState("");
   const comparisonRef = useRef(comparison);
   comparisonRef.current = comparison;
   const [comparisonMode, setComparisonMode] = useState<"workingCopy" | "branch">("workingCopy");
@@ -3680,10 +3681,12 @@ function App() {
 
   const loadComparison = async (repo: RepositoryInfo, refresh = false, mode = comparisonMode, branchBaseRef = baseRef, branchCompareRef = compareRef) => {
     const requestId = ++comparisonLoadRef.current;
+    const blocksBranchComparison = mode === "branch" && (!refresh || !comparison);
     ++fileLoadRef.current;
     if (!refresh) {
       setLoading(true);
       setError("");
+      setBranchComparisonError("");
       setFileViewMode(defaultFileViewMode);
       setComparison(null);
       setReview(null);
@@ -3799,14 +3802,16 @@ function App() {
         setFileEditDraft(null);
         setFileViewMode(defaultFileViewMode);
       }
+      if (mode === "branch") setBranchComparisonError("");
     } catch (reason) {
       if (requestId !== comparisonLoadRef.current) return;
-      if (!refresh) {
+      if (!refresh || blocksBranchComparison) {
         setComparison(null);
         setReview(null);
         delete workspaceCacheRef.current[mode];
       }
-      setError(message(reason));
+      if (blocksBranchComparison) setBranchComparisonError(message(reason));
+      else setError(message(reason));
     } finally {
       if (requestId === comparisonLoadRef.current) setLoading(false);
     }
@@ -3839,6 +3844,7 @@ function App() {
       setLoading(false);
       setDiffLoading(false);
       setError("");
+      setBranchComparisonError("");
       setSelection(null);
       const cached = workspaceCacheRef.current[next];
       if (cached) {
@@ -6866,7 +6872,7 @@ function App() {
           style={{ gridColumn: tasksTabActive ? "1" : "2" }}
         >
           {tasksTabActive && !boardMode && <div data-tauri-drag-region onMouseDown={startDragging} className="ios-sidebar-titlebar flex h-[52px] shrink-0 items-center border-b border-[#294536] pl-[88px] pr-2"><span className="truncate text-sm font-semibold text-[#E8FFF0]">{repository?.name ?? "Tasks"}</span></div>}
-          {!memoryMode && !tasksTabActive && !(comparisonMode === "branch" && !comparison) && workspaceErrorBanner}
+          {!memoryMode && !tasksTabActive && workspaceErrorBanner}
           <div className="min-h-0 flex flex-1 flex-col">
           {tasksTabActive ? (
             <>
@@ -7059,8 +7065,8 @@ function App() {
                 <p className="mt-2 text-[15px] leading-6 text-[#7C9B88]">
                   {loading ? "Loading the selected branch comparison." : "Choose another comparison from the chat header."}
                 </p>
-                {error && <p role="alert" className="mt-3 text-sm text-[#FB7185]">{error}</p>}
-                {error && <button type="button" disabled={loading} onClick={() => void loadComparison(repository, false, "branch", baseRef, compareRef)} className="accent-button mt-5 px-4">
+                {branchComparisonError && <p role="alert" className="mt-3 text-sm text-[#FB7185]">{branchComparisonError}</p>}
+                {branchComparisonError && <button type="button" disabled={loading} onClick={() => void loadComparison(repository, false, "branch", baseRef, compareRef)} className="accent-button mt-5 px-4">
                   <GitCompareArrows size={14} /> Retry
                 </button>}
               </div>

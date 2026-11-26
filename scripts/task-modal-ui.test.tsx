@@ -394,6 +394,19 @@ try {
     const comparisonError = () => [...document.querySelectorAll('[role="alert"]')]
       .some((alert) => visible(alert) && alert.textContent === "Could not compare branches.");
     check(comparisonError(), "The failed comparison must show its own error");
+    for (const view of ["Settings", "Memory"]) {
+      const closeSettings = () => document.querySelector<HTMLElement>('[aria-label="Close settings"]');
+      await click(view === "Settings" ? document.querySelector<HTMLElement>('[aria-label="Settings"]')! : button("Memory"));
+      await act(async () => emit("repository-watch-error", "Could not watch repository."));
+      await settle();
+      const alerts = () => [...document.querySelectorAll('[role="alert"]')].filter(visible);
+      check(!alerts().some((alert) => alert.textContent?.includes("Could not compare branches.")), `${view}: the comparison failure must stay in Workspace`);
+      const watcherError = () => alerts().find((alert) => alert.textContent?.includes("Could not watch repository."));
+      await click(watcherError()?.querySelector<HTMLButtonElement>("button")!);
+      check(!watcherError(), `${view}: Dismiss must clear the workspace banner`);
+      await click(view === "Settings" ? closeSettings()! : button("Workspace"));
+      check(comparisonError() && button("Retry"), `${view}: dismissing the banner must preserve the comparison error and Retry`);
+    }
     await tap({ ...target, taskId: "deleted-task" });
     check(comparisonError() && unavailableTaskAlert(), "The missing-task alert must not replace the comparison error");
     await click(button("Retry"));
