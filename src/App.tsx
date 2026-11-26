@@ -6445,6 +6445,7 @@ function App() {
 
       <div className="flex min-h-0 flex-1">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      {(settingsOpen || (tasksTabActive && boardMode && !inlineTaskMode && !boardDrawerOpen)) && workspaceErrorBanner}
       {settingsOpen && (
         <SettingsLayout page={settingsPage} onPageChange={setSettingsPage} onClose={closeSettings} browserSupported={browserSupported}>
           <div hidden={settingsPage !== "general"} data-settings-page="general">

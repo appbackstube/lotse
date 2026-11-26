@@ -384,7 +384,21 @@ try {
     const memoryError = document.querySelector('[aria-label="Memory editor"] [role="alert"]');
     check(button("Memory").getAttribute("aria-pressed") === "true", "A deleted task notification must leave Memory open");
     check(visible(memoryError) && memoryError?.textContent?.includes("The task for this notification is no longer available."), "A deleted task notification must show its error in Memory");
-    document.getElementById("result")!.textContent = "PASS: Notification clicks open tasks and chat from List/Kanban/Gantt, restore panels, mark results read, focus the correct window, open Workspace, ignore invalid or unrelated actions, and show unavailable tasks in Memory without navigating.";
+    await click(button("Dismiss"));
+    await click(document.querySelector<HTMLElement>('[aria-label="Settings"]')!);
+    await tap({ ...target, taskId: "deleted-task" });
+    check(visible(document.querySelector('[aria-label="Close settings"]')) && visible(document.querySelector('[role="alert"].ios-error-banner')), "A deleted task notification must show its error without leaving Settings");
+    await click(button("Dismiss"));
+    await click(document.querySelector<HTMLElement>('[aria-label="Close settings"]')!);
+    await click(button("Tasks"));
+    for (const view of ["Kanban", "Gantt"]) {
+      await click(button(view));
+      await tap({ ...target, taskId: "deleted-task" });
+      const alert = document.querySelector('[role="alert"].ios-error-banner');
+      check(button(view).getAttribute("aria-pressed") === "true" && visible(alert) && alert?.textContent?.includes("The task for this notification is no longer available."), `${view}: a deleted task notification must show its error without changing views`);
+      if (view !== "Gantt" || !new URLSearchParams(location.search).has("preview")) await click(button("Dismiss"));
+    }
+    document.getElementById("result")!.textContent = "PASS: Notification navigation and unavailable-task errors in Memory, Settings, Kanban and Gantt.";
   } else if (chatScrollCheck) {
     await click(button("Tasks"));
     await click(document.querySelector<HTMLElement>(`[aria-label="Drag ${task.title}"]`)!);
