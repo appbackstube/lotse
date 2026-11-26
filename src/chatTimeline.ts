@@ -80,11 +80,12 @@ export class AssistantSteerBoundary {
         this.steeredPlan = undefined;
         if (prefix) {
           const fullText = event.finalText;
-          const finalText = fullText.startsWith(prefix) ? fullText.slice(prefix.length) : undefined;
-          if (proposedPlanPattern.test(fullText.trim())) {
-            const body = finalText === undefined ? streamedSuffix.replace(/<\/proposed_plan>\s*$/, "")
-              : fullText.slice(Math.max(prefix.length, fullText.indexOf(">") + 1), fullText.lastIndexOf("</proposed_plan>"));
-            this.steeredPlan = { body: body.trim(), hasLiveText: !!(finalText?.trim() || streamedSuffix.trim()) };
+          const matchesPrefix = fullText.startsWith(prefix);
+          const finalText = matchesPrefix ? fullText.slice(prefix.length) : fullText;
+          const planBody = fullText.trim().match(proposedPlanPattern)?.[1];
+          if (planBody !== undefined) {
+            const body = matchesPrefix ? fullText.slice(Math.max(prefix.length, fullText.indexOf(">") + 1), fullText.lastIndexOf("</proposed_plan>")) : planBody;
+            this.steeredPlan = { body: body.trim(), hasLiveText: !!(finalText.trim() || streamedSuffix.trim()) };
           }
           return { ...event, finalText };
         }

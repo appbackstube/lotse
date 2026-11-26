@@ -92,13 +92,13 @@ try {
   await event(0, { kind: "assistantDelta", delta: "I checked the summary." });
   await send("Also verify the heading.", "Queue Review Agent message"); await checkpoint();
   await steer();
-  await event(0, { kind: "assistantMessageCompleted", finalText: "I checked the summary. The heading is correct." });
+  await event(0, { kind: "assistantMessageCompleted", finalText: "I verified both the summary and the heading." });
   await event(0, { kind: "completed" }); await checkpoint();
   await acknowledge();
   await click("Another task"); await click(task.title);
   await act(async () => { await fileStore.flush(); });
   const saved: typeof task = JSON.parse(storage[taskKey]).find((entry: typeof task) => entry.id === task.id);
-  const expected = ["Inspect the changes.", "I checked the summary.", "Also verify the heading.", "The heading is correct."];
+  const expected = ["Inspect the changes.", "I checked the summary.", "Also verify the heading.", "I verified both the summary and the heading."];
   check(JSON.stringify(saved.chatMessages.map((entry: { body: string }) => entry.body)) === JSON.stringify(expected), "The pipeline's saved chat must preserve the exact steer order");
   check(saved.chatMessages[0].runStatus === "completed" && runs.length === 1, "The pipeline must complete without resending the steer");
   const results = loadPipelineRuns(JSON.stringify([repo.rootPath, "task", task.id]))[0]?.messages[0]?.resultIds;

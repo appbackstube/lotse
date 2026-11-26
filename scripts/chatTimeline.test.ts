@@ -82,13 +82,20 @@ receive(delta(" draft suffix"));
 receive(complete("Saved prefix final suffix"));
 assert.deepEqual(liveTimeline.map(({ body }) => body), ["final suffix"]);
 
-receive(start);
-receive(delta("Original wording"));
-boundary.markSteered(liveTimeline);
-liveTimeline = [];
-receive(delta(" streamed suffix"));
-receive(complete("Revised wording and suffix"));
-assert.deepEqual(liveTimeline.map(({ body }) => body), [" streamed suffix"]);
+for (const streamedSuffix of ["", " streamed suffix"]) {
+  receive(start);
+  liveTimeline = [];
+  receive(delta("Original wording"));
+  const savedPrefix = persistedChatEntries([...liveTimeline, steer]);
+  boundary.markSteered(liveTimeline);
+  liveTimeline = [];
+  if (streamedSuffix) receive(delta(streamedSuffix));
+  receive(complete("Revised wording and suffix"));
+  const savedResponse = persistedChatEntries([...savedPrefix, ...liveTimeline]);
+  assert.deepEqual(savedResponse.map(({ role, body }) => [role, body]), [
+    ["assistant", "Original wording"], ["user", "Follow-up"], ["assistant", "Revised wording and suffix"],
+  ]);
+}
 
 const plan = finalizePlanOutput([entry("<proposed_plan>\n## Plan\n\nShip it.\n</proposed_plan>")]);
 assert.equal(plan.isPlan, true);
@@ -100,6 +107,7 @@ const fullPlan = "<proposed_plan>\nFirst step.\nSecond step.\n</proposed_plan>";
 for (const [prefix, expectedBody] of [
   ["<proposed", "First step.\nSecond step."],
   ["<proposed_plan>\nFirst step.", "Second step."],
+  ["<proposed_plan>\nDraft step.", "First step.\nSecond step."],
   [fullPlan, "See the plan above."],
 ]) {
   receive(start);
