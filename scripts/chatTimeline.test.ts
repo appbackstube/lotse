@@ -58,8 +58,10 @@ const afterSecondSteer = [...beforeFirstSteer, ...persistedChatEntries([...liveT
 boundary.markSteered(liveTimeline);
 liveTimeline = [];
 receive(complete("First part and second part and last part"));
+assert.equal(boundary.getSteeredResponse("default"), "First part and second part and last part");
 receive(start);
 receive(complete("First part of a new message"));
+assert.equal(boundary.getSteeredResponse("default"), "First part of a new message");
 const savedHistory: ChatMessage[] = JSON.parse(JSON.stringify([...afterSecondSteer, ...persistedChatEntries(liveTimeline)]));
 assert.deepEqual(savedHistory.map(({ role, body }) => [role, body]), [
   ["assistant", "First part"], ["user", "Follow-up"], ["assistant", " and second part"],
@@ -86,6 +88,7 @@ receive(delta(" more draft continuation"));
 receive(complete("Already shown"));
 assert.deepEqual(liveTimeline.map(({ body, appliedDiffs }) => [body, appliedDiffs]), [["", [retainedChange]]]);
 assert.deepEqual(persistedChatEntries([...savedBeforeRetraction, ...liveTimeline]).map(({ body }) => body), ["Already shown", steer.body, ""]);
+assert.equal(boundary.getSteeredResponse("default"), "Already shown");
 
 receive(start);
 liveTimeline = [];
@@ -132,6 +135,7 @@ for (const [prefix, expectedBody] of [
   liveTimeline = [];
   if (prefix === fullPlan) receive(delta("Draft following the plan."));
   receive(complete(fullPlan));
+  assert.equal(boundary.getSteeredResponse("plan"), "First step.\nSecond step.");
   const finalized = finalizePlanOutput(liveTimeline, boundary.steeredPlan);
   assert.equal(finalized.isPlan, true);
   assert.deepEqual([...savedPrefix, ...persistedChatEntries(finalized.timeline)].map(({ body }) => body), [prefix, steer.body, expectedBody]);
@@ -156,6 +160,7 @@ assert.deepEqual(finalizedSavedPlan.timeline, []);
 assert.equal(finalizedSavedPlan.savedPlan?.id, savedPlanId);
 assert.equal(finalizedSavedPlan.savedPlan?.body, "First step.\nSecond step.");
 assert.equal(finalizedSavedPlan.savedPlan?.canImplementPlan, true);
+assert.equal(boundary.getSteeredResponse("plan"), "First step.\nSecond step.");
 
 receive(start);
 receive(complete("A later assistant message"));

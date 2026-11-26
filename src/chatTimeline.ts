@@ -1,4 +1,4 @@
-import type { AiChatEvent, ChatMessage, ReviewSession } from "./types";
+import type { AiChatEvent, AiChatMode, ChatMessage, ReviewSession } from "./types";
 
 export function carryReviewChat(previous: ReviewSession | null, next: ReviewSession): ReviewSession {
   if (!previous || previous.repoPath !== next.repoPath || previous.mode !== "workingCopy" || next.mode !== "workingCopy" || previous.baseOid === next.baseOid) return next;
@@ -60,10 +60,19 @@ function lastAssistantTextIndex(timeline: ChatMessage[]): number {
 
 export class AssistantSteerBoundary {
   private streamedText = "";
+  private completedText = "";
   private savedPrefix = "";
+  private hasSteered = false;
   steeredPlan: SteeredPlan | undefined;
 
+  getSteeredResponse(mode: AiChatMode): string | undefined {
+    if (!this.hasSteered) return undefined;
+    const text = this.streamedText.trim() || this.completedText;
+    return mode === "plan" ? text.match(proposedPlanPattern)?.[1].trim() ?? text : text;
+  }
+
   markSteered(timeline: ChatMessage[]) {
+    this.hasSteered = true;
     this.savedPrefix = this.streamedText;
     const entry = timeline[lastAssistantTextIndex(timeline)];
     if (!entry) return;
@@ -78,6 +87,7 @@ export class AssistantSteerBoundary {
     }
     if (event.kind === "assistantMessageStarted" || event.kind === "assistantMessageCompleted") {
       const prefix = this.savedPrefix;
+      this.completedText = event.kind === "assistantMessageStarted" ? "" : event.finalText?.trim() || this.streamedText.trim() || this.completedText;
       this.streamedText = "";
       this.savedPrefix = "";
       if (event.kind === "assistantMessageCompleted" && event.finalText?.trim()) {

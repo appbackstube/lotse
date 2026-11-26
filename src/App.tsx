@@ -2968,8 +2968,9 @@ function App() {
     }
     if (update.kind === "completed" || update.kind === "cancelled" || update.kind === "failed") {
       const runStatus = update.kind;
+      const steerBoundary = assistantSteerBoundariesRef.current.get(run.accepted);
       const plan = run.mode === "plan" && update.kind === "completed"
-        ? finalizePlanOutput(timeline, assistantSteerBoundariesRef.current.get(run.accepted)?.steeredPlan)
+        ? finalizePlanOutput(timeline, steerBoundary?.steeredPlan)
         : null;
       timeline = plan?.timeline ?? timeline;
       const messages = update.kind === "failed" ? [] : persistedChatEntries(timeline);
@@ -2999,7 +3000,8 @@ function App() {
       const telegramConnection = telegramRef.current.status;
       if (telegramRoot && telegramConnection?.enabled && telegramConnection.remoteControlEnabled && telegramConnection.connectionId) {
         const title = tasksRef.current.find((task) => task.id === taskId)?.title ?? "Task";
-        const detail = update.kind === "failed" ? update.message : messages.filter((entry) => entry.role === "assistant").at(-1)?.body;
+        const steeredResponse = update.kind === "completed" ? steerBoundary?.getSteeredResponse(run.mode) : undefined;
+        const detail = update.kind === "failed" ? update.message : steeredResponse || messages.filter((entry) => entry.role === "assistant").at(-1)?.body;
         void sendTelegramRemoteText({ root: telegramRoot, connectionId: telegramConnection.connectionId }, `${title}: Agent ${update.kind}.${detail ? `\n\n${detail}` : ""}`).catch((reason) => setError(message(reason)));
       }
       if (update.kind !== "cancelled" && (update.kind === "failed" || !key || !chatQueuesRef.current[key]?.length)) notifyAgent(taskId, update.kind === "failed" ? "Agent failed. Open the task to check the error." : "Agent finished. Open the task to view the result.");

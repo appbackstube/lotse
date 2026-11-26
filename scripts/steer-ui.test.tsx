@@ -22,6 +22,7 @@ const storage: Record<string, string> = {
   [taskKey]: JSON.stringify([task, normalizeTask({ id: "other", title: "Another task", location: "workspace" })]),
 };
 const reviews: { saved: ReviewSession | null } = { saved: null };
+const telegramNotices: string[] = [];
 let acknowledgeSteer: (() => void) | undefined;
 const runs: { accepted: AiChatAccepted; emit: (event: AgentTurnEvent) => void; mode: string }[] = [];
 mockWindows("main"); mockConvertFileSrc("macos");
@@ -36,6 +37,9 @@ mockIPC(async (command, args: any) => {
   if (command === "load_review") return reviews.saved;
   if (command === "save_review") { reviews.saved = structuredClone(args.session); return; }
   if (command === "github_connection") return null;
+  if (command === "telegram_connection") return { connected: true, enabled: true, remoteControlEnabled: true, userId: 10, chatId: 10, connectionId: "synthetic", journalId: "synthetic" };
+  if (command === "telegram_poll") return new Promise(() => {});
+  if (command === "telegram_send") { if (args.remoteControl) telegramNotices.push(args.text); return telegramNotices.length; }
   if (["scheduler_list", "list_memory", "load_mcp_servers"].includes(command)) return [];
   if (command === "agent_models") return [{ model: "gpt-5.6-terra", displayName: "Default" }];
   if (command === "task_git_status") return { repository: repo, upstream: null, pullCount: 0, pushCount: 0, dirty: false };
@@ -52,11 +56,12 @@ mockIPC(async (command, args: any) => {
   }
   if (command === "ai_chat_steer") return new Promise<void>((resolve) => { acknowledgeSteer = resolve; });
   throw new Error(`Unexpected synthetic IPC: ${command}`);
-}, { shouldMockEvents: true });
+}, { shouldMockEvents: true, telegram: true });
 
 const options = new URLSearchParams(location.search);
 const capture = options.has("evidence");
 const retracted = options.has("retracted");
+const split = !options.has("revised");
 const wait = (duration: number) => new Promise((resolve) => setTimeout(resolve, duration));
 const settle = async () => { for (let tick = 0; tick < 4; tick++) await act(async () => { await wait(30); }); };
 const check = (condition: unknown, detail: string) => { if (!condition) throw new Error(detail); };
@@ -93,6 +98,8 @@ try {
   await click("Add to chat"); await click("Pipeline"); await click(`Start pipeline ${pipeline.title}`);
   const prefix = "I checked the summary.";
   const revised = "I verified both the summary and the heading.";
+  const suffix = "The heading is correct.";
+  const finalResponse = retracted ? prefix : split ? `${prefix} ${suffix}` : revised;
   const displayedMessages = () => [...document.querySelectorAll<HTMLElement>("[data-search-message] .chat-markdown, .ios-chat-streaming-text")].filter(visible).map((element) => element.textContent?.trim());
   await event(0, { kind: "assistantDelta", delta: prefix });
   await send("Also verify the heading.", "Queue Review Agent message"); await checkpoint();
@@ -103,26 +110,32 @@ try {
     await event(0, { kind: "assistantDelta", delta: ` ${draft}` });
     check(displayedMessages().includes(draft), "The streamed draft must be visible before completion");
     await checkpoint();
-    await event(0, { kind: "assistantMessageCompleted", finalText: prefix });
+    await event(0, { kind: "assistantMessageCompleted", finalText: finalResponse });
     check(!displayedMessages().includes(draft), "Completion without a suffix must remove the live draft");
   } else {
-    await event(0, { kind: "assistantMessageCompleted", finalText: revised });
+    await event(0, { kind: "assistantMessageCompleted", finalText: finalResponse });
   }
   await event(0, { kind: "completed" }); await checkpoint();
   if (!retracted) await acknowledge();
   await click("Another task"); await click(task.title);
   await act(async () => { await fileStore.flush(); });
   const saved: typeof task = JSON.parse(storage[taskKey]).find((entry: typeof task) => entry.id === task.id);
-  const expected = ["Inspect the changes.", prefix, "Also verify the heading.", ...(retracted ? [] : [revised])];
+  const expected = ["Inspect the changes.", prefix, "Also verify the heading.", ...(retracted ? [] : [split ? suffix : revised])];
   check(JSON.stringify(saved.chatMessages.map((entry: { body: string }) => entry.body)) === JSON.stringify(expected), "The pipeline's saved chat must preserve the exact steer order");
   check(saved.chatMessages[0].runStatus === "completed" && runs.length === 1, "The pipeline must complete without resending the steer");
   const results = loadPipelineRuns(JSON.stringify([repo.rootPath, "task", task.id]))[0]?.messages[0]?.resultIds;
   check(JSON.stringify(results) === JSON.stringify(saved.chatMessages.filter((entry) => entry.role === "assistant").map((entry) => entry.id)), "Pipeline result IDs must reference exactly the saved assistant entries in order");
   check(JSON.stringify(displayedMessages()) === JSON.stringify(expected), "The reopened pipeline chat must show the saved order");
+  const completionNotice = telegramNotices.find((notice) => notice.startsWith(`${task.title}: Agent completed.`));
+  check(completionNotice === `${task.title}: Agent completed.\n\n${finalResponse}`, `Telegram must receive the entire final response; received ${JSON.stringify(completionNotice)}`);
   await checkpoint();
 
-  if (retracted) {
-    result.textContent = "PASS: retracted draft disappears from the live and reopened chat.";
+  if (retracted || options.has("split")) {
+    result.textContent = `PASS: ${retracted ? "retracted draft is absent" : "only the suffix follows Steer"} in the reopened chat; Telegram receives the full response.`;
+    if (capture) {
+      result.textContent += `\n\nCaptured Telegram mock payload:\n${completionNotice}`;
+      Object.assign(result.style, { position: "fixed", top: "64px", left: "50%", transform: "translateX(-50%)", zIndex: "100", padding: "12px", background: "white", color: "black", border: "1px solid black" });
+    }
   } else {
     await checkWorkspacePlans();
   }
