@@ -154,7 +154,7 @@ import { chatQueueStorageKey, loadChatQueues, moveQueuedMessage, saveChatQueues,
 import { isLargeCodeDocument } from "./codeMirror";
 import { findCodeLanguage } from "./codeLanguage";
 import { chatEfforts, chatConfigurationError, chatModelLabel, modelEfforts, normalizeChatDefaults, normalizeChatModelFavorites, validChatModel, type ChatModel, type ChatDefaults, type ChatEffort } from "./chatDefaults";
-import { applyChatEvent, AssistantSteerBoundary, carryReviewChat, finalizePlanOutput, persistedChatEntries } from "./chatTimeline";
+import { applyChatEvent, AssistantSteerBoundary, carryReviewChat, finalizePlanOutput, persistedChatEntries, type ChatTimelineEvent } from "./chatTimeline";
 import { diffChangeBlocks, isVeryLargeChangedFile, isVeryLargeDiff, isVeryLargePatch, parseUnifiedDiff, unchangedLineCount, type DiffChangeBlock } from "./diff";
 import { defaultTaskColumnRatios, resizeTaskColumn, taskColumnPixels, type TaskColumnRatios, type TaskDivider } from "./taskColumns";
 import { parseFileReference, type FileReference } from "./fileReference";
@@ -2938,7 +2938,7 @@ function App() {
     if (next !== taskRunsRef.current) { taskRunsRef.current = next; setTaskRuns(next); }
   };
 
-  const handleTaskEvent = (taskId: string, update: AiChatEvent) => {
+  const handleTaskEvent = (taskId: string, update: ChatTimelineEvent) => {
     if (update.kind === "fileChanged" || update.kind === "completed") setTaskChangesRevision((value) => value + 1);
     const run = taskRunsRef.current[taskId];
     if (!run) return;
@@ -3139,7 +3139,7 @@ function App() {
 
   useEffect(() => { syncTelegramAttention(); }, [telegram.status?.enabled, telegram.status?.remoteControlEnabled, telegram.status?.connectionId]);
 
-  const handleMainChatEvent = (update: AiChatEvent, timelineUpdate: AiChatEvent) => {
+  const handleMainChatEvent = (update: AiChatEvent, timelineUpdate: ChatTimelineEvent) => {
     handleVoiceChatEvent(update);
     const telegramRun = telegramRunsRef.current.get(update.requestId);
     if (telegramRun && update.kind === "assistantMessageCompleted" && update.finalText?.trim()) {

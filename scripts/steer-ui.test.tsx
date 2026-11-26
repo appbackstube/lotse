@@ -54,7 +54,9 @@ mockIPC(async (command, args: any) => {
   throw new Error(`Unexpected synthetic IPC: ${command}`);
 }, { shouldMockEvents: true });
 
-const capture = new URLSearchParams(location.search).has("evidence");
+const options = new URLSearchParams(location.search);
+const capture = options.has("evidence");
+const retracted = options.has("retracted");
 const wait = (duration: number) => new Promise((resolve) => setTimeout(resolve, duration));
 const settle = async () => { for (let tick = 0; tick < 4; tick++) await act(async () => { await wait(30); }); };
 const check = (condition: unknown, detail: string) => { if (!condition) throw new Error(detail); };
@@ -89,24 +91,48 @@ try {
   await act(async () => root.render(<App />)); await settle();
   await click("Tasks"); await click(task.title);
   await click("Add to chat"); await click("Pipeline"); await click(`Start pipeline ${pipeline.title}`);
-  await event(0, { kind: "assistantDelta", delta: "I checked the summary." });
+  const prefix = "I checked the summary.";
+  const revised = "I verified both the summary and the heading.";
+  const displayedMessages = () => [...document.querySelectorAll<HTMLElement>("[data-search-message] .chat-markdown, .ios-chat-streaming-text")].filter(visible).map((element) => element.textContent?.trim());
+  await event(0, { kind: "assistantDelta", delta: prefix });
   await send("Also verify the heading.", "Queue Review Agent message"); await checkpoint();
   await steer();
-  await event(0, { kind: "assistantMessageCompleted", finalText: "I verified both the summary and the heading." });
+  if (retracted) {
+    await acknowledge();
+    const draft = "The heading needs another pass.";
+    await event(0, { kind: "assistantDelta", delta: ` ${draft}` });
+    check(displayedMessages().includes(draft), "The streamed draft must be visible before completion");
+    await checkpoint();
+    await event(0, { kind: "assistantMessageCompleted", finalText: prefix });
+    check(!displayedMessages().includes(draft), "Completion without a suffix must remove the live draft");
+  } else {
+    await event(0, { kind: "assistantMessageCompleted", finalText: revised });
+  }
   await event(0, { kind: "completed" }); await checkpoint();
-  await acknowledge();
+  if (!retracted) await acknowledge();
   await click("Another task"); await click(task.title);
   await act(async () => { await fileStore.flush(); });
   const saved: typeof task = JSON.parse(storage[taskKey]).find((entry: typeof task) => entry.id === task.id);
-  const expected = ["Inspect the changes.", "I checked the summary.", "Also verify the heading.", "I verified both the summary and the heading."];
+  const expected = ["Inspect the changes.", prefix, "Also verify the heading.", ...(retracted ? [] : [revised])];
   check(JSON.stringify(saved.chatMessages.map((entry: { body: string }) => entry.body)) === JSON.stringify(expected), "The pipeline's saved chat must preserve the exact steer order");
   check(saved.chatMessages[0].runStatus === "completed" && runs.length === 1, "The pipeline must complete without resending the steer");
   const results = loadPipelineRuns(JSON.stringify([repo.rootPath, "task", task.id]))[0]?.messages[0]?.resultIds;
-  check(JSON.stringify(results) === JSON.stringify(saved.chatMessages.filter((entry) => entry.role === "assistant").map((entry) => entry.id)), "Pipeline result IDs must reference both assistant entries in order, not the user's steer");
-  const displayed = [...document.querySelectorAll<HTMLElement>("[data-search-message] .chat-markdown")].filter(visible).map((element) => element.textContent?.trim());
-  check(JSON.stringify(displayed) === JSON.stringify(expected), "The reopened pipeline chat must show the saved order");
+  check(JSON.stringify(results) === JSON.stringify(saved.chatMessages.filter((entry) => entry.role === "assistant").map((entry) => entry.id)), "Pipeline result IDs must reference exactly the saved assistant entries in order");
+  check(JSON.stringify(displayedMessages()) === JSON.stringify(expected), "The reopened pipeline chat must show the saved order");
   await checkpoint();
 
+  if (retracted) {
+    result.textContent = "PASS: retracted draft disappears from the live and reopened chat.";
+  } else {
+    await checkWorkspacePlans();
+  }
+} catch (error) {
+  result.textContent = `FAIL: ${String(error)}`;
+} finally {
+  if (!capture) await act(async () => root.unmount());
+}
+
+async function checkWorkspacePlans() {
   await click("Workspace"); await click("Add to chat");
   await click("Plan Off", [...document.querySelectorAll<HTMLButtonElement>('button[role="switch"][aria-checked="false"]')].find((button) => visible(button) && button.textContent?.startsWith("Plan")));
   await send("Propose a plan for the summary.", "Send Review Agent message");
@@ -137,8 +163,4 @@ try {
   check(planArticle?.querySelector<HTMLButtonElement>(".ios-chat-plan-header button")?.disabled === false, "The saved plan must show an enabled Implement now button");
   await checkpoint();
   result.textContent = "PASS: ordered pipeline result IDs; Workspace approval, split plan and completed-before-steer plan preserved.";
-} catch (error) {
-  result.textContent = `FAIL: ${String(error)}`;
-} finally {
-  if (!capture) await act(async () => root.unmount());
 }

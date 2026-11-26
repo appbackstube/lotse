@@ -16,7 +16,12 @@ const assistantEntry = (body = ""): ChatMessage => ({
   contexts: [],
 });
 
-export function applyChatEvent(timeline: ChatMessage[], event: AiChatEvent): ChatMessage[] {
+export type ChatTimelineEvent = AiChatEvent & { discardAssistantDraft?: true };
+
+export function applyChatEvent(timeline: ChatMessage[], event: ChatTimelineEvent): ChatMessage[] {
+  if (event.kind === "assistantMessageCompleted" && event.discardAssistantDraft) {
+    return timeline.filter((entry) => entry.role !== "assistant" || entry.appliedDiffs?.length);
+  }
   const next = [...timeline];
   if (event.kind === "assistantMessageStarted") return [...next, assistantEntry()];
   if (event.kind === "assistantDelta") {
@@ -66,14 +71,13 @@ export class AssistantSteerBoundary {
     if (body !== undefined) this.steeredPlan = { body, hasLiveText: false, savedEntry: entry };
   }
 
-  update(event: AiChatEvent): AiChatEvent {
+  update(event: AiChatEvent): ChatTimelineEvent {
     if (event.kind === "assistantDelta" && event.delta) {
       this.streamedText += event.delta;
       if (event.delta.trim()) this.steeredPlan = undefined;
     }
     if (event.kind === "assistantMessageStarted" || event.kind === "assistantMessageCompleted") {
       const prefix = this.savedPrefix;
-      const streamedSuffix = this.streamedText.slice(prefix.length);
       this.streamedText = "";
       this.savedPrefix = "";
       if (event.kind === "assistantMessageCompleted" && event.finalText?.trim()) {
@@ -82,12 +86,13 @@ export class AssistantSteerBoundary {
           const fullText = event.finalText;
           const matchesPrefix = fullText.startsWith(prefix);
           const finalText = matchesPrefix ? fullText.slice(prefix.length) : fullText;
+          const hasLiveText = !!finalText.trim();
           const planBody = fullText.trim().match(proposedPlanPattern)?.[1];
           if (planBody !== undefined) {
             const body = matchesPrefix ? fullText.slice(Math.max(prefix.length, fullText.indexOf(">") + 1), fullText.lastIndexOf("</proposed_plan>")) : planBody;
-            this.steeredPlan = { body: body.trim(), hasLiveText: !!(finalText.trim() || streamedSuffix.trim()) };
+            this.steeredPlan = { body: body.trim(), hasLiveText };
           }
-          return { ...event, finalText };
+          return hasLiveText ? { ...event, finalText } : { ...event, finalText, discardAssistantDraft: true };
         }
       }
     }

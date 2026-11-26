@@ -75,6 +75,20 @@ receive(complete("Already shown"));
 assert.deepEqual(liveTimeline, []);
 
 receive(start);
+receive(delta("Already shown"));
+const savedBeforeRetraction = persistedChatEntries([...liveTimeline, steer]);
+boundary.markSteered(liveTimeline);
+liveTimeline = [];
+receive(delta(" draft continuation"));
+const retainedChange = { path: "README.md", kind: "update" } as const;
+receive({ ...eventIds, kind: "fileChanged", changes: [retainedChange] });
+receive(delta(" more draft continuation"));
+receive(complete("Already shown"));
+assert.deepEqual(liveTimeline.map(({ body, appliedDiffs }) => [body, appliedDiffs]), [["", [retainedChange]]]);
+assert.deepEqual(persistedChatEntries([...savedBeforeRetraction, ...liveTimeline]).map(({ body }) => body), ["Already shown", steer.body, ""]);
+
+receive(start);
+liveTimeline = [];
 receive(delta("Saved prefix"));
 boundary.markSteered(liveTimeline);
 liveTimeline = [];
@@ -116,6 +130,7 @@ for (const [prefix, expectedBody] of [
   const savedPrefix = persistedChatEntries([...liveTimeline, steer]);
   boundary.markSteered(liveTimeline);
   liveTimeline = [];
+  if (prefix === fullPlan) receive(delta("Draft following the plan."));
   receive(complete(fullPlan));
   const finalized = finalizePlanOutput(liveTimeline, boundary.steeredPlan);
   assert.equal(finalized.isPlan, true);
