@@ -16,11 +16,12 @@ let transcriptions = 0;
 let sends = 0;
 let stopped = 0;
 let microphoneDenied = false;
+let activeRecorder: FakeRecorder | undefined;
 mockWindows("main"); mockConvertFileSrc("macos");
 mockIPC(async (command, args: any) => {
   if (command === "load_frontend_storage") return storage;
   if (command === "set_frontend_storage") { storage[args.key] = args.value; return; }
-  if (command === "transcribe_composer_voice") { transcriptions++; if (transcriptions === 1) return "Synthetic transcript"; if (transcriptions === 2) throw new Error("Synthetic transcription error"); if (transcriptions === 3) return new Promise(resolve => { resolveTranscript = resolve; }); return "Task transcript"; }
+  if (command === "transcribe_composer_voice") { transcriptions++; if (transcriptions === 1) return "Synthetic transcript"; if (transcriptions === 2) throw new Error("Synthetic transcription error"); return new Promise(resolve => { resolveTranscript = resolve; }); }
   if (command === "ai_chat_send") { sends++; return { requestId: "synthetic", threadId: "synthetic", turnId: "synthetic" }; }
   if (command === "load_ai_settings") return { activeProvider: "openrouter", providers: [{ id: "openrouter", name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", envKey: "OPENROUTER_API_KEY" }], repositoryProviders: {}, ripgrepAvailable: true, mcpUrl: "" };
   if (command === "current_repository" || command === "refresh_repository") return repo;
@@ -42,7 +43,7 @@ class FakeRecorder {
   mimeType = "audio/mp4";
   ondataavailable?: (event: { data: Blob }) => void;
   onstop?: () => void;
-  start() { this.state = "recording"; }
+  start() { this.state = "recording"; activeRecorder = this; }
   stop() { this.state = "inactive"; queueMicrotask(() => { this.ondataavailable?.({ data: new Blob([new Uint8Array([0, 0, 0, 24, 102, 116, 121, 112, 77, 52, 65, 32])]) }); this.onstop?.(); }); }
 }
 Object.assign(globalThis, { MediaRecorder: FakeRecorder });
@@ -80,11 +81,37 @@ try {
     const taskCard = document.querySelector<HTMLElement>('[aria-label="Drag Voice test task"]');
     check(taskCard, "Missing test task");
     await act(async () => taskCard!.click()); await settle();
-    await click("Record voice message"); await click("Transcribe");
+    await click("Record voice message");
+    const stoppedBeforeClose = stopped;
+    await click("Close task modal");
+    check(stopped === stoppedBeforeClose + 1 && transcriptions === 3, "Closing the Kanban dialog must release the microphone without transcribing");
+    await act(async () => taskCard!.click()); await settle();
+    await click("Record voice message");
+    const stoppedBeforeInterruption = stopped;
+    await act(async () => activeRecorder!.stop()); await settle();
+    check(button("Record voice message") && !button("Cancel") && document.querySelector('[role="alert"]')?.textContent?.includes("Recording was interrupted") && stopped === stoppedBeforeInterruption + 1 && transcriptions === 3, "Unexpected recorder stop must release the microphone and allow recording again");
     const taskDraft = [...document.querySelectorAll<HTMLTextAreaElement>('[aria-label="Review Agent message"]')].find(element => element.getBoundingClientRect().width > 0);
-    check(taskDraft?.value.includes("Task transcript") && sends === 0, "Task transcript must stay in the task draft without sending");
-    document.getElementById("result")!.textContent = "PASS: workspace and task voice drafts, errors, cancel and task switch";
-    await act(async () => root.unmount());
+    check(taskDraft, "Missing task draft");
+    await act(async () => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(taskDraft, "Existing task draft"); taskDraft!.dispatchEvent(new Event("input", { bubbles: true })); });
+    resolveTranscript = undefined;
+    await click("Record voice message"); await click("Transcribe");
+    check(resolveTranscript && button("Send Review Agent message")?.disabled && button("Cancel")?.disabled === false, "Pending transcription must disable sending but keep Cancel available");
+    await act(async () => taskDraft!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+    check(sends === 0, "Enter must not submit while transcription is pending");
+    if (new URLSearchParams(location.search).has("visual-regression")) {
+      document.getElementById("result")!.textContent = "READY: task draft with transcription pending";
+    } else {
+      await click("Cancel");
+      await act(async () => resolveTranscript!("Canceled transcript")); await settle();
+      check(taskDraft?.value === "Existing task draft" && button("Send Review Agent message")?.disabled === false, "Cancel must restore sending without appending the canceled transcript");
+      resolveTranscript = undefined;
+      await click("Record voice message"); await click("Transcribe");
+      check(resolveTranscript, "Expected a new task transcription");
+      await act(async () => resolveTranscript!("Task transcript")); await settle();
+      check(taskDraft?.value === "Existing task draft\n\nTask transcript" && sends === 0 && button("Send Review Agent message")?.disabled === false, "Task transcript must augment the draft and restore sending");
+      document.getElementById("result")!.textContent = "PASS: voice drafts, pending send and cancel, errors, task switch and close, and recorder interruption";
+      await act(async () => root.unmount());
+    }
   }
 } catch (error) {
   document.getElementById("result")!.textContent = `FAIL: ${String(error)}`;

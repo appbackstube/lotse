@@ -25,7 +25,7 @@ import { createPortal, flushSync } from "react-dom";
 import { useTaskFieldDraft } from "./useTaskFieldDraft";
 import { readTaskDrawing } from "./taskDrawing";
 import { applyTaskSandboxUpdate } from "./taskSandbox";
-import { VoiceMessage } from "./components/VoiceMessage";
+import { VoiceMessage, type VoiceMessagePhase } from "./components/VoiceMessage";
 import { WebsiteCredentialsSettings } from "./components/WebsiteCredentialsSettings";
 import { UsageSettings } from "./components/UsageSettings";
 import { recordUsage, type UsageItem } from "./usage";
@@ -1191,6 +1191,12 @@ function AiChatPanel({
   const [composerDraft, setComposerDraft] = useState(draft);
   const sendPendingRef = useRef(false);
   const [sendPending, setSendPending] = useState(false);
+  const [voicePhase, setVoicePhase] = useState<VoiceMessagePhase>("idle");
+  const transcribingRef = useRef(false);
+  const changeVoicePhase = useCallback((phase: VoiceMessagePhase) => {
+    transcribingRef.current = phase === "transcribing";
+    setVoicePhase(phase);
+  }, []);
   const [editingQueued, setEditingQueued] = useState<QueuedChatMessage | null>(null);
   const [queuedEditDraft, setQueuedEditDraft] = useState("");
   const addFilesRef = useRef(onAddFiles);
@@ -1213,11 +1219,11 @@ function AiChatPanel({
     observer.observe(content);
     return () => observer.disconnect();
   }, []);
-  const canSend = !!comparison && !sendPending && (!!composerDraft.trim() || images.some(isChatUpload) || selectedAssetIds.length > 0) && !variablePrompt
+  const canSend = !!comparison && !sendPending && voicePhase !== "transcribing" && (!!composerDraft.trim() || images.some(isChatUpload) || selectedAssetIds.length > 0) && !variablePrompt
     && (!taskMode || taskSelected);
   const configurationError = chatConfigurationError(model, effort, models, modelsLoaded);
   const send = async () => {
-    if (sendPendingRef.current) return;
+    if (!canSend || sendPendingRef.current || transcribingRef.current) return;
     sendPendingRef.current = true;
     setSendPending(true);
     const submitted = composerDraft;
@@ -1377,7 +1383,7 @@ function AiChatPanel({
           </div>)}
         </div>}
         <div className={`ios-chat-composer mx-auto w-full max-w-[960px] ${dragging ? "ios-chat-composer-dropping" : ""}`}>
-          {active && voiceContext && <VoiceMessage key={voiceContext} disabled={!comparison || sendPending || !taskSelected || !!variablePrompt} onTranscript={(text) => { const next = [composerDraft.trim(), text].filter(Boolean).join("\n\n"); setComposerDraft(next); onDraftChange(next); }} />}
+          {active && voiceContext && <VoiceMessage key={voiceContext} phase={voicePhase} onPhaseChange={changeVoicePhase} disabled={!comparison || sendPending || !taskSelected || !!variablePrompt} onTranscript={(text) => { const next = [composerDraft.trim(), text].filter(Boolean).join("\n\n"); setComposerDraft(next); onDraftChange(next); }} />}
           <ChatUploads images={images} removable onRemove={onRemoveImage} />
           <ChatAssetNames attachments={taskAssets.filter((asset) => selectedAssetIds.includes(asset.id)).map((asset) => ({ kind: "taskAsset", id: asset.id, name: asset.name, image: asset.image }))} />
           <Textarea
@@ -7136,7 +7142,7 @@ function App() {
             onZenModeChange={setZenMode}
             onApprovalReviewerChange={(value) => setApprovalReviewerOverrides((current) => ({ ...current, [taskMode ? selectedTask?.id ?? "" : "review"]: { mode: value, agent: activeApprovalAgent ?? null } }))}
             onSend={sendComposerMessage}
-            voiceContext={settingsOpen ? "" : activeQueueKey ?? ""}
+            voiceContext={settingsOpen || (boardMode && !inlineTaskMode && !boardDrawerOpen) ? "" : activeQueueKey ?? ""}
             queuedMessages={activeQueueKey ? chatQueues[activeQueueKey] ?? [] : []}
             queuePaused={activeQueueKey ? pausedQueueKeys.has(activeQueueKey) : false}
             canSteerQueued={taskMode ? !!selectedTaskRun : reviewRunQueueKeyRef.current === activeQueueKey}
