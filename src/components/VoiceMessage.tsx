@@ -8,7 +8,7 @@ const modelKey = "lotse.voice-transcription-model";
 const defaultModel = "google/gemini-2.5-flash";
 const maximumBytes = 20 * 1024 * 1024;
 
-type VoicePhase = "idle" | "starting" | "recording" | "stopping" | "recorded" | "transcribing";
+type VoicePhase = "idle" | "starting" | "recording" | "stopping" | "recorded" | "transcribing" | "retry";
 
 export function useVoiceMessage({ context, disabled, onTranscript }: {
   context: string;
@@ -66,7 +66,7 @@ export function useVoiceMessage({ context, disabled, onTranscript }: {
 
   useLayoutEffect(() => {
     if (phase === "starting" || phase === "recording") cancelButton.current?.focus();
-    if (phase === "recorded") transcribeButton.current?.focus();
+    if (phase === "recorded" || phase === "retry") transcribeButton.current?.focus();
     if (phase === "transcribing") cancelButton.current?.focus();
     if (phase === "idle" && restoreFocus.current) {
       restoreFocus.current = false;
@@ -81,6 +81,7 @@ export function useVoiceMessage({ context, disabled, onTranscript }: {
     reset();
     restoreFocus.current = true;
     changePhase("idle");
+    setError("");
   };
 
   const fail = (message: string) => {
@@ -127,11 +128,9 @@ export function useVoiceMessage({ context, disabled, onTranscript }: {
         const blob = new Blob(chunks, { type: recording.mimeType });
         chunks.length = 0;
         if (!blob.size) { fail("Recording is empty."); return; }
+        audio.current = blob;
         if (phaseRef.current === "transcribing") transcribe(blob, attempt);
-        else {
-          audio.current = blob;
-          changePhase("recorded");
-        }
+        else changePhase("recorded");
       };
       recording.start(1000);
       changePhase("recording");
@@ -141,18 +140,22 @@ export function useVoiceMessage({ context, disabled, onTranscript }: {
   };
 
   const transcribe = (blob: Blob, attempt: number) => {
+    const failTranscription = (message: string) => {
+      if (attempt !== generation.current) return;
+      setError(message);
+      changePhase("retry");
+    };
     const reader = new FileReader();
-    reader.onerror = () => { if (attempt === generation.current) fail("Cannot read the recording."); };
+    reader.onerror = () => failTranscription("Cannot read the recording.");
     reader.onload = () => {
       if (attempt !== generation.current) return;
       const encoded = String(reader.result).split(",")[1];
       void invoke<string>("transcribe_composer_voice", { audio: encoded, model: model.trim() }).then(text => {
         if (attempt !== generation.current) return;
         transcriptCallback.current(text);
+        audio.current = null;
         changePhase("idle");
-      }).catch(reason => {
-        if (attempt === generation.current) fail(String(reason));
-      });
+      }).catch(reason => failTranscription(String(reason)));
     };
     reader.readAsDataURL(blob);
   };
@@ -166,17 +169,19 @@ export function useVoiceMessage({ context, disabled, onTranscript }: {
   };
 
   const submitRecording = () => {
+    if (disabled) return;
     if (phaseRef.current === "recording") stop("transcribing");
-    else if (phaseRef.current === "recorded" && audio.current) {
-      const blob = audio.current;
-      audio.current = null;
+    else if ((phaseRef.current === "recorded" || phaseRef.current === "retry") && audio.current) {
+      setError("");
       changePhase("transcribing");
-      transcribe(blob, generation.current);
+      transcribe(audio.current, generation.current);
     }
   };
 
   const busy = !!context && phase !== "idle";
-  const status = phase === "starting" ? "Starting microphone…" : phase === "transcribing" ? "Transcribing…" : phase === "stopping" ? "Stopping recording…" : "";
+  const retrying = phase === "retry";
+  const status = phase === "starting" ? "Starting microphone…" : phase === "transcribing" ? "Transcribing…" : phase === "stopping" ? "Stopping recording…" : retrying ? "Recording kept" : "";
+  const transcribeLabel = retrying ? "Retry transcription" : "Transcribe for review";
   return {
     busy,
     isBusy: () => phaseRef.current !== "idle",
@@ -198,8 +203,8 @@ export function useVoiceMessage({ context, disabled, onTranscript }: {
         <canvas ref={canvas} aria-hidden="true" hidden={!!status} />
         <span role="status" className={status ? "" : "sr-only"}>{status || (phase === "recording" ? "Recording…" : "Recording stopped")}</span>
       </div>
-      <button type="button" className="ios-chat-add-image" aria-label="Stop recording" title="Stop recording (Esc)" disabled={phase !== "recording"} onClick={() => stop("stopping")}><Square size={14} fill="currentColor" /></button>
-      <button ref={transcribeButton} type="button" className="accent-button !size-[30px] shrink-0 !p-0" aria-label="Transcribe for review" title="Transcribe for review" disabled={disabled || (phase !== "recording" && phase !== "recorded")} onClick={submitRecording}><ArrowUp size={14} /></button>
+      {!retrying && <button type="button" className="ios-chat-add-image" aria-label="Stop recording" title="Stop recording (Esc)" disabled={phase !== "recording"} onClick={() => stop("stopping")}><Square size={14} fill="currentColor" /></button>}
+      <button ref={transcribeButton} type="button" className={`accent-button shrink-0 ${retrying ? "" : "!size-[30px] !p-0"}`} aria-label={transcribeLabel} title={transcribeLabel} disabled={disabled || (phase !== "recording" && phase !== "recorded" && !retrying)} onClick={submitRecording}>{retrying ? "Retry" : <ArrowUp size={14} />}</button>
     </div>,
   };
 }

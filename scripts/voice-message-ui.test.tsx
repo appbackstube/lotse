@@ -18,11 +18,25 @@ let stopped = 0;
 let microphoneDenied = false;
 let activeRecorder: FakeRecorder | undefined;
 let modelUsed = "";
+let failedAudio: string | undefined;
 mockWindows("main"); mockConvertFileSrc("macos");
 mockIPC(async (command, args: any) => {
   if (command === "load_frontend_storage") return storage;
   if (command === "set_frontend_storage") { storage[args.key] = args.value; return; }
-  if (command === "transcribe_composer_voice") { modelUsed = args.model; transcriptions++; if (transcriptions === 1) return "Synthetic transcript"; if (transcriptions === 2) throw new Error("Synthetic transcription error"); return new Promise(resolve => { resolveTranscript = resolve; }); }
+  if (command === "transcribe_composer_voice") {
+    modelUsed = args.model;
+    transcriptions++;
+    if (transcriptions === 1) return "Synthetic transcript";
+    if (transcriptions === 2 || transcriptions === 4) {
+      failedAudio = args.audio;
+      throw new Error("Synthetic transcription error");
+    }
+    if (transcriptions === 3) {
+      check(args.audio && args.audio === failedAudio, "Retry must submit the same clip");
+      return "Retried transcript";
+    }
+    return new Promise(resolve => { resolveTranscript = resolve; });
+  }
   if (command === "ai_chat_send") { sends++; return { requestId: "synthetic", threadId: "synthetic", turnId: "synthetic" }; }
   if (command === "load_ai_settings") return { activeProvider: "openrouter", providers: [{ id: "openrouter", name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", envKey: "OPENROUTER_API_KEY" }], repositoryProviders: {}, ripgrepAvailable: true, mcpUrl: "" };
   if (command === "current_repository" || command === "refresh_repository") return repo;
@@ -95,9 +109,18 @@ try {
     check(document.querySelector('[role="alert"]')?.textContent?.includes("Synthetic microphone denial") && draft.value.includes("Synthetic transcript"), "Microphone error must preserve the draft");
     microphoneDenied = false;
     await click("Record voice message"); await click("Transcribe for review");
+    const retry = button("Retry transcription");
     check(document.querySelector('[role="alert"]')?.textContent?.includes("Synthetic transcription error") && draft.value.includes("Synthetic transcript") && sends === 0, "Transcription error must preserve the draft without sending");
-    await click("Record voice message"); await click("Discard recording");
-    check(transcriptions === 2 && stopped >= 3, "Cancel must stop the microphone without transcription");
+    check(retry && !retry.disabled && document.activeElement === retry && button("Discard recording") && !button("Record voice message"), "Failure must keep the clip and offer focused retry or discard");
+    const stoppedBeforeRetry = stopped;
+    await holdForEvidence();
+    await click("Retry transcription");
+    check(transcriptions === 3 && stopped === stoppedBeforeRetry && draft.value === "Existing draft\n\nSynthetic transcript\n\nRetried transcript" && !document.querySelector('[role="alert"]') && sends === 0, "Retry must append the transcript without opening the microphone or sending");
+    await holdForEvidence();
+    await click("Record voice message"); await click("Stop recording"); await click("Transcribe for review");
+    check(transcriptions === 4 && button("Retry transcription"), "Failure after stopping first must also allow retry");
+    await click("Discard recording");
+    check(transcriptions === 4 && !button("Retry transcription") && button("Record voice message") && !document.querySelector('[role="alert"]') && draft.value.endsWith("Retried transcript"), "Discard must clear the failed clip and error without uploading or changing the draft");
     await click("Record voice message"); await click("Transcribe for review");
     check(resolveTranscript, "Expected pending transcription");
     await click("Tasks");
@@ -111,12 +134,12 @@ try {
     await click("Record voice message");
     const stoppedBeforeClose = stopped;
     await click("Close task modal");
-    check(stopped === stoppedBeforeClose + 1 && transcriptions === 3, "Closing the Kanban dialog must release the microphone without transcribing");
+    check(stopped === stoppedBeforeClose + 1 && transcriptions === 5, "Closing the Kanban dialog must release the microphone without transcribing");
     await act(async () => taskCard!.click()); await settle();
     await click("Record voice message");
     const stoppedBeforeInterruption = stopped;
     await act(async () => activeRecorder!.stop()); await settle();
-    check(stopped === stoppedBeforeInterruption + 1 && transcriptions === 3, "Unexpected recorder stop must release the microphone without transcribing");
+    check(stopped === stoppedBeforeInterruption + 1 && transcriptions === 5, "Unexpected recorder stop must release the microphone without transcribing");
     const recordAgain = button("Record voice message");
     check(recordAgain && !recordAgain.disabled, "Unexpected recorder stop must allow recording again");
     check(recordAgain?.closest(".ios-chat-composer")?.querySelector('[role="alert"]')?.textContent?.includes("Recording was interrupted"), "Interrupted recording must show an error in the voice controls");
@@ -139,7 +162,7 @@ try {
       check(resolveTranscript, "Expected a new task transcription");
       await act(async () => resolveTranscript!("Task transcript")); await settle();
       check(taskDraft?.value === "Existing task draft\n\nTask transcript" && sends === 0 && button("Send Review Agent message")?.disabled === false, "Task transcript must augment the draft and restore sending");
-      document.getElementById("result")!.textContent = "PASS: voice drafts, pending send and cancel, errors, task switch and close, and recorder interruption";
+      document.getElementById("result")!.textContent = "PASS: voice drafts, same-clip retry and discard, pending send and cancel, errors, task switch and close, and recorder interruption";
       await act(async () => root.unmount());
     }
   }
