@@ -165,7 +165,8 @@ export function useVoiceMessage({ context, suspended, disabled, onOpenSettings, 
       const encoded = String(reader.result).split(",")[1];
       const model = fileStore.getItem(voiceModelKey) ?? "";
       const selectedLanguage = fileStore.getItem(voiceLanguageKey) ?? "system";
-      const language = (selectedLanguage === "system" ? navigator.language : selectedLanguage).split(/[-_]/)[0].toLowerCase();
+      const languageCode = (selectedLanguage === "system" ? navigator.language : selectedLanguage).split(/[-_]/)[0].toLowerCase();
+      const language = /^[a-z]{2}$/.test(languageCode) ? languageCode : null;
       void invoke<string>("transcribe_voice_stt", { audio: encoded, model, language }).then(text => {
         if (attempt !== generation.current) return;
         transcriptCallback.current(text);

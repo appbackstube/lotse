@@ -364,8 +364,10 @@ fn transcription_request(settings: &TranscriptionSettings, format: &str, bytes: 
     })
 }
 
-fn voice_stt_request(model: &str, language: &str, format: &str, bytes: &[u8]) -> Value {
-    json!({"model": model, "input_audio": {"data": STANDARD.encode(bytes), "format": format}, "language": language})
+fn voice_stt_request(model: &str, language: Option<&str>, format: &str, bytes: &[u8]) -> Value {
+    let mut request = json!({"model": model, "input_audio": {"data": STANDARD.encode(bytes), "format": format}});
+    if let Some(language) = language { request["language"] = json!(language); }
+    request
 }
 
 fn composer_voice_input(audio: &str, model: &str) -> Result<(TranscriptionSettings, Vec<u8>, &'static str), String> {
@@ -446,17 +448,17 @@ pub async fn voice_models(app: AppHandle) -> Result<Vec<(String, String)>, Strin
 }
 
 #[tauri::command]
-pub async fn transcribe_voice_stt(audio: String, model: String, language: String, app: AppHandle, window: WebviewWindow, state: State<'_, AppState>) -> Result<String, String> {
+pub async fn transcribe_voice_stt(audio: String, model: String, language: Option<String>, app: AppHandle, window: WebviewWindow, state: State<'_, AppState>) -> Result<String, String> {
     let (settings, bytes, format) = composer_voice_input(&audio, &model)?;
     if !composer_stt_model_supports_m4a_and_ogg(&settings.model) || !matches!(format, "m4a" | "ogg") { return Err("This model or recording format is not supported for voice messages. Choose a compatible model in Settings → General.".into()); }
-    if language.len() != 2 || !language.bytes().all(|byte| byte.is_ascii_lowercase()) { return Err("Choose a valid spoken language.".into()); }
+    if language.as_deref().is_some_and(|code| code.len() != 2 || !code.bytes().all(|byte| byte.is_ascii_lowercase())) { return Err("Choose a valid spoken language.".into()); }
     let root = repository_path(&state, &window)?;
     let label = window.label().to_owned();
     run_blocking(move || {
         if repository_path_for_label(&app.state::<AppState>(), &label)? != root { return Err("The workspace changed before transcription.".into()); }
         let key = crate::credentials::load(&app, VOICE_CREDENTIAL_KEY)?.filter(|value| !value.is_empty()).ok_or("Configure the OpenRouter voice API key first.")?;
         let client = Client::builder().timeout(Duration::from_secs(120)).build().map_err(|_| "Cannot initialize voice transcription.")?;
-        let body = voice_stt_request(&settings.model, &language, format, &bytes);
+        let body = voice_stt_request(&settings.model, language.as_deref(), format, &bytes);
         let response = client.post("https://openrouter.ai/api/v1/audio/transcriptions").bearer_auth(key).json(&body).send()
             .map_err(|_| "OpenRouter transcription failed; charges may have occurred.")?;
         if !response.status().is_success() { return Err("OpenRouter rejected transcription. Check the model, audio format, language, key, and credits.".into()); }
@@ -648,9 +650,15 @@ mod tests {
 
     #[test]
     fn composer_stt_request_sends_audio_and_language_without_prompt() {
-        let payload = voice_stt_request("example/stt", "de", "m4a", b"audio");
+        let payload = voice_stt_request("example/stt", Some("de"), "m4a", b"audio");
         assert_eq!(payload, json!({"model":"example/stt", "input_audio":{"data":STANDARD.encode(b"audio"), "format":"m4a"}, "language":"de"}));
         assert!(payload.get("messages").is_none());
+    }
+
+    #[test]
+    fn composer_stt_request_omits_language_for_automatic_detection() {
+        let payload = voice_stt_request("example/stt", None, "m4a", b"audio");
+        assert!(payload.get("language").is_none());
     }
 
     #[test]

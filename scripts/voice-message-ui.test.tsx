@@ -36,7 +36,10 @@ mockIPC(async (command, args: any) => {
   if (command === "transcribe_voice_stt") {
     modelUsed = args.model;
     transcriptions++;
-    if (transcriptions === 1) return "Synthetic transcript";
+    if (transcriptions === 1) {
+      check(args.language === null, "A three-letter system language must use automatic detection");
+      return "Synthetic transcript";
+    }
     if (transcriptions === 2 || transcriptions === 4 || transcriptions === 8) {
       failedAudio = args.audio;
       throw new Error("Synthetic transcription error");
@@ -68,6 +71,7 @@ mockIPC(async (command, args: any) => {
   throw new Error(`Unexpected IPC: ${command}`);
 }, { shouldMockEvents: true });
 
+Object.defineProperty(navigator, "language", { configurable: true, value: "fil-PH" });
 Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia: async () => { if (microphoneDenied) throw new Error("Synthetic microphone denial"); return { getTracks: () => [{ stop: () => { stopped++; } }] }; } } });
 class FakeRecorder {
   static isTypeSupported(type: string) { return type === "audio/mp4"; }
@@ -179,6 +183,11 @@ try {
       await click("Open voice settings");
       const model = document.querySelector<HTMLSelectElement>("#voice-model");
       check(model?.getBoundingClientRect().width && !model.disabled, "The task's failed clip must lead to voice settings");
+      const autoSend = model!.closest("section")?.querySelector('[role="switch"]');
+      check(autoSend?.getAttribute("aria-checked") === "true", "Voice settings must show auto-send as enabled");
+      await act(async () => window.dispatchEvent(new StorageEvent("storage", { key: voiceAutoSendKey, newValue: "false" })));
+      check(autoSend?.getAttribute("aria-checked") === "false", "The auto-send switch must reflect a change from another window");
+      await act(async () => window.dispatchEvent(new StorageEvent("storage", { key: voiceAutoSendKey, newValue: "true" })));
       await act(async () => {
         model!.value = "synthetic/replacement-model";
         model!.dispatchEvent(new Event("change", { bubbles: true }));

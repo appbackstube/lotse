@@ -24,6 +24,14 @@ export function VoiceSettings() {
   };
 
   useEffect(() => {
+    const syncAutoSend = (event: StorageEvent) => {
+      if (event.key === voiceAutoSendKey) setAutoSend(event.newValue === "true");
+    };
+    window.addEventListener("storage", syncAutoSend);
+    return () => window.removeEventListener("storage", syncAutoSend);
+  }, []);
+
+  useEffect(() => {
     let active = true;
     void invoke<boolean>("voice_key_configured").then(async (result) => {
       if (!active) return;
