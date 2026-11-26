@@ -5580,6 +5580,9 @@ async fn ai_chat_send(
         .attachments
         .iter()
         .any(|attachment| matches!(attachment, ChatAttachment::Image { .. } | ChatAttachment::LocalFile { .. } | ChatAttachment::TaskAsset { .. }));
+    if task_description.as_deref().is_some_and(|description| !valid_task_chat_description(description)) {
+        return Err("Task description must be at most 20000 characters.".to_owned());
+    }
     if !valid_oid(&base_oid)
         || !valid_codex_config(&model, &effort)
         || !goal.valid()
@@ -5589,7 +5592,7 @@ async fn ai_chat_send(
         || !valid_user_rules(&user_rules)
         || agent_prompt.chars().count() > 20_000
         || task_title.as_deref().is_some_and(|title| title.trim().is_empty() || title.len() > 20_000 || task_id.is_none())
-        || task_description.as_deref().is_some_and(|description| description.len() > 20_000 || task_id.is_none())
+        || (task_description.is_some() && task_id.is_none())
         || (telegram_connection_id.is_some() && task_id.is_some())
     {
         return Err("Invalid AI chat request".to_owned());
@@ -5647,6 +5650,10 @@ async fn ai_chat_send(
         }
     })
     .await
+}
+
+fn valid_task_chat_description(description: &str) -> bool {
+    description.chars().count() <= 20_000
 }
 
 #[derive(Deserialize)]
@@ -7501,6 +7508,12 @@ mod tests {
         let updated = update_mcp_task(vec![task], input, false, &[]).unwrap();
         assert_eq!(mcp_task_detail_payload(&updated[0], &[])["description"], "Original");
         assert_eq!(task_control::tools().into_iter().find(|tool| tool["name"] == "update_task").unwrap()["inputSchema"]["properties"]["description"]["maxLength"], 20_000);
+    }
+
+    #[test]
+    fn task_chat_description_limit_counts_characters_not_utf8_bytes() {
+        assert!(valid_task_chat_description(&"ä".repeat(20_000)));
+        assert!(!valid_task_chat_description(&"ä".repeat(20_001)));
     }
 
     #[test]
