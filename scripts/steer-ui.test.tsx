@@ -55,11 +55,18 @@ mockIPC(async (command, args: any) => {
     return accepted;
   }
   if (command === "ai_chat_steer") return new Promise<void>((resolve) => { acknowledgeSteer = resolve; });
+  if (command === "ai_chat_cancel") {
+    const run = runs.find(({ accepted }) => accepted.requestId === args.requestId);
+    if (!run) throw new Error("Cancellation must target the running task");
+    run.emit({ type: "chat", payload: { ...run.accepted, kind: "cancelled" } });
+    return;
+  }
   throw new Error(`Unexpected synthetic IPC: ${command}`);
 }, { shouldMockEvents: true, telegram: true });
 
 const options = new URLSearchParams(location.search);
 const capture = options.has("evidence");
+const cancelled = options.has("cancelled");
 const retracted = options.has("retracted");
 const split = !options.has("revised");
 const wait = (duration: number) => new Promise((resolve) => setTimeout(resolve, duration));
@@ -99,12 +106,16 @@ try {
   const prefix = "I checked the summary.";
   const revised = "I verified both the summary and the heading.";
   const suffix = "The heading is correct.";
-  const finalResponse = retracted ? prefix : split ? `${prefix} ${suffix}` : revised;
+  const finalResponse = retracted ? prefix : cancelled || split ? `${prefix} ${suffix}` : revised;
   const displayedMessages = () => [...document.querySelectorAll<HTMLElement>("[data-search-message] .chat-markdown, .ios-chat-streaming-text")].filter(visible).map((element) => element.textContent?.trim());
   await event(0, { kind: "assistantDelta", delta: prefix });
   await send("Also verify the heading.", "Queue Review Agent message"); await checkpoint();
   await steer();
-  if (retracted) {
+  if (cancelled) {
+    await acknowledge();
+    await event(0, { kind: "assistantDelta", delta: ` ${suffix}` });
+    await click("Stop Review Agent response");
+  } else if (retracted) {
     await acknowledge();
     const draft = "The heading needs another pass.";
     await event(0, { kind: "assistantDelta", delta: ` ${draft}` });
@@ -115,25 +126,30 @@ try {
   } else {
     await event(0, { kind: "assistantMessageCompleted", finalText: finalResponse });
   }
-  await event(0, { kind: "completed" }); await checkpoint();
-  if (!retracted) await acknowledge();
+  const terminalStatus = cancelled ? "cancelled" : "completed";
+  if (!cancelled) await event(0, { kind: "completed" });
+  await checkpoint();
+  if (!cancelled && !retracted) await acknowledge();
   await click("Another task"); await click(task.title);
   await act(async () => { await fileStore.flush(); });
   const saved: typeof task = JSON.parse(storage[taskKey]).find((entry: typeof task) => entry.id === task.id);
-  const expected = ["Inspect the changes.", prefix, "Also verify the heading.", ...(retracted ? [] : [split ? suffix : revised])];
+  const expected = ["Inspect the changes.", prefix, "Also verify the heading.", ...(retracted ? [] : [cancelled ? ` ${suffix}` : split ? suffix : revised])];
   check(JSON.stringify(saved.chatMessages.map((entry: { body: string }) => entry.body)) === JSON.stringify(expected), "The pipeline's saved chat must preserve the exact steer order");
-  check(saved.chatMessages[0].runStatus === "completed" && runs.length === 1, "The pipeline must complete without resending the steer");
+  check(saved.chatMessages[0].runStatus === terminalStatus && runs.length === 1, "The pipeline must end without resending the steer");
   const results = loadPipelineRuns(JSON.stringify([repo.rootPath, "task", task.id]))[0]?.messages[0]?.resultIds;
   check(JSON.stringify(results) === JSON.stringify(saved.chatMessages.filter((entry) => entry.role === "assistant").map((entry) => entry.id)), "Pipeline result IDs must reference exactly the saved assistant entries in order");
-  check(JSON.stringify(displayedMessages()) === JSON.stringify(expected), "The reopened pipeline chat must show the saved order");
-  const completionNotice = telegramNotices.find((notice) => notice.startsWith(`${task.title}: Agent completed.`));
-  check(completionNotice === `${task.title}: Agent completed.\n\n${finalResponse}`, `Telegram must receive the entire final response; received ${JSON.stringify(completionNotice)}`);
+  check(JSON.stringify(displayedMessages()) === JSON.stringify(expected.map((body) => body.trim())), "The reopened pipeline chat must show the saved order");
+  const noticeHeader = `${task.title}: Agent ${terminalStatus}.`;
+  const terminalNotice = telegramNotices.find((notice) => notice.startsWith(noticeHeader));
+  check(terminalNotice === `${noticeHeader}\n\n${finalResponse}`, `Telegram must receive the entire response; received ${JSON.stringify(terminalNotice)}`);
   await checkpoint();
 
-  if (retracted || options.has("split")) {
-    result.textContent = `PASS: ${retracted ? "retracted draft is absent" : "only the suffix follows Steer"} in the reopened chat; Telegram receives the full response.`;
+  if (cancelled || retracted || options.has("split")) {
+    result.textContent = cancelled
+      ? "PASS: Stopped task retains chat order; Telegram receives the full partial response."
+      : `PASS: ${retracted ? "retracted draft is absent" : "only the suffix follows Steer"} in the reopened chat; Telegram receives the full response.`;
     if (capture) {
-      result.textContent += `\n\nCaptured Telegram mock payload:\n${completionNotice}`;
+      result.textContent += `\n\nCaptured Telegram mock payload:\n${terminalNotice}`;
       Object.assign(result.style, { position: "fixed", top: "64px", left: "50%", transform: "translateX(-50%)", zIndex: "100", padding: "12px", background: "white", color: "black", border: "1px solid black" });
     }
   } else {

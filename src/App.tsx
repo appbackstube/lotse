@@ -3000,7 +3000,7 @@ function App() {
       const telegramConnection = telegramRef.current.status;
       if (telegramRoot && telegramConnection?.enabled && telegramConnection.remoteControlEnabled && telegramConnection.connectionId) {
         const title = tasksRef.current.find((task) => task.id === taskId)?.title ?? "Task";
-        const steeredResponse = update.kind === "completed" ? steerBoundary?.getSteeredResponse(run.mode) : undefined;
+        const steeredResponse = update.kind !== "failed" ? steerBoundary?.getSteeredResponse(run.mode) : undefined;
         const detail = update.kind === "failed" ? update.message : steeredResponse || messages.filter((entry) => entry.role === "assistant").at(-1)?.body;
         void sendTelegramRemoteText({ root: telegramRoot, connectionId: telegramConnection.connectionId }, `${title}: Agent ${update.kind}.${detail ? `\n\n${detail}` : ""}`).catch((reason) => setError(message(reason)));
       }
