@@ -1198,7 +1198,7 @@ function AiChatPanel({
     context: active ? voiceContext : "",
     disabled: !comparison || sendPending || !taskSelected || !!variablePrompt,
     onTranscript: (text) => {
-      const next = [composerDraft.trim(), text].filter(Boolean).join("\n\n");
+      const next = composerDraft ? `${composerDraft}\n\n${text}` : text;
       focusTranscript.current = true;
       setTranscriptReady(true);
       setComposerDraft(next);

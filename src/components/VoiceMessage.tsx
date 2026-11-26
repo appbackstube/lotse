@@ -4,7 +4,7 @@ import { ArrowUp, Mic, Square, X } from "lucide-react";
 import { fileStore } from "../fileStore";
 import { startVoiceWaveform } from "./voiceWaveform";
 
-const modelKey = "lotse.voice-transcription-model";
+const modelKey = "chaoticreview.voice-transcription-model";
 const defaultModel = "google/gemini-2.5-flash";
 const maximumBytes = 20 * 1024 * 1024;
 
@@ -169,7 +169,7 @@ export function useVoiceMessage({ context, disabled, onTranscript }: {
   };
 
   const submitRecording = () => {
-    if (disabled) return;
+    if (disabled || !model.trim()) return;
     if (phaseRef.current === "recording") stop("transcribing");
     else if ((phaseRef.current === "recorded" || phaseRef.current === "retry") && audio.current) {
       setError("");
@@ -182,17 +182,18 @@ export function useVoiceMessage({ context, disabled, onTranscript }: {
   const retrying = phase === "retry";
   const status = phase === "starting" ? "Starting microphone…" : phase === "transcribing" ? "Transcribing…" : phase === "stopping" ? "Stopping recording…" : retrying ? "Recording kept" : "";
   const transcribeLabel = retrying ? "Retry transcription" : "Transcribe for review";
+  const modelSettings = <div className="ios-chat-voice-settings">
+    <label htmlFor={modelId}>OpenRouter audio model</label>
+    <input id={modelId} value={model} spellCheck={false} onChange={event => setModel(event.currentTarget.value)} onBlur={event => fileStore.setItem(modelKey, event.currentTarget.value.trim())} />
+    <p>Audio is sent to OpenRouter and the selected provider when you transcribe. Charges may apply even if canceled.</p>
+  </div>;
   return {
     busy,
     isBusy: () => phaseRef.current !== "idle",
     recordButton: context && <button ref={recordButton} type="button" className="ios-chat-add-image" aria-label="Record voice message" title="Record voice message" disabled={disabled || !model.trim()} onClick={() => void start()}><Mic size={14} /></button>,
-    settings: context && <div className="ios-chat-voice-settings">
-      <label htmlFor={modelId}>OpenRouter audio model</label>
-      <input id={modelId} value={model} spellCheck={false} onChange={event => setModel(event.currentTarget.value)} onBlur={() => fileStore.setItem(modelKey, model.trim())} />
-      <p>Audio is sent to OpenRouter and the selected provider when you transcribe. Charges may apply even if canceled.</p>
-    </div>,
+    settings: context && !busy && modelSettings,
     error: context && error && <p role="alert" className="ios-chat-voice-error">{error}</p>,
-    bar: busy && <div className="ios-chat-voice-bar" onKeyDown={event => {
+    bar: busy && <><div className="ios-chat-voice-bar" onKeyDown={event => {
       if (event.key !== "Escape" || phaseRef.current !== "recording") return;
       event.preventDefault();
       event.stopPropagation();
@@ -204,7 +205,7 @@ export function useVoiceMessage({ context, disabled, onTranscript }: {
         <span role="status" className={status ? "" : "sr-only"}>{status || (phase === "recording" ? "Recording…" : "Recording stopped")}</span>
       </div>
       {!retrying && <button type="button" className="ios-chat-add-image" aria-label="Stop recording" title="Stop recording (Esc)" disabled={phase !== "recording"} onClick={() => stop("stopping")}><Square size={14} fill="currentColor" /></button>}
-      <button ref={transcribeButton} type="button" className={`accent-button shrink-0 ${retrying ? "" : "!size-[30px] !p-0"}`} aria-label={transcribeLabel} title={transcribeLabel} disabled={disabled || (phase !== "recording" && phase !== "recorded" && !retrying)} onClick={submitRecording}>{retrying ? "Retry" : <ArrowUp size={14} />}</button>
-    </div>,
+      <button ref={transcribeButton} type="button" className={`accent-button shrink-0 ${retrying ? "" : "!size-[30px] !p-0"}`} aria-label={transcribeLabel} title={transcribeLabel} disabled={disabled || !model.trim() || (phase !== "recording" && phase !== "recorded" && !retrying)} onClick={submitRecording}>{retrying ? "Retry" : <ArrowUp size={14} />}</button>
+    </div>{retrying && modelSettings}</>,
   };
 }

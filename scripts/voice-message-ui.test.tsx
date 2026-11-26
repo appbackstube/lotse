@@ -11,6 +11,9 @@ const repo = { rootPath: "/synthetic-voice", name: "Voice", currentBranch: "main
 const comparison = { mode: "workingCopy", baseRef: null, compareRef: null, baseOid: "a".repeat(40), baseCommitOid: "a".repeat(40), compareCommitOid: "a".repeat(40), snapshotId: "snapshot", files: [] };
 const task = normalizeTask({ id: "12345678-1234-1234-1234-123456789abc", title: "Voice test task", manualStatus: "inbox", location: "workspace" })!;
 const storage: Record<string, string> = { "chaoticreview.auth-onboarding-v1": "complete", [taskStorageKey(repo.rootPath)]: JSON.stringify([task]) };
+const voiceModelKey = "chaoticreview.voice-transcription-model";
+const existingDraft = "    indented code\n\nText with trailing spaces  ";
+const retryModel = "synthetic/retry-model";
 let resolveTranscript: ((text: string) => void) | undefined;
 let transcriptions = 0;
 let sends = 0;
@@ -22,7 +25,11 @@ let failedAudio: string | undefined;
 mockWindows("main"); mockConvertFileSrc("macos");
 mockIPC(async (command, args: any) => {
   if (command === "load_frontend_storage") return storage;
-  if (command === "set_frontend_storage") { storage[args.key] = args.value; return; }
+  if (command === "set_frontend_storage") {
+    if (!args.key.startsWith("chaoticreview.")) throw new Error("Invalid frontend storage key");
+    storage[args.key] = args.value;
+    return;
+  }
   if (command === "transcribe_composer_voice") {
     modelUsed = args.model;
     transcriptions++;
@@ -73,6 +80,12 @@ const check = (condition: unknown, message: string) => { if (!condition) throw n
 const settle = async () => { await act(async () => { await new Promise(resolve => setTimeout(resolve, 200)); }); };
 const button = (label: string) => [...document.querySelectorAll<HTMLButtonElement>("button")].find(item => item.getBoundingClientRect().width > 0 && (item.textContent?.trim() === label || item.getAttribute("aria-label") === label));
 const click = async (label: string) => { const item = button(label); check(item, `Missing button: ${label}`); await act(async () => item!.click()); await settle(); };
+const modelInput = () => [...document.querySelectorAll<HTMLLabelElement>("label")].find(label => label.textContent === "OpenRouter audio model")?.control as HTMLInputElement | undefined;
+const editModel = (field: HTMLInputElement, model: string) => {
+  field.focus();
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, model);
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+};
 const evidence = new URLSearchParams(location.search).has("evidence");
 const holdForEvidence = async () => { if (evidence) await new Promise(resolve => setTimeout(resolve, 1000)); };
 const root = createRoot(document.getElementById("root")!);
@@ -81,17 +94,17 @@ try {
   await click("Workspace");
   const draft = document.querySelector<HTMLTextAreaElement>('[aria-label="Review Agent message"]')!;
   check(draft, "Missing workspace draft");
-  await act(async () => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(draft, "Existing draft"); draft.dispatchEvent(new Event("input", { bubbles: true })); });
+  await act(async () => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(draft, existingDraft); draft.dispatchEvent(new Event("input", { bubbles: true })); });
   await click("Add to chat");
-  const modelField = [...document.querySelectorAll<HTMLLabelElement>("label")].find(label => label.textContent === "OpenRouter audio model")?.control as HTMLInputElement;
+  const modelField = modelInput();
   check(modelField?.value, "Missing model field in the Add to chat menu");
   await act(async () => {
-    modelField.focus();
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(modelField, "synthetic/audio-model");
-    modelField.dispatchEvent(new Event("input", { bubbles: true }));
-    modelField.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    editModel(modelField!, "synthetic/audio-model");
+    modelField!.blur();
+    modelField!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   });
   await settle();
+  check(storage[voiceModelKey] === "synthetic/audio-model", "Model must persist with the native storage namespace");
   await click("Record voice message");
   const canvas = document.querySelector<HTMLCanvasElement>(".ios-chat-voice-wave canvas");
   check(!draft.getBoundingClientRect().width && canvas?.getContext("2d")?.getImageData(0, 0, canvas.width, canvas.height).data.some((channel, index) => index % 4 === 3 && channel > 0), "Recording must replace the text composer and draw the audio waveform");
@@ -99,7 +112,7 @@ try {
   await click("Stop recording");
   check(stopped === 1 && transcriptions === 0 && button("Stop recording")?.disabled && !button("Transcribe for review")?.disabled, "Stopping must release the microphone without uploading");
   await click("Transcribe for review");
-  check(draft.value.includes("Existing draft") && draft.value.includes("Synthetic transcript") && sends === 0 && modelUsed === "synthetic/audio-model", "Transcript must use the configured model and augment the draft without sending");
+  check(draft.value === `${existingDraft}\n\nSynthetic transcript` && sends === 0 && modelUsed === "synthetic/audio-model", "Transcript must use the configured model and preserve all draft whitespace without sending");
   await holdForEvidence();
   if (new URLSearchParams(location.search).has("visual")) {
     document.getElementById("result")!.textContent = "READY: synthetic transcript in Workspace composer";
@@ -113,9 +126,14 @@ try {
     check(document.querySelector('[role="alert"]')?.textContent?.includes("Synthetic transcription error") && draft.value.includes("Synthetic transcript") && sends === 0, "Transcription error must preserve the draft without sending");
     check(retry && !retry.disabled && document.activeElement === retry && button("Discard recording") && !button("Record voice message"), "Failure must keep the clip and offer focused retry or discard");
     const stoppedBeforeRetry = stopped;
+    const retryField = modelInput();
+    check(retryField?.getBoundingClientRect().width && retryField.value === "synthetic/audio-model", "Retry must expose the selected model without discarding the recording");
+    await act(async () => editModel(retryField!, " "));
+    check(retry?.disabled, "Retry must not submit a blank model");
+    await act(async () => { editModel(retryField!, retryModel); retry!.focus(); });
     await holdForEvidence();
     await click("Retry transcription");
-    check(transcriptions === 3 && stopped === stoppedBeforeRetry && draft.value === "Existing draft\n\nSynthetic transcript\n\nRetried transcript" && !document.querySelector('[role="alert"]') && sends === 0, "Retry must append the transcript without opening the microphone or sending");
+    check(transcriptions === 3 && stopped === stoppedBeforeRetry && modelUsed === retryModel && storage[voiceModelKey] === retryModel && draft.value === `${existingDraft}\n\nSynthetic transcript\n\nRetried transcript` && !document.querySelector('[role="alert"]') && sends === 0, "Retry must use and save the replacement model without reopening the microphone, altering the draft, or sending");
     await holdForEvidence();
     await click("Record voice message"); await click("Stop recording"); await click("Transcribe for review");
     check(transcriptions === 4 && button("Retry transcription"), "Failure after stopping first must also allow retry");
