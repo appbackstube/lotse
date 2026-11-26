@@ -2199,6 +2199,7 @@ function App() {
   const [revertRunning, setRevertRunning] = useState(false);
   const [commitGenerating, setCommitGenerating] = useState(false);
   const [error, setError] = useState("");
+  const [notificationError, setNotificationError] = useState("");
   const [sidebarWidths, setSidebarWidths] = useState(storedSidebarWidths);
   const [simulatorSpace, setSimulatorSpace] = useState(storedSimulatorSpace);
   const [taskColumnRatios, setTaskColumnRatios] = useState(storedTaskColumnRatios);
@@ -2467,7 +2468,7 @@ function App() {
       const target = extra as NotificationTarget;
       void invoke<string>("notification_target_window", { repositoryRoot: target.repositoryRoot, originalWindow: target.windowLabel })
         .then((label) => { if (!disposed && label === getCurrentWindow().label) openNotificationRef.current(target); })
-        .catch((reason) => setError(message(reason)));
+        .catch((reason) => { if (!disposed) setNotificationError(message(reason)); });
     }).then(async (listener) => {
       if (disposed) return listener.unregister();
       unregister = () => { void listener.unregister(); };
@@ -4622,25 +4623,26 @@ function App() {
 
   openNotificationRef.current = (target) => {
     const window = getCurrentWindow();
-    void window.show().then(() => window.unminimize()).then(() => window.setFocus()).catch((reason) => setError(message(reason)));
+    void window.show().then(() => window.unminimize()).then(() => window.setFocus()).catch((reason) => setNotificationError(message(reason)));
     if (repositoryRef.current?.rootPath !== target.repositoryRoot) {
-      setError("The repository for this notification is no longer open in this window.");
+      setNotificationError("The repository for this notification is no longer open in this window.");
       return;
     }
     if (target.taskId !== null && !tasksRef.current.some((task) => task.id === target.taskId)) {
-      setError("The task for this notification is no longer available.");
+      setNotificationError("The task for this notification is no longer available.");
       return;
     }
     discardFileEdit(() => {
       if (repositoryRef.current?.rootPath !== target.repositoryRoot) {
-        setError("The repository for this notification is no longer open in this window.");
+        setNotificationError("The repository for this notification is no longer open in this window.");
         return;
       }
       const task = target.taskId === null ? null : tasksRef.current.find((current) => current.id === target.taskId);
       if (target.taskId !== null && !task) {
-        setError("The task for this notification is no longer available.");
+        setNotificationError("The task for this notification is no longer available.");
         return;
       }
+      setNotificationError("");
       setSettingsOpen(false);
       setZenMode(false);
       setTerminalOpen(false);
@@ -6323,6 +6325,14 @@ function App() {
       </button>
     </div>
   );
+  const boardTaskDialogOpen = boardMode && !inlineTaskMode && boardDrawerOpen && !settingsOpen && !!selectedTask;
+  const notificationErrorBanner = notificationError && (
+    <div role="alert" className="ios-error-banner flex min-h-12 shrink-0 items-center gap-3 border-t border-[#482631] bg-[#25151b] px-4 py-2 text-sm font-medium text-[#FB7185]">
+      <CircleAlert size={16} className="shrink-0" />
+      <span className="min-w-0 flex-1 break-words">{notificationError}</span>
+      <button type="button" onClick={() => setNotificationError("")} className="ml-4 text-[#fb7185]">Dismiss</button>
+    </div>
+  );
 
   return (
     <PomodoroProvider settings={pomodoroSettings} revision={pomodoroRevision} onComplete={notifyPomodoro}>
@@ -7310,7 +7320,7 @@ function App() {
         </div>}
       </div>
       </div>
-      <Dialog open={boardMode && !inlineTaskMode && boardDrawerOpen && !settingsOpen && !!selectedTask} onOpenChange={(open) => {
+      <Dialog open={boardTaskDialogOpen} onOpenChange={(open) => {
         const finish = () => {
           if (!open) {
             if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
@@ -7325,6 +7335,7 @@ function App() {
         <DialogContent keepMounted showCloseButton={false} className="task-detail-dialog !animate-none flex h-[88vh] w-[94vw] !max-w-[1800px] min-h-0 flex-col gap-0 overflow-hidden rounded-xl border border-[#294536] bg-[var(--ios-grouped-background)] p-0 shadow-2xl shadow-black/50">
           <DialogDescription className="sr-only">Task detail, chat and changes</DialogDescription>
           {!inlineTaskMode && taskDetailContent}
+          {boardTaskDialogOpen && notificationErrorBanner}
         </DialogContent>
       </Dialog>
       {simulatorSpace.enabled && <aside className="relative flex min-h-0 shrink-0 flex-col border-l border-[#294536] bg-[#0B110E]" style={{ width: Math.min(simulatorSpace.width, Math.max(200, window.innerWidth - 320)) }} aria-label="Simulator space">
@@ -7332,6 +7343,7 @@ function App() {
         <header className="flex h-12 shrink-0 items-center border-b border-[#294536] px-4 text-sm font-semibold text-[#E8FFF0]">Simulator</header>
       </aside>}
       </div>
+      {!boardTaskDialogOpen && notificationErrorBanner}
 
 
       {runOutputOpen && (
