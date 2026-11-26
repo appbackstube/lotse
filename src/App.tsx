@@ -25,7 +25,7 @@ import { createPortal, flushSync } from "react-dom";
 import { useTaskFieldDraft } from "./useTaskFieldDraft";
 import { readTaskDrawing } from "./taskDrawing";
 import { applyTaskSandboxUpdate } from "./taskSandbox";
-import { VoiceMessage, type VoiceMessagePhase } from "./components/VoiceMessage";
+import { useVoiceMessage } from "./components/VoiceMessage";
 import { WebsiteCredentialsSettings } from "./components/WebsiteCredentialsSettings";
 import { UsageSettings } from "./components/UsageSettings";
 import { recordUsage, type UsageItem } from "./usage";
@@ -1191,12 +1191,28 @@ function AiChatPanel({
   const [composerDraft, setComposerDraft] = useState(draft);
   const sendPendingRef = useRef(false);
   const [sendPending, setSendPending] = useState(false);
-  const [voicePhase, setVoicePhase] = useState<VoiceMessagePhase>("idle");
-  const transcribingRef = useRef(false);
-  const changeVoicePhase = useCallback((phase: VoiceMessagePhase) => {
-    transcribingRef.current = phase === "transcribing";
-    setVoicePhase(phase);
-  }, []);
+  const draftField = useRef<HTMLTextAreaElement>(null);
+  const focusTranscript = useRef(false);
+  const [transcriptReady, setTranscriptReady] = useState(false);
+  const voice = useVoiceMessage({
+    context: active ? voiceContext : "",
+    disabled: !comparison || sendPending || !taskSelected || !!variablePrompt,
+    onTranscript: (text) => {
+      const next = [composerDraft.trim(), text].filter(Boolean).join("\n\n");
+      focusTranscript.current = true;
+      setTranscriptReady(true);
+      setComposerDraft(next);
+      onDraftChange(next);
+    },
+  });
+  useLayoutEffect(() => { setTranscriptReady(false); }, [voiceContext]);
+  useLayoutEffect(() => {
+    if (voice.busy || !focusTranscript.current) return;
+    focusTranscript.current = false;
+    const field = draftField.current;
+    field?.focus();
+    if (field) field.setSelectionRange(field.value.length, field.value.length);
+  }, [voice.busy]);
   const [editingQueued, setEditingQueued] = useState<QueuedChatMessage | null>(null);
   const [queuedEditDraft, setQueuedEditDraft] = useState("");
   const addFilesRef = useRef(onAddFiles);
@@ -1219,16 +1235,17 @@ function AiChatPanel({
     observer.observe(content);
     return () => observer.disconnect();
   }, []);
-  const canSend = !!comparison && !sendPending && voicePhase !== "transcribing" && (!!composerDraft.trim() || images.some(isChatUpload) || selectedAssetIds.length > 0) && !variablePrompt
+  const canSend = !!comparison && !sendPending && !voice.busy && (!!composerDraft.trim() || images.some(isChatUpload) || selectedAssetIds.length > 0) && !variablePrompt
     && (!taskMode || taskSelected);
   const configurationError = chatConfigurationError(model, effort, models, modelsLoaded);
   const send = async () => {
-    if (!canSend || sendPendingRef.current || transcribingRef.current) return;
+    if (!canSend || sendPendingRef.current || voice.isBusy()) return;
     sendPendingRef.current = true;
     setSendPending(true);
     const submitted = composerDraft;
     try {
       if (await onSend(submitted)) {
+        setTranscriptReady(false);
         onDraftChange("");
         setComposerDraft((current) => current === submitted ? "" : current);
       }
@@ -1382,11 +1399,15 @@ function AiChatPanel({
               </DropdownMenuContent></DropdownMenu>
           </div>)}
         </div>}
-        <div className={`ios-chat-composer mx-auto w-full max-w-[960px] ${dragging ? "ios-chat-composer-dropping" : ""}`}>
-          {active && voiceContext && <VoiceMessage key={voiceContext} phase={voicePhase} onPhaseChange={changeVoicePhase} disabled={!comparison || sendPending || !taskSelected || !!variablePrompt} onTranscript={(text) => { const next = [composerDraft.trim(), text].filter(Boolean).join("\n\n"); setComposerDraft(next); onDraftChange(next); }} />}
+        {!voice.busy && transcriptReady && composerDraft.trim() && <p role="status" className="ios-chat-voice-notice mx-auto w-full max-w-[960px]">Review the transcript, then send your message.</p>}
+        <div className={`ios-chat-composer mx-auto w-full max-w-[960px] ${voice.busy ? "ios-chat-composer-recording" : ""} ${dragging ? "ios-chat-composer-dropping" : ""}`}>
+          {voice.error}
+          {voice.bar}
+          <div hidden={voice.busy}>
           <ChatUploads images={images} removable onRemove={onRemoveImage} />
           <ChatAssetNames attachments={taskAssets.filter((asset) => selectedAssetIds.includes(asset.id)).map((asset) => ({ kind: "taskAsset", id: asset.id, name: asset.name, image: asset.image }))} />
           <Textarea
+            ref={draftField}
             value={composerDraft}
             onChange={(event) => setComposerDraft(event.currentTarget.value)}
             onBlur={() => onDraftChange(composerDraft)}
@@ -1419,6 +1440,7 @@ function AiChatPanel({
                   {taskMode && <button type="button" disabled={!taskSelected || !taskAssets.length} onClick={() => setAddMenuPage("assets")} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[#183522] disabled:opacity-40"><Folder size={15} className="text-[#7C9B88]" /><span className="flex-1">Assets</span>{selectedAssetIds.length > 0 && <span className="text-xs text-[#7C9B88]">{selectedAssetIds.length}</span>}<ChevronRight size={14} className="text-[#7C9B88]" /></button>}
                   <button type="button" role="switch" aria-checked={mode === "plan"} disabled={running || (taskMode && !taskSelected)} onClick={() => { onModeChange(mode === "plan" ? "default" : "plan"); setAddMenuOpen(false); }} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[#183522] disabled:opacity-40"><ListTodo size={15} className="text-[#7C9B88]" /><span className="flex-1">Plan</span><span className="text-xs text-[#7C9B88]">{mode === "plan" ? "On" : "Off"}</span></button>
                   <button type="button" role="switch" aria-checked={goalSettings.enabled} disabled={running || (taskMode && !taskSelected)} onClick={() => { onGoalSettingsChange({ ...goalSettings, enabled: !goalSettings.enabled }); setAddMenuOpen(false); }} className="flex w-full items-center justify-between gap-2.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[#183522] disabled:opacity-40"><span>Goal</span><span className="text-xs text-[#7C9B88]">{goalSettings.enabled ? "On" : "Off"}</span></button>
+                  {voice.settings}
                 </> : <>
                   <button type="button" onClick={() => setAddMenuPage("main")} className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs text-[#7C9B88] hover:bg-[#183522]"><ChevronLeft size={14} /> {addMenuPage === "playbooks" ? "Playbooks" : addMenuPage === "pipelines" ? "Pipelines" : "Assets"}</button>
                   {addMenuPage === "pipelines" ? <>
@@ -1487,6 +1509,7 @@ function AiChatPanel({
               {mode === "plan" && <button type="button" className="ios-chat-plan-toggle" aria-label="Disable Plan mode" aria-pressed="true" title="Disable Plan mode" disabled={running || (taskMode && !taskSelected)} onClick={() => onModeChange("default")}>Plan <span>On</span></button>}
               {goalSettings.enabled && <ChatGoalSettings value={goalSettings} disabled={running || (taskMode && !taskSelected)} onChange={onGoalSettingsChange} />}
             </div>
+            {voice.recordButton}
             {running ? (
               <><button type="button" disabled={!canSend} onClick={send} className="accent-button ml-auto !size-[30px] shrink-0 !p-0 disabled:opacity-40" aria-label="Queue Review Agent message" title="Queue message"><ArrowUp size={14} /></button><button
                 type="button"
@@ -1509,6 +1532,7 @@ function AiChatPanel({
                 <ArrowUp size={14} />
               </button>
             )}
+          </div>
           </div>
         </div>
       </div>

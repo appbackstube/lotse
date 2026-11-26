@@ -1126,6 +1126,18 @@ select { color-scheme: light dark; }
   box-shadow: 0 5px 20px rgba(0, 0, 0, .09);
 }
 .ios-chat-composer-dropping { border-color: var(--ios-tint); box-shadow: 0 0 0 2px color-mix(in srgb, var(--ios-tint) 30%, transparent); }
+.ios-chat-composer-recording { padding: 7px 8px; }
+.ios-chat-voice-bar { display: flex; align-items: center; gap: 8px; }
+.ios-chat-voice-bar button:disabled { opacity: .4; }
+.ios-chat-voice-wave { display: grid; flex: 1; min-width: 0; height: 24px; margin-inline: 5px; place-items: center; color: var(--ios-secondary-label); font-size: 12px; }
+.ios-chat-voice-wave canvas { width: 100%; height: 24px; background: radial-gradient(circle at 1px center, color-mix(in srgb, currentColor 22%, transparent) 1px, transparent 1.25px) 0 center / 5px 100% repeat-x; }
+.ios-chat-voice-settings { margin-top: 4px; padding: 8px; border-top: 1px solid var(--ios-separator); font-size: 12px; }
+.ios-chat-voice-settings label { display: block; margin-bottom: 5px; font-weight: 500; }
+.ios-chat-voice-settings input { width: 100%; padding: 5px 7px; border: 1px solid var(--ios-separator); background: var(--ios-background); }
+.ios-chat-voice-settings p, .ios-chat-voice-notice { color: var(--ios-secondary-label); font-size: 12px; }
+.ios-chat-voice-settings p { margin-top: 5px; }
+.ios-chat-voice-notice, .ios-chat-voice-error { margin-bottom: 6px; }
+.ios-chat-voice-error { color: var(--ios-red-label); font-size: 12px; }
 /* Keep the task itself prominent; secondary properties share one quiet surface. */
 .task-details-form { container-type: inline-size; padding: 16px; }
 .task-details-form > * + * { margin-top: 16px; }

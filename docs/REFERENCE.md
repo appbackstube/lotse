@@ -38,7 +38,7 @@ Concurrent queue edits from different repository windows are checked before savi
 
 ## Voice messages
 
-Record a voice message in the Workspace or Task composer, choose an OpenRouter audio model ID, and select Transcribe. Audio is sent to OpenRouter and its model provider using the configured OpenRouter key; charges may apply. The transcript is added to the current draft for review and is sent only when you submit the composer. Cancel discards the recording or ignores a pending transcription; an already submitted provider request may still incur charges. Recordings require microphone permission and a supported audio format. Rebuild and restart the native app after updating the backend.
+In the Workspace or Task composer, use **Add to chat (+)** to choose an OpenRouter audio model ID, then select the microphone to record. The text draft is preserved while the compact recording bar is open. Use the square or Escape to stop recording without uploading, the arrow to transcribe for review, or × to discard. The arrow also works while recording. Audio is sent to OpenRouter and its model provider using the configured OpenRouter key; charges may apply. The transcript is added to the current draft and is sent to the agent only when you submit that draft. Discarding during transcription ignores the result; an already submitted provider request may still incur charges. Recordings require microphone permission and a supported audio format. Rebuild and restart the native app after updating the backend.
 
 ## Task statuses
 
