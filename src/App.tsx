@@ -25,9 +25,7 @@ import { createPortal, flushSync } from "react-dom";
 import { useTaskFieldDraft } from "./useTaskFieldDraft";
 import { readTaskDrawing } from "./taskDrawing";
 import { applyTaskSandboxUpdate } from "./taskSandbox";
-import { ConversationSettings, type ConversationSettingsValue } from "./components/ConversationSettings";
-import { useConversation } from "./useConversation";
-import type { VoiceDelegation, VoiceReply } from "./conversation";
+import { useVoiceMessage } from "./components/VoiceMessage";
 import { WebsiteCredentialsSettings } from "./components/WebsiteCredentialsSettings";
 import { UsageSettings } from "./components/UsageSettings";
 import { recordUsage, type UsageItem } from "./usage";
@@ -82,10 +80,6 @@ import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from "@/compone
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import {
-  AudioLines,
-  Keyboard,
-  Mic,
-  MicOff,
   ArrowUp,
   ArrowDown,
   Blocks,
@@ -1094,19 +1088,9 @@ function AiChatPanel({
   taskSelected = true,
   active = true,
   searchMessage,
-  conversationEnabled = false,
-  conversationContext = "",
-  voiceReplies = [],
-  onVoiceSend,
-  voiceRunId,
-  onVoiceCancel,
+  voiceContext = "",
 }: {
-  conversationEnabled?: boolean;
-  conversationContext?: string;
-  voiceReplies?: VoiceReply[];
-  onVoiceSend?: (request: VoiceDelegation) => Promise<boolean>;
-  voiceRunId?: string;
-  onVoiceCancel?: (requestId: string) => void;
+  voiceContext?: string;
   messages: ChatMessage[];
   draft: string;
   running: boolean;
@@ -1189,12 +1173,6 @@ function AiChatPanel({
   active?: boolean;
   searchMessage?: { id: string; query: string; request: number };
 }) {
-  const voiceBlocked = !!agentInput || !!agentApproval || !!variablePrompt;
-  const voice = useConversation({ available: conversationEnabled && active && !taskMode && !!comparison, context: conversationContext, messages,
-    running, blocked: voiceBlocked, replies: voiceReplies, onSend: request => onVoiceSend?.(request) ?? Promise.resolve(false) });
-  const [confirmStopVoiceWork, setConfirmStopVoiceWork] = useState<string | null>(null);
-  useEffect(() => { setConfirmStopVoiceWork(null); }, [running, conversationContext, voiceRunId]);
-  const voiceLabel = voice.muted ? "Microphone off" : ({ idle: "", connecting: "Connecting…", listening: "Listening", hearing: "Hearing you…", speaking: "GPT-Live" })[voice.phase];
   const scrollRef = useRef<HTMLDivElement>(null);
   const followChatRef = useRef(true);
   useEffect(() => {
@@ -1213,6 +1191,28 @@ function AiChatPanel({
   const [composerDraft, setComposerDraft] = useState(draft);
   const sendPendingRef = useRef(false);
   const [sendPending, setSendPending] = useState(false);
+  const draftField = useRef<HTMLTextAreaElement>(null);
+  const focusTranscript = useRef(false);
+  const [transcriptReady, setTranscriptReady] = useState(false);
+  const voice = useVoiceMessage({
+    context: active ? voiceContext : "",
+    disabled: !comparison || sendPending || !taskSelected || !!variablePrompt,
+    onTranscript: (text) => {
+      const next = composerDraft ? `${composerDraft}\n\n${text}` : text;
+      focusTranscript.current = true;
+      setTranscriptReady(true);
+      setComposerDraft(next);
+      onDraftChange(next);
+    },
+  });
+  useLayoutEffect(() => { setTranscriptReady(false); }, [voiceContext]);
+  useLayoutEffect(() => {
+    if (voice.busy || !focusTranscript.current) return;
+    focusTranscript.current = false;
+    const field = draftField.current;
+    field?.focus();
+    if (field) field.setSelectionRange(field.value.length, field.value.length);
+  }, [voice.busy]);
   const [editingQueued, setEditingQueued] = useState<QueuedChatMessage | null>(null);
   const [queuedEditDraft, setQueuedEditDraft] = useState("");
   const addFilesRef = useRef(onAddFiles);
@@ -1235,16 +1235,17 @@ function AiChatPanel({
     observer.observe(content);
     return () => observer.disconnect();
   }, []);
-  const canSend = !!comparison && !sendPending && (!!composerDraft.trim() || images.some(isChatUpload) || selectedAssetIds.length > 0) && !variablePrompt
+  const canSend = !!comparison && !sendPending && !voice.busy && (!!composerDraft.trim() || images.some(isChatUpload) || selectedAssetIds.length > 0) && !variablePrompt
     && (!taskMode || taskSelected);
   const configurationError = chatConfigurationError(model, effort, models, modelsLoaded);
   const send = async () => {
-    if (sendPendingRef.current) return;
+    if (!canSend || sendPendingRef.current || voice.isBusy()) return;
     sendPendingRef.current = true;
     setSendPending(true);
     const submitted = composerDraft;
     try {
       if (await onSend(submitted)) {
+        setTranscriptReady(false);
         onDraftChange("");
         setComposerDraft((current) => current === submitted ? "" : current);
       }
@@ -1272,7 +1273,7 @@ function AiChatPanel({
 
   const pipeline = queuedMessages.find((item) => item.pipeline)?.pipeline;
   const manualMessages = queuedMessages.filter((item) => !item.pipeline);
-  const emptyCenteredChat = !voice.active && centered && !messages.length && !running && !queuedMessages.length && !variablePrompt && !agentInput && !agentApproval;
+  const emptyCenteredChat = centered && !messages.length && !running && !queuedMessages.length && !variablePrompt && !agentInput && !agentApproval;
   const availableFavoriteModels = favoriteModels.filter((id) => models.some((entry) => entry.model === id));
 
   return (
@@ -1297,9 +1298,9 @@ function AiChatPanel({
           <DropdownMenuTrigger className="task-modal-icon ml-auto" aria-label="Chat actions" title="Chat actions"><Ellipsis size={18} /></DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-52">
             <DropdownMenuItem onClick={() => onZenModeChange(true)}><Maximize2 size={14} /> Enter Zen Mode</DropdownMenuItem>
-            <DropdownMenuItem disabled={running || (!messages.length && !queuedMessages.length)} onClick={() => { voice.stop(); onClear(); }} aria-label="Clear Agent Chat conversation"><RotateCcw size={14} /> Clear conversation</DropdownMenuItem>
+            <DropdownMenuItem disabled={running || (!messages.length && !queuedMessages.length)} onClick={onClear} aria-label="Clear Agent Chat conversation"><RotateCcw size={14} /> Clear conversation</DropdownMenuItem>
           </DropdownMenuContent>
-        </DropdownMenu> : <div className="ml-auto flex items-center">{(!!messages.length || !!queuedMessages.length) && <button type="button" onClick={() => { voice.stop(); onClear(); }} disabled={running} className="quiet-button h-7 px-2 disabled:opacity-40" aria-label="Clear Agent Chat conversation">
+        </DropdownMenu> : <div className="ml-auto flex items-center">{(!!messages.length || !!queuedMessages.length) && <button type="button" onClick={onClear} disabled={running} className="quiet-button h-7 px-2 disabled:opacity-40" aria-label="Clear Agent Chat conversation">
           Clear
         </button>}
         <button
@@ -1398,15 +1399,15 @@ function AiChatPanel({
               </DropdownMenuContent></DropdownMenu>
           </div>)}
         </div>}
-        {voice.error && <div role="alert" className="conversation-error mx-auto w-full max-w-[960px]">{voice.error}{voice.transcript && <><p>{voice.transcript}</p><button type="button" onClick={() => { const text = [composerDraft.trim(), voice.transcript].filter(Boolean).join("\n\n"); setComposerDraft(text); onDraftChange(text); }}>Copy transcript to composer</button></>}</div>}
-        {voice.active && <div className="ios-chat-composer conversation-composer mx-auto w-full max-w-[960px]" aria-label="Voice composer">
-          <div className="conversation-status"><AudioLines size={32} aria-hidden="true" className={voice.phase === "speaking" || voice.phase === "hearing" ? "conversation-speaking" : ""} /><div><strong role="status">{voiceLabel}</strong><p>{voice.outputPaused ? "Audio paused. It may resume after a pause, or you can resume it now." : voiceBlocked ? "The agent needs your response in the chat." : voice.muted ? "Unmute to speak." : running ? "The workspace agent is working. You can keep talking." : "Your chat stays here. Speak naturally."}</p>{voice.transcript && <p>{voice.transcript}</p>}</div></div>
-          <div className="conversation-controls"><button type="button" className="ios-chat-add-image" aria-label="Switch to typing" onClick={voice.stop}><Keyboard size={18} /></button><span className="conversation-disclosure">GPT-Live · AI voice · OpenAI</span><span className="flex-1" />{voice.outputPaused ? <button type="button" className="quiet-button" onClick={voice.resumeAudio}>Resume audio</button> : <button type="button" className="quiet-button" disabled={voice.phase === "connecting"} onClick={voice.interrupt}>Interrupt voice</button>}<button type="button" className="quiet-button" aria-label={voice.muted ? "Unmute microphone" : "Mute microphone"} aria-pressed={voice.muted} disabled={voice.phase === "connecting"} onClick={voice.mute}>{voice.muted ? <MicOff size={17} /> : <Mic size={17} />}</button><button type="button" className="accent-button" onClick={voice.stop}><X size={15} /> End</button>{running && voiceRunId && (confirmStopVoiceWork ? <><button type="button" className="quiet-button" onClick={() => { onVoiceCancel?.(confirmStopVoiceWork); setConfirmStopVoiceWork(null); }}>Stop work</button><button type="button" className="quiet-button" onClick={() => setConfirmStopVoiceWork(null)}>Keep working</button></> : <button type="button" className="quiet-button" aria-label="Stop workspace agent work" onClick={() => setConfirmStopVoiceWork(voiceRunId)}><Square size={14} /></button>)}</div>
-        </div>}
-        <div hidden={voice.active} className={`ios-chat-composer mx-auto w-full max-w-[960px] ${dragging ? "ios-chat-composer-dropping" : ""}`}>
+        {!voice.busy && transcriptReady && composerDraft.trim() && <p role="status" className="ios-chat-voice-notice mx-auto w-full max-w-[960px]">Review the transcript, then send your message.</p>}
+        <div className={`ios-chat-composer mx-auto w-full max-w-[960px] ${voice.busy ? "ios-chat-composer-recording" : ""} ${dragging ? "ios-chat-composer-dropping" : ""}`}>
+          {voice.error}
+          {voice.bar}
+          <div hidden={voice.busy}>
           <ChatUploads images={images} removable onRemove={onRemoveImage} />
           <ChatAssetNames attachments={taskAssets.filter((asset) => selectedAssetIds.includes(asset.id)).map((asset) => ({ kind: "taskAsset", id: asset.id, name: asset.name, image: asset.image }))} />
           <Textarea
+            ref={draftField}
             value={composerDraft}
             onChange={(event) => setComposerDraft(event.currentTarget.value)}
             onBlur={() => onDraftChange(composerDraft)}
@@ -1439,6 +1440,7 @@ function AiChatPanel({
                   {taskMode && <button type="button" disabled={!taskSelected || !taskAssets.length} onClick={() => setAddMenuPage("assets")} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[#183522] disabled:opacity-40"><Folder size={15} className="text-[#7C9B88]" /><span className="flex-1">Assets</span>{selectedAssetIds.length > 0 && <span className="text-xs text-[#7C9B88]">{selectedAssetIds.length}</span>}<ChevronRight size={14} className="text-[#7C9B88]" /></button>}
                   <button type="button" role="switch" aria-checked={mode === "plan"} disabled={running || (taskMode && !taskSelected)} onClick={() => { onModeChange(mode === "plan" ? "default" : "plan"); setAddMenuOpen(false); }} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[#183522] disabled:opacity-40"><ListTodo size={15} className="text-[#7C9B88]" /><span className="flex-1">Plan</span><span className="text-xs text-[#7C9B88]">{mode === "plan" ? "On" : "Off"}</span></button>
                   <button type="button" role="switch" aria-checked={goalSettings.enabled} disabled={running || (taskMode && !taskSelected)} onClick={() => { onGoalSettingsChange({ ...goalSettings, enabled: !goalSettings.enabled }); setAddMenuOpen(false); }} className="flex w-full items-center justify-between gap-2.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[#183522] disabled:opacity-40"><span>Goal</span><span className="text-xs text-[#7C9B88]">{goalSettings.enabled ? "On" : "Off"}</span></button>
+                  {voice.settings}
                 </> : <>
                   <button type="button" onClick={() => setAddMenuPage("main")} className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs text-[#7C9B88] hover:bg-[#183522]"><ChevronLeft size={14} /> {addMenuPage === "playbooks" ? "Playbooks" : addMenuPage === "pipelines" ? "Pipelines" : "Assets"}</button>
                   {addMenuPage === "pipelines" ? <>
@@ -1507,7 +1509,7 @@ function AiChatPanel({
               {mode === "plan" && <button type="button" className="ios-chat-plan-toggle" aria-label="Disable Plan mode" aria-pressed="true" title="Disable Plan mode" disabled={running || (taskMode && !taskSelected)} onClick={() => onModeChange("default")}>Plan <span>On</span></button>}
               {goalSettings.enabled && <ChatGoalSettings value={goalSettings} disabled={running || (taskMode && !taskSelected)} onChange={onGoalSettingsChange} />}
             </div>
-              {!taskMode && conversationEnabled && <button type="button" className="quiet-button conversation-start" disabled={!comparison || sendPending || voiceBlocked || !!configurationError} onClick={voice.start} aria-label="Start conversation"><AudioLines size={16} /> Talk</button>}
+            {voice.recordButton}
             {running ? (
               <><button type="button" disabled={!canSend} onClick={send} className="accent-button ml-auto !size-[30px] shrink-0 !p-0 disabled:opacity-40" aria-label="Queue Review Agent message" title="Queue message"><ArrowUp size={14} /></button><button
                 type="button"
@@ -1530,6 +1532,7 @@ function AiChatPanel({
                 <ArrowUp size={14} />
               </button>
             )}
+          </div>
           </div>
         </div>
       </div>
@@ -2233,10 +2236,6 @@ function App() {
   const [taskGridWidth, setTaskGridWidth] = useState(window.innerWidth);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => new Set());
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [conversationSettings, setConversationSettings] = useState<ConversationSettingsValue>({ enabled: false });
-  const [voiceReplies, setVoiceReplies] = useState<VoiceReply[]>([]);
-  const voiceWorkRef = useRef(new Map<string, { sessionId: string; delegationId: string; responseId: string; callId: string; context: string; requestId?: string; result: string; pendingEvents?: AiChatEvent[] }>());
-  useEffect(() => { void invoke<ConversationSettingsValue>("conversation_settings").then(setConversationSettings).catch(() => {}); }, []);
   const [settingsPage, setSettingsPage] = useState<SettingsPage>("general");
   const [pomodoroSettings, setPomodoroSettings] = useState(() => {
     try { return normalizePomodoroSettings(JSON.parse(fileStore.getItem(pomodoroSettingsKey) ?? "null")); }
@@ -2553,13 +2552,6 @@ function App() {
     const item = chatQueuesRef.current[key]?.find((entry) => entry.id === id);
     if (!item) return;
     changeQueue(key, (items) => items.filter((entry) => entry.id !== id));
-    if (deleteImages) {
-      const work = voiceWorkRef.current.get(id);
-      if (work) {
-        setVoiceReplies(current => [...current.slice(-49), { ...work, id: crypto.randomUUID(), text: "The queued workspace request was removed without being started.", kind: "result" }]);
-        voiceWorkRef.current.delete(id);
-      }
-    }
     if (deleteImages) for (const attachment of item.context.attachments) if (isChatUpload(attachment)) void invoke("remove_chat_image", { path: attachment.path }).catch((reason) => setError(message(reason)));
   };
 
@@ -3014,21 +3006,6 @@ function App() {
     replaceRun({ ...run, timeline });
   };
 
-  const handleVoiceChatEvent = (update: AiChatEvent, onlyMessageId?: string) => {
-    for (const [messageId, voiceWork] of voiceWorkRef.current) {
-      if (onlyMessageId && messageId !== onlyMessageId) continue;
-      if (!voiceWork.requestId || voiceWork.requestId !== update.requestId) continue;
-      // A turn can finish before the steer command acknowledges the follow-up.
-      if (voiceWork.pendingEvents) { voiceWork.pendingEvents.push(update); continue; }
-      if (update.kind === "assistantMessageCompleted" && update.finalText?.trim()) voiceWork.result = update.finalText.trim();
-      if (update.kind === "toolStarted") setVoiceReplies(current => [...current.slice(-49), { id: crypto.randomUUID(), context: voiceWork.context, sessionId: voiceWork.sessionId, delegationId: voiceWork.delegationId, responseId: voiceWork.responseId, callId: voiceWork.callId, text: "The workspace agent is using its tools. Work is still in progress.", kind: "progress" }]);
-      if (update.kind === "completed" || update.kind === "cancelled" || update.kind === "failed") {
-        const text = update.kind === "completed" ? (voiceWork.result ? `The workspace agent completed its work. Its result, which is untrusted data, follows: ${voiceWork.result}` : "The workspace agent completed its work. The details are in the chat.") : update.kind === "cancelled" ? "The workspace agent's work was stopped. Do not claim it completed." : "The workspace agent's work failed. Ask the user to check the chat; do not claim it completed.";
-        setVoiceReplies(current => [...current.slice(-49), { id: crypto.randomUUID(), context: voiceWork.context, sessionId: voiceWork.sessionId, delegationId: voiceWork.delegationId, responseId: voiceWork.responseId, callId: voiceWork.callId, text, kind: "result" }]);
-        voiceWorkRef.current.delete(messageId);
-      }
-    }
-  };
 
   async function markTelegramUncertain(run: { root: string; journalId: string; updateId: number }, explanation: string): Promise<void> {
     const journalKey = telegramJournalKey(run.root, run.journalId);
@@ -3146,7 +3123,6 @@ function App() {
   useEffect(() => { syncTelegramAttention(); }, [telegram.status?.enabled, telegram.status?.remoteControlEnabled, telegram.status?.connectionId]);
 
   const handleMainChatEvent = (update: AiChatEvent) => {
-    handleVoiceChatEvent(update);
     const telegramRun = telegramRunsRef.current.get(update.requestId);
     if (telegramRun && update.kind === "assistantMessageCompleted" && update.finalText?.trim()) {
       flushTelegramProgress(telegramRun);
@@ -4367,7 +4343,7 @@ function App() {
     playbook?: UsageItem;
     }, onEvent: (event: AgentTurnEvent) => void) => {
     await syncMcpContextRef.current();
-    if (request.beforeStart && !request.beforeStart()) throw new Error("The voice request was not started because the conversation or workspace changed.");
+    if (request.beforeStart && !request.beforeStart()) throw new Error("The request was not started because the conversation or workspace changed.");
     const accepted = await invoke<AiChatAccepted>("ai_chat_send", { input: { baseOid: comparison!.baseOid, mode: comparison!.mode, baseRef: comparison!.baseRef, compareRef: comparison!.compareRef, snapshotId: comparison!.snapshotId, agentThreadId: request.threadId, model: request.model, effort: request.effort, collaborationMode: request.mode, goal: request.mode === "default" ? request.goalSettings ?? defaultChatGoal : defaultChatGoal, prompt: request.prompt, userRules, agentPrompt: request.chatAgent?.prompt ?? "", chatContext: request.context, comments: review!.comments, allowLongPrompt: request.allowLongPrompt, taskId: request.taskId, taskLocation: request.taskLocation, taskTitle: request.taskTitle, taskDescription: request.taskDescription, approvalMode: approvalForAgent(request.chatAgent, approvalReviewerOverrides[request.taskId ?? "review"], approvalReviewerDefault, request.pipeline), telegramConnectionId: request.telegramConnectionId }, events: new Channel<AgentTurnEvent>(onEvent) });
     void recordUsage({ id: accepted.requestId, kind: "run", at: Date.now(), agent: request.chatAgent ? { id: request.chatAgent.id, title: request.chatAgent.title } : { id: "unassigned", title: "No agent" }, model: request.model, playbook: request.playbook }).catch((reason) => setError(`Usage could not be saved: ${message(reason)}`));
     return accepted;
@@ -4439,8 +4415,6 @@ function App() {
       }, (event) => { if (runReady) dispatchEvent(event); else earlyEvents.push(event); });
       acceptedRequestId = result.requestId;
       aiChatTurnRef.current = result;
-      const voiceWork = queuedItem && voiceWorkRef.current.get(queuedItem.id);
-      if (voiceWork) voiceWork.requestId = result.requestId;
       onAccepted?.(result);
       reviewRunSessionRef.current = {
         ...(reviewRunSessionRef.current ?? pendingReview),
@@ -5224,15 +5198,8 @@ function App() {
     const accepted = task ? taskRunsRef.current[task.id]?.accepted : aiChatTurnRef.current;
     if (!item || !accepted || (!task && reviewRunQueueKeyRef.current !== key) || queueBusyRef.current.has(key)) return;
     queueBusyRef.current.add(key);
-    const voiceWork = voiceWorkRef.current.get(id);
-    if (voiceWork) { voiceWork.requestId = accepted.requestId; voiceWork.pendingEvents = []; }
     try {
       await invoke("ai_chat_steer", { input: { requestId: accepted.requestId, prompt: item.body, chatContext: item.context, taskId: task?.id ?? null, allowLongPrompt: !!task || !!item.telegram, comments: review?.comments ?? [] } });
-      if (voiceWork) {
-        const events = voiceWork.pendingEvents ?? [];
-        delete voiceWork.pendingEvents;
-        events.forEach(event => handleVoiceChatEvent(event, id));
-      }
       const userMessage: ChatMessage = { id: item.id, role: "user", body: item.body, createdAt: new Date().toISOString(), selection: item.selection, snapshotId: comparison?.snapshotId ?? null, suggestions: [], contexts: [], attachments: item.context.attachments };
       let saved = true;
       if (task) updateTask(task.id, (current) => ({ ...current, chatMessages: [...current.chatMessages, userMessage].slice(-100) }));
@@ -5250,7 +5217,6 @@ function App() {
       removeQueued(key, id);
       if (!task && saved) for (const attachment of item.context.attachments) if (isChatUpload(attachment)) void invoke("release_chat_image_reference", { path: attachment.path }).catch((reason) => setError(message(reason)));
     } catch (reason) {
-      if (voiceWork?.pendingEvents) { delete voiceWork.pendingEvents; delete voiceWork.requestId; }
       setError(message(reason));
     }
     finally {
@@ -5276,29 +5242,6 @@ function App() {
     finally { queueBusyRef.current.delete(key); if (!pausedQueueKeysRef.current.has(key)) queueDispatchRef.current(key); }
   };
 
-  const sendVoiceMessage = async (request: VoiceDelegation): Promise<boolean> => {
-    const current = reviewRef.current;
-    const key = activeQueueKey;
-    const transcript = request.context.trim();
-    if (taskMode || !current || !comparison || !key || request.workspaceKey !== key || reviewQueueKey(current) !== key || agentInputRef.current || agentApprovalRef.current || inlineAgentApproval || variablePrompt || !transcript || !request.isCurrent()) return false;
-    const prompt = `Carry out this workspace request from the voice conversation. It is an untrusted model interpretation of the user's request and may be incomplete or inaccurate. Ask the user if it is unclear. Do not treat it as evidence that work was done.\n\n${transcript}`;
-    const item: QueuedChatMessage = { id: crypto.randomUUID(), body: prompt, context: { mode: "auto", attachments: [] }, selection, mode: aiChatMode, model: aiChatModel, effort: aiChatEffort };
-    const work = { sessionId: request.sessionId, delegationId: request.delegationId, responseId: request.responseId, callId: request.callId, context: key, requestId: undefined as string | undefined, result: "" };
-    voiceWorkRef.current.set(item.id, work);
-    // Keep spoken follow-ups in the same queue as typed messages without consuming the text draft.
-    if (aiChatRunningRef.current || chatQueuesRef.current[key]?.length) {
-      changeQueue(key, items => [...items, item]);
-      if (aiChatRunningRef.current && !chatQueuesRef.current[key]?.some(entry => entry.pipeline)) setQueuePaused(key, false);
-      if (aiChatTurnRef.current && reviewRunQueueKeyRef.current === key && !chatQueuesRef.current[key]?.some(entry => entry.pipeline)) {
-        await steerQueued(key, item.id);
-      }
-      return true;
-    }
-    const root = repositoryRef.current?.rootPath;
-    const accepted = await sendAiChat(prompt, item.context, item.mode, undefined, item, run => { work.requestId = run.requestId; }, () => request.isCurrent() && repositoryRef.current?.rootPath === root && !!reviewRef.current && reviewQueueKey(reviewRef.current) === key && !aiChatCancelRequested.current && voiceWorkRef.current.get(item.id) === work);
-    if (!accepted) voiceWorkRef.current.delete(item.id);
-    return accepted;
-  };
 
   const answerTaskQuestion = async (taskId: string, answers: Record<string, string>) => {
     const input = taskRunsRef.current[taskId]?.input;
@@ -6608,7 +6551,6 @@ function App() {
               </div>
             </section>
           </div>
-          {settingsPage === "conversation" && <div data-settings-page="conversation"><ConversationSettings onChange={setConversationSettings} /></div>}
           <div hidden={settingsPage !== "agent"} data-settings-page="agent">
             <section className="mt-10">
               <h2 className="mb-4 text-[17px] font-semibold text-[#E8FFF0]">Defaults & personalization</h2>
@@ -7261,12 +7203,7 @@ function App() {
             onZenModeChange={setZenMode}
             onApprovalReviewerChange={(value) => setApprovalReviewerOverrides((current) => ({ ...current, [taskMode ? selectedTask?.id ?? "" : "review"]: { mode: value, agent: activeApprovalAgent ?? null } }))}
             onSend={sendComposerMessage}
-            onVoiceSend={sendVoiceMessage}
-            voiceRunId={reviewRunQueueKeyRef.current === activeQueueKey ? aiChatTurnRef.current?.requestId : undefined}
-            onVoiceCancel={(requestId) => { void cancelAiChat(requestId); }}
-            conversationEnabled={conversationSettings.enabled && !settingsOpen && workspaceMode === "workspace"}
-            conversationContext={activeQueueKey ?? ""}
-            voiceReplies={voiceReplies}
+            voiceContext={settingsOpen || (boardMode && !inlineTaskMode && !boardDrawerOpen) ? "" : activeQueueKey ?? ""}
             queuedMessages={activeQueueKey ? chatQueues[activeQueueKey] ?? [] : []}
             queuePaused={activeQueueKey ? pausedQueueKeys.has(activeQueueKey) : false}
             canSteerQueued={taskMode ? !!selectedTaskRun : reviewRunQueueKeyRef.current === activeQueueKey}

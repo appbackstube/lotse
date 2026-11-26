@@ -1126,6 +1126,18 @@ select { color-scheme: light dark; }
   box-shadow: 0 5px 20px rgba(0, 0, 0, .09);
 }
 .ios-chat-composer-dropping { border-color: var(--ios-tint); box-shadow: 0 0 0 2px color-mix(in srgb, var(--ios-tint) 30%, transparent); }
+.ios-chat-composer-recording { padding: 7px 8px; }
+.ios-chat-voice-bar { display: flex; align-items: center; gap: 8px; }
+.ios-chat-voice-bar button:disabled { opacity: .4; }
+.ios-chat-voice-wave { display: grid; flex: 1; min-width: 0; height: 24px; margin-inline: 5px; place-items: center; color: var(--ios-secondary-label); font-size: 12px; }
+.ios-chat-voice-wave canvas { width: 100%; height: 24px; background: radial-gradient(circle at 1px center, color-mix(in srgb, currentColor 22%, transparent) 1px, transparent 1.25px) 0 center / 5px 100% repeat-x; }
+.ios-chat-voice-settings { margin-top: 4px; padding: 8px; border-top: 1px solid var(--ios-separator); font-size: 12px; }
+.ios-chat-voice-settings label { display: block; margin-bottom: 5px; font-weight: 500; }
+.ios-chat-voice-settings input { width: 100%; padding: 5px 7px; border: 1px solid var(--ios-separator); background: var(--ios-background); }
+.ios-chat-voice-settings p, .ios-chat-voice-notice { color: var(--ios-secondary-label); font-size: 12px; }
+.ios-chat-voice-settings p { margin-top: 5px; }
+.ios-chat-voice-notice, .ios-chat-voice-error { margin-bottom: 6px; }
+.ios-chat-voice-error { color: var(--ios-red-label); font-size: 12px; }
 /* Keep the task itself prominent; secondary properties share one quiet surface. */
 .task-details-form { container-type: inline-size; padding: 16px; }
 .task-details-form > * + * { margin-top: 16px; }
@@ -1862,25 +1874,3 @@ button.task-asset-thumbnail:hover, button.task-asset-thumbnail:focus-visible { b
 .pipeline-run-card > button { flex-shrink: 0; font-size: 11px; }
 @media (max-width: 1000px) { .pipeline-layout { grid-template-columns: minmax(0, 1fr); gap: 20px; } .pipeline-library { display: flex; gap: 5px; overflow-x: auto; padding-bottom: 7px; } .pipeline-library > header { padding: 0 5px; gap: 10px; } .pipeline-library-item { width: auto; min-width: 150px; margin: 0; } }
 @media (max-width: 560px) { .pipeline-step > header { gap: 6px; padding: 10px; } .pipeline-step-body { padding: 12px; } .pipeline-role { gap: 8px; } .pipeline-message { gap: 5px; } .pipeline-step-tools button { width: 23px; } .pipeline-run-card { flex-wrap: wrap; } }
-
-/* Conversation replaces only the composer; the agent timeline stays visible. */
-.conversation-composer { min-height: 118px; }
-.conversation-status { display: flex; align-items: center; gap: 14px; min-height: 62px; padding: 2px 8px 10px; }
-.conversation-status > svg { flex-shrink: 0; }
-.conversation-status > div { min-width: 0; }
-.conversation-status strong { font-size: 14px; font-weight: 600; }
-.conversation-status p { margin: 5px 0 0; color: var(--ios-secondary-label); font-size: 12px; max-height: 52px; overflow-y: auto; overflow-wrap: anywhere; }
-.conversation-controls { display: flex; align-items: center; gap: 8px; }
-.conversation-disclosure { color: var(--ios-secondary-label); font-size: 11px; }
-.conversation-start { gap: 5px; flex-shrink: 0; }
-.conversation-error { padding: 8px 12px; color: var(--ios-red-label); font-size: 12px; }
-.conversation-error p { white-space: pre-wrap; max-height: 100px; overflow-y: auto; color: var(--ios-label); }
-.conversation-error button { text-decoration: underline; }
-.conversation-settings { display: grid; gap: 24px; font-size: 14px; }
-.conversation-settings form { display: grid; gap: 12px; }
-.conversation-settings label { font-weight: 600; }
-.conversation-settings-help { color: var(--ios-secondary-label); font-size: 12px; line-height: 1.6; }
-.conversation-settings [role="alert"] { color: var(--ios-red-label); }
-.conversation-speaking { animation: conversation-pulse 800ms ease-in-out infinite alternate; }
-@keyframes conversation-pulse { to { opacity: .45; } }
-@media (prefers-reduced-motion: reduce) { .conversation-speaking { animation: none; } }

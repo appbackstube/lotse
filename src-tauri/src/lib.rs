@@ -3,7 +3,6 @@ compile_error!("browser-qa must never be enabled in a release build");
 
 mod agent_runtime;
 mod credentials;
-mod conversation;
 mod memory;
 mod spotlight;
 mod spotlight_index;
@@ -6720,9 +6719,6 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
-            conversation::conversation_settings,
-            conversation::save_conversation_key,
-            conversation::start_conversation,
             #[cfg(all(feature = "browser-qa", target_os = "macos"))]
             browser::browser_qa_fixture,
             website_credentials::list_website_credentials,
@@ -6752,6 +6748,7 @@ pub fn run() {
             telegram::telegram_download_image,
             telegram::telegram_download_video,
             telegram::telegram_transcribe_voice,
+            telegram::transcribe_composer_voice,
             telegram::telegram_set_transcription_settings,
             telegram::telegram_save_connection,
             telegram::telegram_set_enabled,
