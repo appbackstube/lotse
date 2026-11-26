@@ -9,6 +9,7 @@ use tauri::Manager;
 use tauri::{AppHandle, State, WebviewWindow};
 
 const CREDENTIAL_KEY: &str = "lotse.telegram.repositories";
+const VOICE_CREDENTIAL_KEY: &str = "lotse.voice.openrouter.api-key";
 const DEFAULT_TRANSCRIPTION_MODEL: &str = "google/gemini-2.5-flash";
 static CONNECTION_LOCK: Mutex<()> = Mutex::new(());
 // Shared across windows and reconnects; only sends to the same bot/chat wait.
@@ -363,6 +364,10 @@ fn transcription_request(settings: &TranscriptionSettings, format: &str, bytes: 
     })
 }
 
+fn voice_stt_request(model: &str, language: &str, format: &str, bytes: &[u8]) -> Value {
+    json!({"model": model, "input_audio": {"data": STANDARD.encode(bytes), "format": format}, "language": language})
+}
+
 fn composer_voice_input(audio: &str, model: &str) -> Result<(TranscriptionSettings, Vec<u8>, &'static str), String> {
     let model = model.trim();
     if model.is_empty() || model.len() > 200 || !model.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'_' | b'.' | b':')) {
@@ -395,6 +400,63 @@ pub async fn transcribe_composer_voice(audio: String, model: String, app: AppHan
         let text = value.pointer("/choices/0/message/content").and_then(Value::as_str).map(str::trim)
             .filter(|text| !text.is_empty() && text.len() <= 100_000).ok_or("OpenRouter returned an empty or invalid transcription.")?;
         if repository_path_for_label(&app.state::<AppState>(), &label)? != root { return Err("The workspace changed during transcription.".to_owned()); }
+        Ok(text.to_owned())
+    }).await
+}
+
+#[tauri::command]
+pub fn voice_key_configured(app: AppHandle) -> Result<bool, String> {
+    Ok(crate::credentials::load(&app, VOICE_CREDENTIAL_KEY)?.is_some_and(|value| !value.is_empty()))
+}
+
+#[tauri::command]
+pub fn save_voice_key(app: AppHandle, key: String) -> Result<(), String> {
+    let key = key.trim();
+    if key.is_empty() || key.len() > 1024 || key.chars().any(char::is_whitespace) { return Err("Enter a valid OpenRouter API key.".into()); }
+    crate::credentials::save(&app, VOICE_CREDENTIAL_KEY, Some(key))
+}
+
+#[tauri::command]
+pub async fn voice_models(app: AppHandle) -> Result<Vec<(String, String)>, String> {
+    run_blocking(move || {
+        let key = crate::credentials::load(&app, VOICE_CREDENTIAL_KEY)?.filter(|value| !value.is_empty()).ok_or("Configure the OpenRouter voice API key first.")?;
+        let client = Client::builder().timeout(Duration::from_secs(20)).build().map_err(|_| "Cannot initialize model lookup.")?;
+        let response = client.get("https://openrouter.ai/api/v1/models?output_modalities=transcription").bearer_auth(key).send()
+            .map_err(|_| "Cannot load transcription models.")?;
+        if !response.status().is_success() { return Err("OpenRouter rejected the model lookup. Check the API key.".into()); }
+        let mut body = Vec::new();
+        response.take(2_000_001).read_to_end(&mut body).map_err(|_| "Cannot read transcription models.")?;
+        if body.len() > 2_000_000 { return Err("Transcription model list is too large.".into()); }
+        let value: Value = serde_json::from_slice(&body).map_err(|_| "Invalid transcription model list.")?;
+        let models = value.get("data").and_then(Value::as_array).ok_or("Invalid transcription model list.")?;
+        Ok(models.iter().filter_map(|entry| {
+            let id = entry.get("id")?.as_str()?.trim();
+            if id.is_empty() || id.len() > 200 { return None; }
+            Some((id.to_owned(), entry.get("name").and_then(Value::as_str).unwrap_or(id).to_owned()))
+        }).collect())
+    }).await
+}
+
+#[tauri::command]
+pub async fn transcribe_voice_stt(audio: String, model: String, language: String, app: AppHandle, window: WebviewWindow, state: State<'_, AppState>) -> Result<String, String> {
+    let (settings, bytes, format) = composer_voice_input(&audio, &model)?;
+    if language.len() != 2 || !language.bytes().all(|byte| byte.is_ascii_lowercase()) { return Err("Choose a valid spoken language.".into()); }
+    let root = repository_path(&state, &window)?;
+    let label = window.label().to_owned();
+    run_blocking(move || {
+        if repository_path_for_label(&app.state::<AppState>(), &label)? != root { return Err("The workspace changed before transcription.".into()); }
+        let key = crate::credentials::load(&app, VOICE_CREDENTIAL_KEY)?.filter(|value| !value.is_empty()).ok_or("Configure the OpenRouter voice API key first.")?;
+        let client = Client::builder().timeout(Duration::from_secs(120)).build().map_err(|_| "Cannot initialize voice transcription.")?;
+        let body = voice_stt_request(&settings.model, &language, format, &bytes);
+        let response = client.post("https://openrouter.ai/api/v1/audio/transcriptions").bearer_auth(key).json(&body).send()
+            .map_err(|_| "OpenRouter transcription failed; charges may have occurred.")?;
+        if !response.status().is_success() { return Err("OpenRouter rejected transcription. Check the model, audio format, language, key, and credits.".into()); }
+        let mut body = Vec::new();
+        response.take(1_048_577).read_to_end(&mut body).map_err(|_| "Cannot read the OpenRouter transcription.")?;
+        if body.len() > 1_048_576 { return Err("OpenRouter transcription is too large.".into()); }
+        let value: Value = serde_json::from_slice(&body).map_err(|_| "OpenRouter returned an invalid transcription.")?;
+        let text = value.get("text").and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty() && text.len() <= 100_000).ok_or("OpenRouter returned an empty or invalid transcription.")?;
+        if repository_path_for_label(&app.state::<AppState>(), &label)? != root { return Err("The workspace changed during transcription.".into()); }
         Ok(text.to_owned())
     }).await
 }
@@ -560,6 +622,13 @@ pub fn telegram_disconnect(app: AppHandle, window: WebviewWindow, state: State<'
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn composer_stt_request_sends_audio_and_language_without_prompt() {
+        let payload = voice_stt_request("example/stt", "de", "m4a", b"audio");
+        assert_eq!(payload, json!({"model":"example/stt", "input_audio":{"data":STANDARD.encode(b"audio"), "format":"m4a"}, "language":"de"}));
+        assert!(payload.get("messages").is_none());
+    }
 
     #[test]
     fn composer_voice_validates_model_and_audio_before_provider_request() {
