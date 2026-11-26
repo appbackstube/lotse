@@ -89,7 +89,10 @@ try {
     await click("Record voice message");
     const stoppedBeforeInterruption = stopped;
     await act(async () => activeRecorder!.stop()); await settle();
-    check(button("Record voice message") && !button("Cancel") && document.querySelector('[role="alert"]')?.textContent?.includes("Recording was interrupted") && stopped === stoppedBeforeInterruption + 1 && transcriptions === 3, "Unexpected recorder stop must release the microphone and allow recording again");
+    check(stopped === stoppedBeforeInterruption + 1 && transcriptions === 3, "Unexpected recorder stop must release the microphone without transcribing");
+    const recordAgain = button("Record voice message");
+    check(recordAgain && !recordAgain.disabled, "Unexpected recorder stop must allow recording again");
+    check(recordAgain?.parentElement?.querySelector('[role="alert"]')?.textContent?.includes("Recording was interrupted"), "Interrupted recording must show an error in the voice controls");
     const taskDraft = [...document.querySelectorAll<HTMLTextAreaElement>('[aria-label="Review Agent message"]')].find(element => element.getBoundingClientRect().width > 0);
     check(taskDraft, "Missing task draft");
     await act(async () => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(taskDraft, "Existing task draft"); taskDraft!.dispatchEvent(new Event("input", { bubbles: true })); });
