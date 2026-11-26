@@ -41,7 +41,7 @@ import { TaskDrawingPanel, TaskSandboxPanel } from "./components/TaskVisualPanel
 import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { ask, open } from "@tauri-apps/plugin-dialog";
-import { isPermissionGranted, onAction, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
+import { isPermissionGranted, onAction, registerActionTypes, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { DragDropProvider, useDroppable, type DragEndEvent, type DragMoveEvent, type DragOverEvent } from "@dnd-kit/react";
@@ -2163,6 +2163,7 @@ function App() {
   const telegramRef = useRef(telegram);
   telegramRef.current = telegram;
   const [comparison, setComparison] = useState<Comparison | null>(null);
+  const [branchComparisonError, setBranchComparisonError] = useState("");
   const comparisonRef = useRef(comparison);
   comparisonRef.current = comparison;
   const [comparisonMode, setComparisonMode] = useState<"workingCopy" | "branch">("workingCopy");
@@ -2199,6 +2200,7 @@ function App() {
   const [revertRunning, setRevertRunning] = useState(false);
   const [commitGenerating, setCommitGenerating] = useState(false);
   const [error, setError] = useState("");
+  const [notificationError, setNotificationError] = useState("");
   const [sidebarWidths, setSidebarWidths] = useState(storedSidebarWidths);
   const [simulatorSpace, setSimulatorSpace] = useState(storedSimulatorSpace);
   const [taskColumnRatios, setTaskColumnRatios] = useState(storedTaskColumnRatios);
@@ -2460,14 +2462,18 @@ function App() {
     let disposed = false;
     let unregister: (() => void) | null = null;
     const ready = onAction((event) => {
-      if (event.actionId !== "tap") return;
+      if (event.actionId !== "tap" && event.actionId !== "open-agent") return;
       const extra = event.notification?.extra;
-      if (extra?.windowLabel !== getCurrentWindow().label || typeof extra.repositoryRoot !== "string") return;
+      if (typeof extra?.windowLabel !== "string" || typeof extra.repositoryRoot !== "string") return;
       if (extra.taskId !== null && typeof extra.taskId !== "string") return;
-      openNotificationRef.current(extra as NotificationTarget);
-    }).then((listener) => {
+      const target = extra as NotificationTarget;
+      void invoke<string>("notification_target_window", { repositoryRoot: target.repositoryRoot, originalWindow: target.windowLabel })
+        .then((label) => { if (!disposed && label === getCurrentWindow().label) openNotificationRef.current(target); })
+        .catch((reason) => { if (!disposed) setNotificationError(message(reason)); });
+    }).then(async (listener) => {
       if (disposed) return listener.unregister();
       unregister = () => { void listener.unregister(); };
+      await registerActionTypes([{ id: "agent", actions: [{ id: "open-agent", title: "Open" }] }]);
     });
     notificationListenerReadyRef.current = ready;
     void ready.catch((reason) => setError(message(reason)));
@@ -2502,7 +2508,7 @@ function App() {
     void (async () => {
       if (!await notificationAllowed()) return;
       if (!systemNotificationsRef.current || repositoryRef.current?.rootPath !== target.repositoryRoot) return;
-      sendNotification({ title: `${currentRepository.name} · ${taskTitle}`, body, extra: target });
+      sendNotification({ title: `${currentRepository.name} · ${taskTitle}`, body, extra: target, actionTypeId: "agent" });
     })().catch((reason) => setError(message(reason)));
   };
 
@@ -3675,10 +3681,12 @@ function App() {
 
   const loadComparison = async (repo: RepositoryInfo, refresh = false, mode = comparisonMode, branchBaseRef = baseRef, branchCompareRef = compareRef) => {
     const requestId = ++comparisonLoadRef.current;
+    const blocksBranchComparison = mode === "branch" && (!refresh || !comparison);
     ++fileLoadRef.current;
     if (!refresh) {
       setLoading(true);
       setError("");
+      setBranchComparisonError("");
       setFileViewMode(defaultFileViewMode);
       setComparison(null);
       setReview(null);
@@ -3794,14 +3802,16 @@ function App() {
         setFileEditDraft(null);
         setFileViewMode(defaultFileViewMode);
       }
+      if (mode === "branch") setBranchComparisonError("");
     } catch (reason) {
       if (requestId !== comparisonLoadRef.current) return;
-      if (!refresh) {
+      if (!refresh || blocksBranchComparison) {
         setComparison(null);
         setReview(null);
         delete workspaceCacheRef.current[mode];
       }
-      setError(message(reason));
+      if (blocksBranchComparison) setBranchComparisonError(message(reason));
+      else setError(message(reason));
     } finally {
       if (requestId === comparisonLoadRef.current) setLoading(false);
     }
@@ -3834,6 +3844,7 @@ function App() {
       setLoading(false);
       setDiffLoading(false);
       setError("");
+      setBranchComparisonError("");
       setSelection(null);
       const cached = workspaceCacheRef.current[next];
       if (cached) {
@@ -4617,10 +4628,27 @@ function App() {
   };
 
   openNotificationRef.current = (target) => {
-    if (repositoryRef.current?.rootPath !== target.repositoryRoot) return;
     const window = getCurrentWindow();
-    void window.show().then(() => window.unminimize()).then(() => window.setFocus()).catch((reason) => setError(message(reason)));
+    void window.show().then(() => window.unminimize()).then(() => window.setFocus()).catch((reason) => setNotificationError(message(reason)));
+    if (repositoryRef.current?.rootPath !== target.repositoryRoot) {
+      setNotificationError("The repository for this notification is no longer open in this window.");
+      return;
+    }
+    if (target.taskId !== null && !tasksRef.current.some((task) => task.id === target.taskId)) {
+      setNotificationError("The task for this notification is no longer available.");
+      return;
+    }
     discardFileEdit(() => {
+      if (repositoryRef.current?.rootPath !== target.repositoryRoot) {
+        setNotificationError("The repository for this notification is no longer open in this window.");
+        return;
+      }
+      const task = target.taskId === null ? null : tasksRef.current.find((current) => current.id === target.taskId);
+      if (target.taskId !== null && !task) {
+        setNotificationError("The task for this notification is no longer available.");
+        return;
+      }
+      setNotificationError("");
       setSettingsOpen(false);
       setZenMode(false);
       setTerminalOpen(false);
@@ -4630,9 +4658,7 @@ function App() {
         return;
       }
       setWorkspaceMode("tasks");
-      const task = tasksRef.current.find((current) => current.id === target.taskId);
-      if (!task) { setSelectedTaskId(null); setBoardDrawerOpen(false); return; }
-      openBoardTask(task);
+      if (task) openBoardTask(task);
     });
   };
 
@@ -6296,6 +6322,24 @@ function App() {
     </Tabs.Root>
   );
 
+  const workspaceErrorBanner = error && (
+    <div role="alert" className="ios-error-banner flex min-h-12 shrink-0 items-center gap-3 border-b border-[#482631] bg-[#25151b] px-4 py-2 text-sm font-medium text-[#FB7185]">
+      <CircleAlert size={16} className="shrink-0" />
+      <span className="min-w-0 flex-1 break-words">{error}</span>
+      <button type="button" onClick={() => setError("")} className="ml-4 text-[#fb7185]">
+        Dismiss
+      </button>
+    </div>
+  );
+  const boardTaskDialogOpen = boardMode && !inlineTaskMode && boardDrawerOpen && !settingsOpen && !!selectedTask;
+  const notificationErrorBanner = notificationError && (
+    <div role="alert" className="ios-error-banner flex min-h-12 shrink-0 items-center gap-3 border-t border-[#482631] bg-[#25151b] px-4 py-2 text-sm font-medium text-[#FB7185]">
+      <CircleAlert size={16} className="shrink-0" />
+      <span className="min-w-0 flex-1 break-words">{notificationError}</span>
+      <button type="button" onClick={() => setNotificationError("")} className="ml-4 text-[#fb7185]">Dismiss</button>
+    </div>
+  );
+
   return (
     <PomodoroProvider settings={pomodoroSettings} revision={pomodoroRevision} onComplete={notifyPomodoro}>
     <TooltipProvider>
@@ -6417,6 +6461,7 @@ function App() {
 
       <div className="flex min-h-0 flex-1">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      {(settingsOpen || (tasksTabActive && boardMode && !inlineTaskMode && !boardDrawerOpen)) && workspaceErrorBanner}
       {settingsOpen && (
         <SettingsLayout page={settingsPage} onPageChange={setSettingsPage} onClose={closeSettings} browserSupported={browserSupported}>
           <div hidden={settingsPage !== "general"} data-settings-page="general">
@@ -6727,7 +6772,7 @@ function App() {
             : `${sidebarWidths.left}px minmax(0, 1fr)`,
         }}
       >
-        {repository && <MemoryWorkspace key={repository.rootPath} repositoryRoot={repository.rootPath} flushRef={memoryFlushRef} openRef={memoryOpenRef} visible={memoryMode} />}
+        {repository && <MemoryWorkspace key={repository.rootPath} repositoryRoot={repository.rootPath} flushRef={memoryFlushRef} openRef={memoryOpenRef} visible={memoryMode} workspaceErrorBanner={memoryMode ? workspaceErrorBanner : null} />}
         {!zenMode && !tasksTabActive && !memoryMode && !emptyWorkspaceComparison && <aside className="ios-file-list relative z-10 mt-[-52px] flex h-[calc(100%+52px)] min-h-0 flex-col border-r border-[#294536] bg-[#0B110E]">
           <div
             data-tauri-drag-region
@@ -6827,15 +6872,7 @@ function App() {
           style={{ gridColumn: tasksTabActive ? "1" : "2" }}
         >
           {tasksTabActive && !boardMode && <div data-tauri-drag-region onMouseDown={startDragging} className="ios-sidebar-titlebar flex h-[52px] shrink-0 items-center border-b border-[#294536] pl-[88px] pr-2"><span className="truncate text-sm font-semibold text-[#E8FFF0]">{repository?.name ?? "Tasks"}</span></div>}
-          {!tasksTabActive && error && !(comparisonMode === "branch" && !comparison) && (
-            <div role="alert" className="ios-error-banner flex min-h-12 shrink-0 items-center gap-3 border-b border-[#482631] bg-[#25151b] px-4 py-2 text-sm font-medium text-[#FB7185]">
-              <CircleAlert size={16} className="shrink-0" />
-              <span className="min-w-0 flex-1 break-words">{error}</span>
-              <button type="button" onClick={() => setError("")} className="ml-4 text-[#fb7185]">
-                Dismiss
-              </button>
-            </div>
-          )}
+          {!memoryMode && !tasksTabActive && workspaceErrorBanner}
           <div className="min-h-0 flex flex-1 flex-col">
           {tasksTabActive ? (
             <>
@@ -7028,8 +7065,8 @@ function App() {
                 <p className="mt-2 text-[15px] leading-6 text-[#7C9B88]">
                   {loading ? "Loading the selected branch comparison." : "Choose another comparison from the chat header."}
                 </p>
-                {error && <p role="alert" className="mt-3 text-sm text-[#FB7185]">{error}</p>}
-                {error && <button type="button" disabled={loading} onClick={() => void loadComparison(repository, false, "branch", baseRef, compareRef)} className="accent-button mt-5 px-4">
+                {branchComparisonError && <p role="alert" className="mt-3 text-sm text-[#FB7185]">{branchComparisonError}</p>}
+                {branchComparisonError && <button type="button" disabled={loading} onClick={() => void loadComparison(repository, false, "branch", baseRef, compareRef)} className="accent-button mt-5 px-4">
                   <GitCompareArrows size={14} /> Retry
                 </button>}
               </div>
@@ -7289,7 +7326,7 @@ function App() {
         </div>}
       </div>
       </div>
-      <Dialog open={boardMode && !inlineTaskMode && boardDrawerOpen && !settingsOpen && !!selectedTask} onOpenChange={(open) => {
+      <Dialog open={boardTaskDialogOpen} onOpenChange={(open) => {
         const finish = () => {
           if (!open) {
             if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
@@ -7304,6 +7341,7 @@ function App() {
         <DialogContent keepMounted showCloseButton={false} className="task-detail-dialog !animate-none flex h-[88vh] w-[94vw] !max-w-[1800px] min-h-0 flex-col gap-0 overflow-hidden rounded-xl border border-[#294536] bg-[var(--ios-grouped-background)] p-0 shadow-2xl shadow-black/50">
           <DialogDescription className="sr-only">Task detail, chat and changes</DialogDescription>
           {!inlineTaskMode && taskDetailContent}
+          {boardTaskDialogOpen && notificationErrorBanner}
         </DialogContent>
       </Dialog>
       {simulatorSpace.enabled && <aside className="relative flex min-h-0 shrink-0 flex-col border-l border-[#294536] bg-[#0B110E]" style={{ width: Math.min(simulatorSpace.width, Math.max(200, window.innerWidth - 320)) }} aria-label="Simulator space">
@@ -7311,6 +7349,7 @@ function App() {
         <header className="flex h-12 shrink-0 items-center border-b border-[#294536] px-4 text-sm font-semibold text-[#E8FFF0]">Simulator</header>
       </aside>}
       </div>
+      {!boardTaskDialogOpen && notificationErrorBanner}
 
 
       {runOutputOpen && (
