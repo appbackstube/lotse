@@ -86,6 +86,8 @@ mockIPC(async (command, args: any) => {
   if (command === "plugin:window|is_maximized") return false;
   if (command === "plugin:notification|is_permission_granted") return true;
   if (command === "plugin:notification|register_listener") { notificationAction = args.handler.onmessage; return; }
+  if (command === "plugin:notification|register_action_types") return;
+  if (command === "notification_target_window") return args.repositoryRoot === repo.rootPath ? "main" : args.originalWindow;
   if (command === "plugin:notification|remove_listener") return;
   if (command === "plugin:window|outer_size" || command === "plugin:window|inner_size") return { width: innerWidth, height: innerHeight };
   if (command.startsWith("plugin:window|")) { windowActions.push(command); return; }
@@ -355,7 +357,7 @@ try {
       await click(button(view));
       await click(button("Workspace"));
       const before = windowActions.length;
-      for (const extra of [{ ...target, windowLabel: "review-other" }, { ...target, repositoryRoot: "/other" }, { ...target, taskId: 12 }, undefined]) await tap(extra);
+      for (const extra of [{ ...target, windowLabel: "review-other", repositoryRoot: "/other" }, { ...target, taskId: 12 }, undefined]) await tap(extra);
       await tap(target, "dismiss");
       check(button("Workspace").getAttribute("aria-pressed") === "true" && windowActions.length === before, "Unrelated or invalid notification actions must not navigate or focus this window");
       await tap(target);
@@ -367,10 +369,10 @@ try {
       await tap({ ...target, taskId: null });
       check(button("Workspace").getAttribute("aria-pressed") === "true" && !visible(dialog()), "Workspace notification must open Workspace and close the task dialog");
       check(visible(document.querySelector('[aria-label="Review Agent message"]')), "Workspace chat must be visible after a workspace notification");
-      await tap(target);
+      await tap({ ...target, windowLabel: "review-other" }, "open-agent");
       check(visible(dialog()) && tab("Changes").getAttribute("aria-selected") === "true", "Task notifications must restore the saved task panel");
       await tap({ ...target, taskId: "deleted-task" });
-      check(button("Tasks").getAttribute("aria-pressed") === "true" && !visible(dialog()), "A deleted task notification must open Tasks without showing another task");
+      check(visible(dialog()) && dialog().textContent?.includes(task.title), "A deleted task notification must preserve the current task");
     }
     document.getElementById("result")!.textContent = "PASS: Notification clicks open task dialogs and chat from List/Kanban/Gantt, restore panels, mark results read, focus the correct window, open Workspace, and ignore invalid or unrelated actions.";
   } else if (chatScrollCheck) {

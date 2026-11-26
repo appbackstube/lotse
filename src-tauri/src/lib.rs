@@ -331,6 +331,13 @@ struct TerminalSession {
 #[derive(Default)]
 struct AppState(Mutex<HashMap<String, WindowState>>, AtomicBool);
 
+#[tauri::command]
+fn notification_target_window(repository_root: String, original_window: String, state: State<'_, AppState>) -> Result<String, String> {
+    let windows = state.0.lock().map_err(|_| "Repository state is unavailable".to_owned())?;
+    Ok(windows.iter().find(|(_, window)| window.repository.as_ref().is_some_and(|root| root == Path::new(&repository_root)))
+        .map(|(label, _)| label.clone()).unwrap_or(original_window))
+}
+
 #[derive(Clone)]
 struct McpContextState(
     Arc<Mutex<Option<McpContext>>>,
@@ -6761,6 +6768,7 @@ pub fn run() {
             set_frontend_storage,
             append_usage_event,
             new_window,
+            notification_target_window,
             current_repository,
             open_repository,
             refresh_repository,

@@ -41,7 +41,7 @@ import { TaskDrawingPanel, TaskSandboxPanel } from "./components/TaskVisualPanel
 import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { ask, open } from "@tauri-apps/plugin-dialog";
-import { isPermissionGranted, onAction, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
+import { isPermissionGranted, onAction, registerActionTypes, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { DragDropProvider, useDroppable, type DragEndEvent, type DragMoveEvent, type DragOverEvent } from "@dnd-kit/react";
@@ -2460,14 +2460,18 @@ function App() {
     let disposed = false;
     let unregister: (() => void) | null = null;
     const ready = onAction((event) => {
-      if (event.actionId !== "tap") return;
+      if (event.actionId !== "tap" && event.actionId !== "open-agent") return;
       const extra = event.notification?.extra;
-      if (extra?.windowLabel !== getCurrentWindow().label || typeof extra.repositoryRoot !== "string") return;
+      if (typeof extra?.windowLabel !== "string" || typeof extra.repositoryRoot !== "string") return;
       if (extra.taskId !== null && typeof extra.taskId !== "string") return;
-      openNotificationRef.current(extra as NotificationTarget);
-    }).then((listener) => {
+      const target = extra as NotificationTarget;
+      void invoke<string>("notification_target_window", { repositoryRoot: target.repositoryRoot, originalWindow: target.windowLabel })
+        .then((label) => { if (!disposed && label === getCurrentWindow().label) openNotificationRef.current(target); })
+        .catch((reason) => setError(message(reason)));
+    }).then(async (listener) => {
       if (disposed) return listener.unregister();
       unregister = () => { void listener.unregister(); };
+      await registerActionTypes([{ id: "agent", actions: [{ id: "open-agent", title: "Open" }] }]);
     });
     notificationListenerReadyRef.current = ready;
     void ready.catch((reason) => setError(message(reason)));
@@ -2502,7 +2506,7 @@ function App() {
     void (async () => {
       if (!await notificationAllowed()) return;
       if (!systemNotificationsRef.current || repositoryRef.current?.rootPath !== target.repositoryRoot) return;
-      sendNotification({ title: `${currentRepository.name} · ${taskTitle}`, body, extra: target });
+      sendNotification({ title: `${currentRepository.name} · ${taskTitle}`, body, extra: target, actionTypeId: "agent" });
     })().catch((reason) => setError(message(reason)));
   };
 
@@ -4617,10 +4621,26 @@ function App() {
   };
 
   openNotificationRef.current = (target) => {
-    if (repositoryRef.current?.rootPath !== target.repositoryRoot) return;
     const window = getCurrentWindow();
     void window.show().then(() => window.unminimize()).then(() => window.setFocus()).catch((reason) => setError(message(reason)));
+    if (repositoryRef.current?.rootPath !== target.repositoryRoot) {
+      setError("The repository for this notification is no longer open in this window.");
+      return;
+    }
+    if (target.taskId !== null && !tasksRef.current.some((task) => task.id === target.taskId)) {
+      setError("The task for this notification is no longer available.");
+      return;
+    }
     discardFileEdit(() => {
+      if (repositoryRef.current?.rootPath !== target.repositoryRoot) {
+        setError("The repository for this notification is no longer open in this window.");
+        return;
+      }
+      const task = target.taskId === null ? null : tasksRef.current.find((current) => current.id === target.taskId);
+      if (target.taskId !== null && !task) {
+        setError("The task for this notification is no longer available.");
+        return;
+      }
       setSettingsOpen(false);
       setZenMode(false);
       setTerminalOpen(false);
@@ -4630,9 +4650,7 @@ function App() {
         return;
       }
       setWorkspaceMode("tasks");
-      const task = tasksRef.current.find((current) => current.id === target.taskId);
-      if (!task) { setSelectedTaskId(null); setBoardDrawerOpen(false); return; }
-      openBoardTask(task);
+      if (task) openBoardTask(task);
     });
   };
 
