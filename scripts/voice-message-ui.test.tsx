@@ -2,7 +2,9 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { mockConvertFileSrc, mockWindows } from "@tauri-apps/api/mocks";
 import { mockIPC } from "./mockTauri";
-import { initializeFileStore } from "../src/fileStore";
+import { fileStore, initializeFileStore } from "../src/fileStore";
+import { chatQueueStorageKey } from "../src/chatQueue";
+import { voiceAutoSendKey, voiceModelKey } from "../src/components/VoiceSettings";
 import { normalizeTask, taskStorageKey } from "../src/tasks";
 import App from "../src/App";
 
@@ -10,8 +12,10 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const repo = { rootPath: "/synthetic-voice", name: "Voice", currentBranch: "main", hasOrigin: true };
 const comparison = { mode: "workingCopy", baseRef: null, compareRef: null, baseOid: "a".repeat(40), baseCommitOid: "a".repeat(40), compareCommitOid: "a".repeat(40), snapshotId: "snapshot", files: [] };
 const task = normalizeTask({ id: "12345678-1234-1234-1234-123456789abc", title: "Voice test task", manualStatus: "inbox", location: "workspace" })!;
-const storage: Record<string, string> = { "chaoticreview.auth-onboarding-v1": "complete", "chaoticreview.voice-stt-model": "synthetic/audio-model", [taskStorageKey(repo.rootPath)]: JSON.stringify([task]) };
-const voiceModelKey = "chaoticreview.voice-stt-model";
+const taskQueueKey = JSON.stringify([repo.rootPath, "task", task.id]);
+const queuedPrompt = { id: "older-prompt", body: "Older paused prompt", context: { mode: "auto", attachments: [] }, selection: null, mode: "default", model: "synthetic", effort: "medium" };
+const pausedQueue = { [taskQueueKey]: [queuedPrompt] };
+const storage: Record<string, string> = { "chaoticreview.auth-onboarding-v1": "complete", [voiceModelKey]: "synthetic/audio-model", [taskStorageKey(repo.rootPath)]: JSON.stringify([task]), [chatQueueStorageKey]: JSON.stringify(pausedQueue) };
 const existingDraft = "    indented code\n\nText with trailing spaces  ";
 let resolveTranscript: ((text: string) => void) | undefined;
 let transcriptions = 0;
@@ -33,7 +37,7 @@ mockIPC(async (command, args: any) => {
     modelUsed = args.model;
     transcriptions++;
     if (transcriptions === 1) return "Synthetic transcript";
-    if (transcriptions === 2 || transcriptions === 4) {
+    if (transcriptions === 2 || transcriptions === 4 || transcriptions === 8) {
       failedAudio = args.audio;
       throw new Error("Synthetic transcription error");
     }
@@ -41,9 +45,15 @@ mockIPC(async (command, args: any) => {
       check(args.audio && args.audio === failedAudio, "Retry must submit the same clip");
       return "Retried transcript";
     }
+    if (transcriptions === 9) {
+      check(args.audio && args.audio === failedAudio && args.model === "synthetic/replacement-model", "Retry after Settings must use the same clip and the newly saved model");
+      return "Transcript for paused queue";
+    }
     return new Promise(resolve => { resolveTranscript = resolve; });
   }
   if (command === "ai_chat_send") { sends++; return { requestId: "synthetic", threadId: "synthetic", turnId: "synthetic" }; }
+  if (command === "voice_key_configured") return true;
+  if (command === "voice_models") return [["synthetic/audio-model", "Original model"], ["synthetic/replacement-model", "Replacement model"]];
   if (command === "load_ai_settings") return { activeProvider: "openrouter", providers: [{ id: "openrouter", name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", envKey: "OPENROUTER_API_KEY" }], repositoryProviders: {}, ripgrepAvailable: true, mcpUrl: "" };
   if (command === "current_repository" || command === "refresh_repository") return repo;
   if (command === "list_branch_refs") return { refs: ["main"], remoteRefs: [], defaultBase: "main", pullCount: 0, pushCount: 0 };
@@ -160,7 +170,25 @@ try {
       check(resolveTranscript, "Expected a new task transcription");
       await act(async () => resolveTranscript!("Task transcript")); await settle();
       check(taskDraft?.value === "Existing task draft\n\nTask transcript" && sends === 0 && button("Send Review Agent message")?.disabled === false, "Task transcript must augment the draft and restore sending");
-      document.getElementById("result")!.textContent = "PASS: voice drafts, same-clip retry and discard, pending send and cancel, errors, task switch and close, and recorder interruption";
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(taskDraft, "");
+        taskDraft!.dispatchEvent(new Event("input", { bubbles: true }));
+        fileStore.setItem(voiceAutoSendKey, "true");
+      });
+      await click("Record voice message"); await click("Transcribe for review");
+      await click("Open voice settings");
+      const model = document.querySelector<HTMLSelectElement>("#voice-model");
+      check(model?.getBoundingClientRect().width && !model.disabled, "The task's failed clip must lead to voice settings");
+      await act(async () => {
+        model!.value = "synthetic/replacement-model";
+        model!.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      await settle();
+      check(storage[voiceModelKey] === "synthetic/replacement-model", "Updated settings must be persisted before retry");
+      await click("Settings");
+      await click("Retry transcription");
+      check(taskDraft?.value === "Transcript for paused queue" && button("Resume") && sends === 0 && JSON.stringify(JSON.parse(storage[chatQueueStorageKey])) === JSON.stringify(pausedQueue), "A paused queue must stay paused and unchanged while the transcript remains in the composer");
+      document.getElementById("result")!.textContent = "PASS: voice drafts, same-clip retry including after Settings, paused queue, discard, pending send and cancel, errors, task switch and close, and recorder interruption";
       await act(async () => root.unmount());
     }
   }

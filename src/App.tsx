@@ -1087,12 +1087,18 @@ function AiChatPanel({
   onManageAgents,
   onSubmitPlaybookValues,
   onCancelPlaybook,
+  onAutoSendVoice,
+  onOpenVoiceSettings,
+  voiceSuspended,
   taskSelected = true,
   active = true,
   searchMessage,
   voiceContext = "",
 }: {
   voiceContext?: string;
+  voiceSuspended: boolean;
+  onOpenVoiceSettings: () => void;
+  onAutoSendVoice: (draft: string) => Promise<boolean>;
   messages: ChatMessage[];
   draft: string;
   running: boolean;
@@ -1202,7 +1208,9 @@ function AiChatPanel({
   useLayoutEffect(() => { currentVoiceContext.current = active ? voiceContext : ""; }, [active, voiceContext]);
   const voice = useVoiceMessage({
     context: active ? voiceContext : "",
+    suspended: voiceSuspended,
     disabled: !comparison || sendPending || !taskSelected || !!variablePrompt,
+    onOpenSettings: onOpenVoiceSettings,
     onTranscript: (text) => {
       setAutoSendError("");
       const next = composerDraft ? `${composerDraft}\n\n${text}` : text;
@@ -1210,11 +1218,11 @@ function AiChatPanel({
       focusTranscript.current = true;
       setComposerDraft(next);
       onDraftChange(next);
-      if (fileStore.getItem(voiceAutoSendKey) === "true" && !composerDraft.trim() && !images.length && !selectedAssetIds.length && comparison && !sendPendingRef.current && !variablePrompt && (!taskMode || taskSelected)) {
+      if (fileStore.getItem(voiceAutoSendKey) === "true" && !queuePaused && !composerDraft.trim() && !images.length && !selectedAssetIds.length && comparison && !sendPendingRef.current && !variablePrompt && (!taskMode || taskSelected)) {
         const submittedContext = voiceContext;
         sendPendingRef.current = true;
         setSendPending(true);
-        void onSend(next).then((sent) => {
+        void onAutoSendVoice(next).then((sent) => {
           if (currentVoiceContext.current === submittedContext) {
             if (sent) {
               if (composerDraftRef.current === next) {
@@ -1226,6 +1234,8 @@ function AiChatPanel({
         }).catch(() => {
           if (currentVoiceContext.current === submittedContext) setAutoSendError("Automatic sending could not be confirmed. Check the chat before retrying; your transcript is still in the composer.");
         }).finally(() => { sendPendingRef.current = false; setSendPending(false); });
+      } else if (fileStore.getItem(voiceAutoSendKey) === "true" && queuePaused) {
+        setAutoSendError("Automatic sending was skipped because the queue is paused.");
       } else if (fileStore.getItem(voiceAutoSendKey) === "true" && (composerDraft.trim() || images.length || selectedAssetIds.length)) {
         setAutoSendError("Automatic sending was skipped because the composer already contains a draft or attachments.");
       }
@@ -4830,10 +4840,11 @@ function App() {
     finally { startingPipelineRef.current.delete(task.id); taskStartingRef.current.delete(task.id); setTaskStartingIds((current) => { const next = new Set(current); next.delete(task.id); return next; }); }
   };
 
-  const sendComposerMessage = async (draft: string, playbook?: UsageItem): Promise<boolean> => {
+  const sendComposerMessage = async (draft: string, playbook?: UsageItem, source: "manual" | "voice-auto" = "manual"): Promise<boolean> => {
     const task = taskMode ? tasksRef.current.find((item) => item.id === selectedTaskId) : null;
     const key = activeQueueKey;
     if (!comparison || !review || !key || (taskMode && !task)) return false;
+    if (source === "voice-auto" && pausedQueueKeysRef.current.has(key)) return false;
     const attachments = task ? [...task.attachments, ...taskAssetAttachments(task, taskAssetSelections[task.id] ?? [])] : chatRequestContext.attachments;
     const prompt = draft.trim();
     if (!prompt && !attachments.some((attachment) => isChatUpload(attachment) || attachment.kind === "taskAsset")) return false;
@@ -4849,7 +4860,7 @@ function App() {
       catch (reason) { setError(message(reason)); return false; }
     }
     changeQueue(key, (items) => [...items, item]);
-    if (running && !chatQueuesRef.current[key]?.some((entry) => entry.pipeline)) setQueuePaused(key, false);
+    if (source === "manual" && running && !chatQueuesRef.current[key]?.some((entry) => entry.pipeline)) setQueuePaused(key, false);
     if (task) {
       updateTask(task.id, (current) => ({ ...current, attachments: [] }));
       setTaskAssetSelections((current) => ({ ...current, [task.id]: [] }));
@@ -7268,7 +7279,10 @@ function App() {
             onZenModeChange={setZenMode}
             onApprovalReviewerChange={(value) => setApprovalReviewerOverrides((current) => ({ ...current, [taskMode ? selectedTask?.id ?? "" : "review"]: { mode: value, agent: activeApprovalAgent ?? null } }))}
             onSend={sendComposerMessage}
-            voiceContext={settingsOpen || (boardMode && !inlineTaskMode && !boardDrawerOpen) ? "" : activeQueueKey ?? ""}
+            onAutoSendVoice={(draft) => sendComposerMessage(draft, undefined, "voice-auto")}
+            onOpenVoiceSettings={() => { void openSettings("general", true); }}
+            voiceSuspended={settingsOpen}
+            voiceContext={boardMode && !inlineTaskMode && !boardDrawerOpen ? "" : activeQueueKey ?? ""}
             queuedMessages={activeQueueKey ? chatQueues[activeQueueKey] ?? [] : []}
             queuePaused={activeQueueKey ? pausedQueueKeys.has(activeQueueKey) : false}
             canSteerQueued={taskMode ? !!selectedTaskRun : reviewRunQueueKeyRef.current === activeQueueKey}

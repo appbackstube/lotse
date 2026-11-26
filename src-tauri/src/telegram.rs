@@ -416,6 +416,19 @@ pub fn save_voice_key(app: AppHandle, key: String) -> Result<(), String> {
     crate::credentials::save(&app, VOICE_CREDENTIAL_KEY, Some(key))
 }
 
+fn composer_stt_model_supports_m4a_and_ogg(model: &str) -> bool {
+    matches!(model, "openai/whisper-1" | "openai/gpt-4o-transcribe" | "openai/gpt-4o-mini-transcribe")
+}
+
+fn composer_stt_models(value: &Value) -> Result<Vec<(String, String)>, String> {
+    let models = value.get("data").and_then(Value::as_array).ok_or("Invalid transcription model list.")?;
+    Ok(models.iter().filter_map(|entry| {
+        let id = entry.get("id")?.as_str()?;
+        if !composer_stt_model_supports_m4a_and_ogg(id) { return None; }
+        Some((id.to_owned(), entry.get("name").and_then(Value::as_str).unwrap_or(id).to_owned()))
+    }).collect())
+}
+
 #[tauri::command]
 pub async fn voice_models(app: AppHandle) -> Result<Vec<(String, String)>, String> {
     run_blocking(move || {
@@ -428,18 +441,14 @@ pub async fn voice_models(app: AppHandle) -> Result<Vec<(String, String)>, Strin
         response.take(2_000_001).read_to_end(&mut body).map_err(|_| "Cannot read transcription models.")?;
         if body.len() > 2_000_000 { return Err("Transcription model list is too large.".into()); }
         let value: Value = serde_json::from_slice(&body).map_err(|_| "Invalid transcription model list.")?;
-        let models = value.get("data").and_then(Value::as_array).ok_or("Invalid transcription model list.")?;
-        Ok(models.iter().filter_map(|entry| {
-            let id = entry.get("id")?.as_str()?.trim();
-            if id.is_empty() || id.len() > 200 { return None; }
-            Some((id.to_owned(), entry.get("name").and_then(Value::as_str).unwrap_or(id).to_owned()))
-        }).collect())
+        composer_stt_models(&value)
     }).await
 }
 
 #[tauri::command]
 pub async fn transcribe_voice_stt(audio: String, model: String, language: String, app: AppHandle, window: WebviewWindow, state: State<'_, AppState>) -> Result<String, String> {
     let (settings, bytes, format) = composer_voice_input(&audio, &model)?;
+    if !composer_stt_model_supports_m4a_and_ogg(&settings.model) || !matches!(format, "m4a" | "ogg") { return Err("This model or recording format is not supported for voice messages. Choose a compatible model in Settings → General.".into()); }
     if language.len() != 2 || !language.bytes().all(|byte| byte.is_ascii_lowercase()) { return Err("Choose a valid spoken language.".into()); }
     let root = repository_path(&state, &window)?;
     let label = window.label().to_owned();
@@ -622,6 +631,20 @@ pub fn telegram_disconnect(app: AppHandle, window: WebviewWindow, state: State<'
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn composer_stt_catalog_only_offers_models_with_verified_recording_formats() {
+        let catalog = json!({"data": [
+            {"id": "meta/muse-voice-transcribe-1.0", "name": "Muse Voice Transcribe"},
+            {"id": "example/unknown-stt", "name": "Unknown Formats"},
+            {"id": "openai/whisper-1", "name": "Whisper"},
+            {"id": "openai/gpt-4o-mini-transcribe"}
+        ]});
+        assert_eq!(composer_stt_models(&catalog).unwrap(), vec![
+            ("openai/whisper-1".to_owned(), "Whisper".to_owned()),
+            ("openai/gpt-4o-mini-transcribe".to_owned(), "openai/gpt-4o-mini-transcribe".to_owned()),
+        ]);
+    }
 
     #[test]
     fn composer_stt_request_sends_audio_and_language_without_prompt() {

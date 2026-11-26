@@ -9,9 +9,11 @@ const maximumBytes = 20 * 1024 * 1024;
 
 type VoicePhase = "idle" | "starting" | "recording" | "stopping" | "recorded" | "transcribing" | "retry";
 
-export function useVoiceMessage({ context, disabled, onTranscript }: {
+export function useVoiceMessage({ context, suspended, disabled, onOpenSettings, onTranscript }: {
   context: string;
+  suspended: boolean;
   disabled: boolean;
+  onOpenSettings: () => void;
   onTranscript: (text: string) => void;
 }) {
   const [error, setError] = useState("");
@@ -55,6 +57,14 @@ export function useVoiceMessage({ context, disabled, onTranscript }: {
   }, [releaseMicrophone]);
 
   useLayoutEffect(() => {
+    if (suspended && phaseRef.current !== "idle" && phaseRef.current !== "retry") {
+      reset();
+      changePhase("idle");
+      setError("");
+    }
+  }, [suspended, changePhase, reset]);
+
+  useLayoutEffect(() => {
     restoreFocus.current = false;
     changePhase("idle");
     setError("");
@@ -62,6 +72,7 @@ export function useVoiceMessage({ context, disabled, onTranscript }: {
   }, [changePhase, context, reset]);
 
   useLayoutEffect(() => {
+    if (suspended) return;
     if (phase === "starting" || phase === "recording") cancelButton.current?.focus();
     if (phase === "recorded" || phase === "retry") transcribeButton.current?.focus();
     if (phase === "transcribing") cancelButton.current?.focus();
@@ -72,7 +83,7 @@ export function useVoiceMessage({ context, disabled, onTranscript }: {
     if (phase === "recording" && canvas.current && stream.current && audioContext.current) {
       stopWaveform.current = startVoiceWaveform(canvas.current, stream.current, audioContext.current) ?? null;
     }
-  }, [phase]);
+  }, [phase, suspended]);
 
   const cancel = () => {
     reset();
@@ -87,7 +98,7 @@ export function useVoiceMessage({ context, disabled, onTranscript }: {
   };
 
   const start = async () => {
-    if (!context || disabled || phaseRef.current !== "idle") return;
+    if (!context || suspended || disabled || phaseRef.current !== "idle") return;
     if (!fileStore.getItem(voiceModelKey)) { setError("Select a transcription model in Settings → General."); return; }
     setError("");
     const attempt = ++generation.current;
@@ -174,7 +185,7 @@ export function useVoiceMessage({ context, disabled, onTranscript }: {
   };
 
   const submitRecording = () => {
-    if (disabled) return;
+    if (disabled || suspended) return;
     if (phaseRef.current === "recording") stop("transcribing");
     else if ((phaseRef.current === "recorded" || phaseRef.current === "retry") && audio.current) {
       setError("");
@@ -190,8 +201,8 @@ export function useVoiceMessage({ context, disabled, onTranscript }: {
   return {
     busy,
     isBusy: () => phaseRef.current !== "idle",
-    recordButton: context && <button ref={recordButton} type="button" className="ios-chat-add-image" aria-label="Record voice message" title="Record voice message" disabled={disabled} onClick={() => void start()}><Mic size={14} /></button>,
-    error: context && error && <p role="alert" className="ios-chat-voice-error">{error}</p>,
+    recordButton: context && <button ref={recordButton} type="button" className="ios-chat-add-image" aria-label="Record voice message" title="Record voice message" disabled={disabled || suspended} onClick={() => void start()}><Mic size={14} /></button>,
+    error: context && error && <p className="ios-chat-voice-error"><span role="alert">{error}</span>{retrying && <> <button type="button" className="underline" onClick={onOpenSettings}>Open voice settings</button></>}</p>,
     bar: busy && <><div className="ios-chat-voice-bar" onKeyDown={event => {
       if (event.key !== "Escape" || phaseRef.current !== "recording") return;
       event.preventDefault();
