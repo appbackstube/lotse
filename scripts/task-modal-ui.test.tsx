@@ -353,6 +353,8 @@ try {
       await act(async () => notificationAction({ actionId, notification: { extra } })); await settle();
     };
     for (const view of ["List", "Kanban", "Gantt"]) {
+      const taskSurface = () => view === "List" ? document.querySelector('[aria-label="Task workspace"]') : dialog();
+      const changesTab = () => [...(taskSurface()?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? [])].find((element) => element.textContent?.startsWith("Changes"))!;
       await click(button("Tasks"));
       await click(button(view));
       await click(button("Workspace"));
@@ -362,17 +364,17 @@ try {
       check(button("Workspace").getAttribute("aria-pressed") === "true" && windowActions.length === before, "Unrelated or invalid notification actions must not navigate or focus this window");
       await tap(target);
       check(button("Tasks").getAttribute("aria-pressed") === "true", "Task notification must switch to Tasks");
-      check(visible(dialog()) && dialog().textContent?.includes(task.title) && visible(composer()), `${view}: task notification must open the task dialog and chat`);
+      check(visible(taskSurface()) && taskSurface()?.textContent?.includes(task.title) && visible(taskSurface()?.querySelector('[aria-label="Review Agent message"]') ?? null), `${view}: task notification must open the task and chat`);
       check(windowActions.slice(before).filter((command) => ["plugin:window|show", "plugin:window|unminimize", "plugin:window|set_focus"].includes(command)).join(",") === "plugin:window|show,plugin:window|unminimize,plugin:window|set_focus", "Notification must show, unminimize and focus its window");
       check(!JSON.parse(storage[taskStorageKey(repo.rootPath)]).find((entry: any) => entry.id === task.id).unreadAgentResult, "Opening a task notification must mark its result read");
-      await click(tab("Changes"));
+      await click(changesTab());
       await tap({ ...target, taskId: null });
       check(button("Workspace").getAttribute("aria-pressed") === "true" && !visible(dialog()), "Workspace notification must open Workspace and close the task dialog");
       check(visible(document.querySelector('[aria-label="Review Agent message"]')), "Workspace chat must be visible after a workspace notification");
       await tap({ ...target, windowLabel: "review-other" }, "open-agent");
-      check(visible(dialog()) && tab("Changes").getAttribute("aria-selected") === "true", "Task notifications must restore the saved task panel");
+      check(visible(taskSurface()) && changesTab()?.getAttribute("aria-selected") === "true", "Task notifications must restore the saved task panel");
       await tap({ ...target, taskId: "deleted-task" });
-      check(visible(dialog()) && dialog().textContent?.includes(task.title), "A deleted task notification must preserve the current task");
+      check(visible(taskSurface()) && taskSurface()?.textContent?.includes(task.title), "A deleted task notification must preserve the current task");
     }
     await click(dialog().querySelector<HTMLButtonElement>('[aria-label="Close task modal"]')!);
     await click(button("Workspace"));
@@ -382,7 +384,7 @@ try {
     const memoryError = document.querySelector('[aria-label="Memory editor"] [role="alert"]');
     check(button("Memory").getAttribute("aria-pressed") === "true", "A deleted task notification must leave Memory open");
     check(visible(memoryError) && memoryError?.textContent?.includes("The task for this notification is no longer available."), "A deleted task notification must show its error in Memory");
-    document.getElementById("result")!.textContent = "PASS: Notification clicks open task dialogs and chat from List/Kanban/Gantt, restore panels, mark results read, focus the correct window, open Workspace, ignore invalid or unrelated actions, and show unavailable tasks in Memory without navigating.";
+    document.getElementById("result")!.textContent = "PASS: Notification clicks open tasks and chat from List/Kanban/Gantt, restore panels, mark results read, focus the correct window, open Workspace, ignore invalid or unrelated actions, and show unavailable tasks in Memory without navigating.";
   } else if (chatScrollCheck) {
     await click(button("Tasks"));
     await click(document.querySelector<HTMLElement>(`[aria-label="Drag ${task.title}"]`)!);
