@@ -38,6 +38,13 @@ export function saveChatQueues(queues: ChatQueues): void {
   fileStore.setItem(chatQueueStorageKey, JSON.stringify(queues));
 }
 
+export function pauseRestoredChatQueues(paused: Set<string>, queues: ChatQueues, repositoryRoot: string | null, previousQueues: ChatQueues): Set<string> {
+  const ownedPrefix = `[${JSON.stringify(repositoryRoot)},`;
+  const restored = Object.keys(queues).filter(key => queues[key].length && !paused.has(key)
+    && (!repositoryRoot || !key.startsWith(ownedPrefix) || !previousQueues[key]?.length));
+  return restored.length ? new Set([...paused, ...restored]) : paused;
+}
+
 export function moveQueuedMessage(items: QueuedChatMessage[], id: string, offset: -1 | 1): QueuedChatMessage[] {
   const index = items.findIndex((item) => item.id === id);
   if (index < 0 || index + offset < 0 || index + offset >= items.length || items[index].pipeline || items[index + offset].pipeline) return items;

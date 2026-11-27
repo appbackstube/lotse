@@ -5,7 +5,9 @@ import { fileStore } from "../src/fileStore.ts";
 import { playSpeech, readCompletedResponse, speechAutomaticKey, speechModelKey, speechVoiceKey, stopChatSpeech, stopSpeech } from "../src/speech.ts";
 import type { ChatMessage } from "../src/types.ts";
 
-Object.assign(globalThis, { window: new EventTarget() });
+let focused = true;
+let visibility = "visible";
+Object.assign(globalThis, { window: new EventTarget(), document: { hasFocus: () => focused, get visibilityState() { return visibility; } } });
 const requests: unknown[] = [];
 mockIPC((command, payload) => {
   if (command === "set_frontend_storage") return;
@@ -27,7 +29,7 @@ test("reads only the last non-empty reply in the visible chat", () => {
   assert.equal(requests.length, 0);
 
   readCompletedResponse("workspace", "workspace", entries);
-  assert.deepEqual(requests, [{ input: reply.body, model: "example/tts", voice: "example-voice" }]);
+  assert.deepEqual(requests, [{ input: reply.body, model: "example/tts", voice: "example-voice", language: "" }]);
   stopChatSpeech();
 });
 
@@ -36,6 +38,27 @@ test("chat cleanup and automatic reading do not interrupt a pending preview", ()
   void playSpeech("preview", "Voice preview");
   stopChatSpeech();
   readCompletedResponse("workspace", "workspace", entries);
-  assert.deepEqual(requests, [{ input: "Voice preview", model: "example/tts", voice: "example-voice" }]);
+  assert.deepEqual(requests, [{ input: "Voice preview", model: "example/tts", voice: "example-voice", language: "" }]);
+  stopSpeech();
+});
+
+test("queues subsequent messages without interrupting or duplicating the current one", () => {
+  requests.length = 0;
+  readCompletedResponse("workspace", "workspace", [entries[0]]);
+  readCompletedResponse("workspace", "workspace", [entries[0], reply]);
+  readCompletedResponse("workspace", "workspace", [entries[0], reply]);
+  assert.deepEqual(requests, [{ input: "Earlier reply", model: "example/tts", voice: "example-voice", language: "" }]);
+  stopChatSpeech();
+});
+
+test("does not read responses in an unfocused or hidden window", () => {
+  requests.length = 0;
+  focused = false;
+  readCompletedResponse("workspace", "workspace", entries);
+  focused = true;
+  visibility = "hidden";
+  readCompletedResponse("workspace", "workspace", entries);
+  visibility = "visible";
+  assert.equal(requests.length, 0);
   stopSpeech();
 });

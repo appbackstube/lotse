@@ -26,8 +26,9 @@ import { useTaskFieldDraft } from "./useTaskFieldDraft";
 import { readTaskDrawing } from "./taskDrawing";
 import { applyTaskSandboxUpdate } from "./taskSandbox";
 import { useVoiceMessage } from "./components/VoiceMessage";
+import { insertComposerTranscript } from "./composerTranscript";
 import { VoiceSettings, voiceAutoSendKey } from "./components/VoiceSettings";
-import { playSpeech, readCompletedResponse, stopChatSpeech, stopSpeech, useSpeechPlayback } from "./speech";
+import { playSpeech, readCompletedResponse, stopAutomaticSpeech, stopChatSpeech, stopSpeech, useSpeechPlayback } from "./speech";
 import { WebsiteCredentialsSettings } from "./components/WebsiteCredentialsSettings";
 import { UsageSettings } from "./components/UsageSettings";
 import { recordUsage, type UsageItem } from "./usage";
@@ -147,7 +148,7 @@ import { agentMetadata, argumentsFor, getTask, metadataKeys, playbookMetadata, r
 import { loadTaskStatuses, reconcileTaskStatuses, resolveTaskStatus, saveTaskStatuses, taskStatusFields, taskStatusStorageKey, type TaskStatusSettings as StatusSettings, type TaskStatus } from "./taskStatuses";
 import { TaskStatusSettings } from "./components/TaskStatusSettings";
 import { finishSchedule, type PromptSchedule } from "./promptSchedules";
-import { chatQueueStorageKey, loadChatQueues, moveQueuedMessage, saveChatQueues, type ChatQueues, type QueuedChatMessage } from "./chatQueue";
+import { chatQueueStorageKey, loadChatQueues, moveQueuedMessage, pauseRestoredChatQueues, saveChatQueues, type ChatQueues, type QueuedChatMessage } from "./chatQueue";
 import { isLargeCodeDocument } from "./codeMirror";
 import { findCodeLanguage } from "./codeLanguage";
 import { chatEfforts, chatConfigurationError, chatModelLabel, modelEfforts, normalizeChatDefaults, normalizeChatModelFavorites, validChatModel, type ChatModel, type ChatDefaults, type ChatEffort } from "./chatDefaults";
@@ -1204,7 +1205,8 @@ function AiChatPanel({
   const sendPendingRef = useRef(false);
   const [sendPending, setSendPending] = useState(false);
   const draftField = useRef<HTMLTextAreaElement>(null);
-  const focusTranscript = useRef(false);
+  const focusTranscript = useRef<number | null>(null);
+  const transcriptSelection = useRef<{ start: number; end: number } | null>(null);
   const [autoSendError, setAutoSendError] = useState("");
   const speechPlayback = useSpeechPlayback();
   const currentVoiceContext = useRef(voiceContext);
@@ -1214,15 +1216,22 @@ function AiChatPanel({
     suspended: voiceSuspended,
     disabled: !comparison || sendPending || !taskSelected || !!variablePrompt,
     onOpenSettings: onOpenVoiceSettings,
+    onStart: () => {
+      const field = draftField.current;
+      transcriptSelection.current = field ? { start: field.selectionStart, end: field.selectionEnd } : null;
+    },
     onTranscript: (text, autoSendRequested) => {
       setAutoSendError("");
-      const next = composerDraft ? `${composerDraft}\n\n${text}` : text;
+      const draft = composerDraftRef.current;
+      const selection = transcriptSelection.current ?? { start: draft.length, end: draft.length };
+      const insertion = insertComposerTranscript(draft, text, selection.start, selection.end);
+      const next = insertion.text;
       composerDraftRef.current = next;
-      focusTranscript.current = true;
+      focusTranscript.current = insertion.cursor;
       setComposerDraft(next);
       onDraftChange(next);
       if (!autoSendRequested || fileStore.getItem(voiceAutoSendKey) !== "true") return;
-      if (!queuePaused && !composerDraft.trim() && !images.length && !selectedAssetIds.length && comparison && !sendPendingRef.current && !variablePrompt && (!taskMode || taskSelected)) {
+      if (!queuePaused && !draft.trim() && !images.length && !selectedAssetIds.length && comparison && !sendPendingRef.current && !variablePrompt && (!taskMode || taskSelected)) {
         const submittedContext = voiceContext;
         sendPendingRef.current = true;
         setSendPending(true);
@@ -1240,18 +1249,19 @@ function AiChatPanel({
         }).finally(() => { sendPendingRef.current = false; setSendPending(false); });
       } else if (queuePaused) {
         setAutoSendError("Automatic sending was skipped because the queue is paused.");
-      } else if (composerDraft.trim() || images.length || selectedAssetIds.length) {
+      } else if (draft.trim() || images.length || selectedAssetIds.length) {
         setAutoSendError("Automatic sending was skipped because the composer already contains a draft or attachments.");
       }
     },
   });
   useLayoutEffect(() => { setAutoSendError(""); }, [voiceContext]);
   useLayoutEffect(() => {
-    if (voice.busy || !focusTranscript.current) return;
-    focusTranscript.current = false;
+    if (voice.busy || focusTranscript.current === null) return;
+    const cursor = focusTranscript.current;
+    focusTranscript.current = null;
     const field = draftField.current;
     field?.focus();
-    if (field) field.setSelectionRange(field.value.length, field.value.length);
+    if (field) field.setSelectionRange(cursor, cursor);
   }, [voice.busy]);
   const [editingQueued, setEditingQueued] = useState<QueuedChatMessage | null>(null);
   const [queuedEditDraft, setQueuedEditDraft] = useState("");
@@ -2369,7 +2379,7 @@ function App() {
   const [chatQueues, setChatQueues] = useState<ChatQueues>(loadChatQueues);
   const chatQueuesRef = useRef(chatQueues);
   const startingPipelineRef = useRef(new Map<string, string>());
-  const [pausedQueueKeys, setPausedQueueKeys] = useState<Set<string>>(() => new Set(Object.keys(loadChatQueues())));
+  const [pausedQueueKeys, setPausedQueueKeys] = useState<Set<string>>(() => pauseRestoredChatQueues(new Set(), chatQueues, null, {}));
   const pausedQueueKeysRef = useRef(pausedQueueKeys);
   const initiallyPausedQueueKeysRef = useRef(new Set(pausedQueueKeys));
   const queueDispatchRef = useRef<(key: string) => void>(() => {});
@@ -2590,6 +2600,12 @@ function App() {
     visibleSpeechChatRef.current = visibleSpeechChat;
     return () => { visibleSpeechChatRef.current = null; stopChatSpeech(); };
   }, [visibleSpeechChat]);
+  useEffect(() => {
+    const stopWhenHidden = () => { if (document.visibilityState !== "visible" || !document.hasFocus()) stopAutomaticSpeech(); };
+    window.addEventListener("blur", stopAutomaticSpeech);
+    document.addEventListener("visibilitychange", stopWhenHidden);
+    return () => { window.removeEventListener("blur", stopAutomaticSpeech); document.removeEventListener("visibilitychange", stopWhenHidden); };
+  }, []);
   const changeQueue = (key: string, change: (items: QueuedChatMessage[]) => QueuedChatMessage[]) => {
     const next = { ...chatQueuesRef.current, [key]: change(chatQueuesRef.current[key] ?? []) };
     if (!next[key].length) delete next[key];
@@ -2597,11 +2613,15 @@ function App() {
     setChatQueues(next);
     saveChatQueues(next);
   };
+  const updatePausedQueues = (next: Set<string>) => {
+    if (next === pausedQueueKeysRef.current) return;
+    pausedQueueKeysRef.current = next;
+    setPausedQueueKeys(next);
+  };
   const setQueuePaused = (key: string, paused: boolean) => {
     const next = new Set(pausedQueueKeysRef.current);
     if (paused) next.add(key); else next.delete(key);
-    pausedQueueKeysRef.current = next;
-    setPausedQueueKeys(next);
+    updatePausedQueues(next);
   };
   const removeQueued = (key: string, id: string, deleteImages = false) => {
     const item = chatQueuesRef.current[key]?.find((entry) => entry.id === id);
@@ -2889,9 +2909,8 @@ function App() {
       if (event.key === chatDefaultsStorageKey) setChatDefaults(storedChatDefaults());
       if (event.key === chatQueueStorageKey) {
         const queues = loadChatQueues();
+        updatePausedQueues(pauseRestoredChatQueues(pausedQueueKeysRef.current, queues, repositoryRef.current?.rootPath ?? null, chatQueuesRef.current));
         chatQueuesRef.current = queues; setChatQueues(queues);
-        pausedQueueKeysRef.current = new Set([...pausedQueueKeysRef.current, ...Object.keys(queues)]);
-        setPausedQueueKeys(pausedQueueKeysRef.current);
       }
       if (event.key === chatModelFavoritesStorageKey) setFavoriteModels(storedChatModelFavorites());
       if (event.key === commitMessageModelStorageKey) setCommitMessageModel(storedCommitMessageModel());
@@ -3017,6 +3036,10 @@ function App() {
     };
     if (update.kind === "planUpdated") { replaceRun({ ...run, plan: { explanation: update.explanation, plan: update.plan ?? [] } }); return; }
     let timeline = applyChatEvent(run.timeline, update);
+    if (update.kind === "assistantMessageCompleted" && update.message === "commentary" && !update.discardAssistantDraft) {
+      const key = repositoryRef.current ? taskQueueKey(repositoryRef.current.rootPath, taskId) : null;
+      readCompletedResponse(visibleSpeechChatRef.current, key, timeline);
+    }
     if (update.kind === "fileChanged") {
       replaceRun({ ...run, timeline });
       return;
@@ -3203,6 +3226,9 @@ function App() {
       const timeline = applyChatEvent(aiChatTimelineRef.current, timelineUpdate);
       aiChatTimelineRef.current = timeline;
       setAiChatTimeline(timeline);
+      if (update.kind === "assistantMessageCompleted" && update.message === "commentary" && !timelineUpdate.discardAssistantDraft) {
+        readCompletedResponse(visibleSpeechChatRef.current, reviewRunQueueKeyRef.current, timeline);
+      }
       return;
     }
     if (update.kind === "assistantDelta") {
@@ -3871,6 +3897,9 @@ function App() {
   };
 
   const activateRepository = async (repo: RepositoryInfo) => {
+    if (repositoryRef.current?.rootPath !== repo.rootPath) {
+      updatePausedQueues(pauseRestoredChatQueues(pausedQueueKeysRef.current, chatQueuesRef.current, null, {}));
+    }
     setRepository(repo);
     const refs = await invoke<BranchRefs>("list_branch_refs");
     setBranchRefs(refs);

@@ -108,7 +108,11 @@ try {
   check(sends[0].agentPrompt === agent.prompt && sends[0].agentThreadId === 'existing-thread', 'Same role must reuse the thread');
   check(sends[0].approvalMode === 'auto_review', 'The first pipeline role must use its approval mode');
   check(queue().length === 4, 'The in-flight message must stay durable until completion');
+  await act(async () => { window.dispatchEvent(new StorageEvent('storage', { key: chatQueueStorageKey })); }); await settle();
+  check(button('Pause') && !button('Resume'), 'A queue update from another window must not pause the running pipeline');
   await click(button('Pause')); await event(0, 'assistantMessageCompleted', { finalText: 'Plan ready.' }); await event(0, 'completed');
+  await act(async () => { window.dispatchEvent(new StorageEvent('storage', { key: chatQueueStorageKey })); }); await settle();
+  check(button('Resume'), 'A queue update must preserve an explicit pause');
   check(sends.length === 1 && queue().length === 3, 'Pausing waits for current response, then stops');
   await click(button('Resume')); check(sends.length === 2 && sends[1].prompt === 'Implement the plan.', 'Resume sends the next message');
   await event(1, 'failed', { message: 'Synthetic failure' });
