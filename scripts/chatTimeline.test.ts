@@ -7,6 +7,10 @@ assert.deepEqual(insertComposerTranscript("Hello world", "brave ", 6, 6), { text
 assert.deepEqual(insertComposerTranscript("Hello world", "there", 6, 11), { text: "Hello there", cursor: 11 });
 assert.deepEqual(insertComposerTranscript("", "Hello", 0, 0), { text: "Hello", cursor: 5 });
 assert.deepEqual(insertComposerTranscript("short", "!", 20, 20), { text: "short!", cursor: 6 });
+assert.deepEqual(insertComposerTranscript("Please", "check this.", 6, 6), { text: "Please check this.", cursor: 18 });
+assert.deepEqual(insertComposerTranscript("ÄpfelBirnen", "und", 5, 5), { text: "Äpfel und Birnen", cursor: 9 });
+assert.deepEqual(insertComposerTranscript("Hello!", "there", 5, 5), { text: "Hello there!", cursor: 11 });
+assert.deepEqual(insertComposerTranscript("Hello\n", "there", 6, 6), { text: "Hello\nthere", cursor: 11 });
 
 const entry = (body: string, appliedDiffs?: ChatMessage["appliedDiffs"]): ChatMessage => ({
   id: body || "diff",

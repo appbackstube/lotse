@@ -18,7 +18,7 @@ const taskQueueKey = JSON.stringify([repo.rootPath, "task", task.id]);
 const queuedPrompt = { id: "older-prompt", body: "Older paused prompt", context: { mode: "auto", attachments: [] }, selection: null, mode: "default", model: "synthetic", effort: "medium" };
 const pausedQueue = { [taskQueueKey]: [queuedPrompt] };
 const storage: Record<string, string> = { "chaoticreview.auth-onboarding-v1": "complete", [voiceModelKey]: "synthetic/audio-model", [taskStorageKey(repo.rootPath)]: JSON.stringify([task]), [chatQueueStorageKey]: JSON.stringify(pausedQueue) };
-const existingDraft = "    indented code\n\nText with trailing spaces  ";
+const existingDraft = "    indented code\n\nText with trailing spaces  \nPlease";
 let resolveTranscript: ((text: string) => void) | undefined;
 let resolveImport: ((attachments: ChatAttachment[]) => void) | undefined;
 let transcriptions = 0;
@@ -117,6 +117,7 @@ try {
   const draft = document.querySelector<HTMLTextAreaElement>('[aria-label="Review Agent message"]')!;
   check(draft, "Missing workspace draft");
   await act(async () => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(draft, existingDraft); draft.dispatchEvent(new Event("input", { bubbles: true })); });
+  draft.setSelectionRange(existingDraft.length, existingDraft.length);
   check(storage[voiceModelKey] === "synthetic/audio-model", "Model must persist with the native storage namespace");
   await click("Record voice message");
   const canvas = document.querySelector<HTMLCanvasElement>(".ios-chat-voice-wave canvas");
@@ -125,7 +126,7 @@ try {
   await click("Stop recording");
   check(stopped === 1 && transcriptions === 0 && button("Stop recording")?.disabled && !button("Transcribe for review")?.disabled, "Stopping must release the microphone without uploading");
   await click("Transcribe for review");
-  check(draft.value === `${existingDraft}\n\nSynthetic transcript` && sends === 0 && modelUsed === "synthetic/audio-model", "Transcript must use the configured model and preserve all draft whitespace without sending");
+  check(draft.value === `${existingDraft} Synthetic transcript` && draft.selectionStart === draft.value.length && draft.selectionEnd === draft.value.length && sends === 0 && modelUsed === "synthetic/audio-model", "Transcript must preserve draft whitespace, separate words, and leave the caret after the insertion without sending");
   await holdForEvidence();
   if (new URLSearchParams(location.search).has("visual")) {
     document.getElementById("result")!.textContent = "READY: synthetic transcript in Workspace composer";
@@ -141,7 +142,7 @@ try {
     const stoppedBeforeRetry = stopped;
     await holdForEvidence();
     await click("Retry transcription");
-    check(transcriptions === 3 && stopped === stoppedBeforeRetry && modelUsed === "synthetic/audio-model" && draft.value === `${existingDraft}\n\nSynthetic transcript\n\nRetried transcript` && !document.querySelector('[role="alert"]') && sends === 0, "Retry must reuse the clip without reopening the microphone, altering the draft, or sending");
+    check(transcriptions === 3 && stopped === stoppedBeforeRetry && modelUsed === "synthetic/audio-model" && draft.value === `${existingDraft} Synthetic transcript Retried transcript` && !document.querySelector('[role="alert"]') && sends === 0, "Retry must reuse the clip without reopening the microphone, altering the draft, or sending");
     await holdForEvidence();
     await click("Record voice message"); await click("Stop recording"); await click("Transcribe for review");
     check(transcriptions === 4 && button("Retry transcription"), "Failure after stopping first must also allow retry");
@@ -172,6 +173,7 @@ try {
     const taskDraft = [...document.querySelectorAll<HTMLTextAreaElement>('[aria-label="Review Agent message"]')].find(element => element.getBoundingClientRect().width > 0);
     check(taskDraft, "Missing task draft");
     await act(async () => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(taskDraft, "Existing task draft"); taskDraft!.dispatchEvent(new Event("input", { bubbles: true })); });
+    taskDraft!.setSelectionRange(taskDraft!.value.length, taskDraft!.value.length);
     resolveTranscript = undefined;
     await click("Record voice message"); await click("Transcribe for review");
     check(resolveTranscript && !button("Send Review Agent message") && button("Transcribe for review")?.disabled && button("Discard recording")?.disabled === false, "Pending transcription must disable sending but keep discard available");
@@ -187,7 +189,7 @@ try {
       await click("Record voice message"); await click("Transcribe for review");
       check(resolveTranscript, "Expected a new task transcription");
       await act(async () => resolveTranscript!("Task transcript")); await settle();
-      check(taskDraft?.value === "Existing task draft\n\nTask transcript" && sends === 0 && button("Send Review Agent message")?.disabled === false, "Task transcript must augment the draft and restore sending");
+      check(taskDraft?.value === "Existing task draft Task transcript" && sends === 0 && button("Send Review Agent message")?.disabled === false, "Task transcript must augment the draft and restore sending");
       await act(async () => {
         Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(taskDraft, "");
         taskDraft!.dispatchEvent(new Event("input", { bubbles: true }));
