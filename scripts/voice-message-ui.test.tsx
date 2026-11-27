@@ -233,6 +233,10 @@ try {
       await click("Settings");
       await click("Retry and send if possible");
       check(taskDraft?.value === "Transcript for paused queue" && button("Resume") && sends === 0 && JSON.stringify(JSON.parse(storage[chatQueueStorageKey])) === JSON.stringify(pausedQueue), "A paused queue must stay paused and unchanged while the transcript remains in the composer");
+      await click("Delete queued message");
+      check(document.body.textContent?.includes("Queue paused") && button("Resume") && taskDraft?.value === "Transcript for paused queue" && sends === 0, "An empty paused queue must show its status and preserve the transcript");
+      await click("Resume");
+      check(!document.body.textContent?.includes("Queue paused") && taskDraft?.value === "Transcript for paused queue" && sends === 0, "Resuming an empty queue must clear the status without sending the draft");
       await holdForEvidence();
       await click("Close task modal"); await click("Workspace");
       const workspaceDraft = document.querySelector<HTMLTextAreaElement>('[aria-label="Review Agent message"]')!;

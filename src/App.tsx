@@ -1420,6 +1420,12 @@ function AiChatPanel({
           <Button variant="ghost" size="sm" onClick={onStopPipeline}><Square size={13} /> Stop</Button>
           <Button variant="ghost" size="sm" onClick={queuePaused ? onResumeQueue : onPauseQueue}>{queuePaused ? <Play size={13} /> : <Pause size={13} />}{queuePaused ? "Resume" : "Pause"}</Button>
         </div>}
+        {queuePaused && !pipeline && !manualMessages.length && <div className="ios-chat-stack mx-auto mb-1 w-full max-w-[960px] px-4" role="status">
+          <div className="ios-chat-stack-item flex items-center gap-2 rounded-[18px] border px-4 py-3 text-sm">
+            <span className="min-w-0 flex-1">Queue paused</span>
+            <button type="button" onClick={onResumeQueue} className="ios-chat-stack-action">Resume</button>
+          </div>
+        </div>}
         {!!manualMessages.length && <div className="ios-chat-stack mx-auto mb-1 max-h-[35vh] w-full max-w-[960px] space-y-1 overflow-y-auto px-4 pb-1" aria-label="Queued messages">
           {manualMessages.map((item, index) => <div key={item.id} className="ios-chat-stack-item flex items-center gap-2 rounded-[18px] border px-4 py-3 text-sm">
             <ListTodo size={15} className="shrink-0 opacity-60" />
