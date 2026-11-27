@@ -109,7 +109,7 @@ export function useVoiceMessage({ context, suspended, disabled, onOpenSettings, 
 
   const start = async () => {
     if (!context || suspended || disabled || phaseRef.current !== "idle") return;
-    if (!fileStore.getItem(voiceModelKey)) { setError("Select a transcription model in Settings → General."); return; }
+    if (!fileStore.getItem(voiceModelKey)) { setError("Select a transcription model in Settings → Voice."); return; }
     setError("");
     const attempt = ++generation.current;
     changePhase("starting");

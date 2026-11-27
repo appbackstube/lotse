@@ -1,10 +1,11 @@
 import { useRef, useState, type ReactNode } from "react";
-import { BarChart3, Blocks, Bot, CircleHelp, FolderGit2, GitPullRequest, KeyRound, ListTodo, Plug, Route, Search, Settings, SlidersHorizontal, Timer, Users, X } from "lucide-react";
+import { BarChart3, Blocks, Bot, CircleHelp, FolderGit2, GitPullRequest, KeyRound, ListTodo, Mic, Plug, Route, Search, Settings, SlidersHorizontal, Timer, Users, X } from "lucide-react";
 import { Input } from "./ui/input";
 import { Button } from "./ui/button";
 
 const pages = [
   { id: "general", label: "General", group: "Personal", icon: Settings, keywords: "notifications diff review simulator" },
+  { id: "voice", label: "Voice", group: "Personal", icon: Mic, keywords: "speech transcription audio openrouter" },
   { id: "tasks", label: "Tasks", group: "Personal", icon: ListTodo, keywords: "kanban gantt list modal custom fields options statuses order default workflow" },
   { id: "pomodoro", label: "Pomodoro", group: "Personal", icon: Timer, keywords: "focus timer sessions breaks" },
   { id: "providers", label: "Model providers", group: "Agent", icon: SlidersHorizontal, keywords: "api keys openrouter global repository default credentials setup onboarding" },

@@ -27,6 +27,7 @@ import { readTaskDrawing } from "./taskDrawing";
 import { applyTaskSandboxUpdate } from "./taskSandbox";
 import { useVoiceMessage } from "./components/VoiceMessage";
 import { VoiceSettings, voiceAutoSendKey } from "./components/VoiceSettings";
+import { playSpeech, speechAutomaticKey, stopSpeech, useSpeechPlayback } from "./speech";
 import { WebsiteCredentialsSettings } from "./components/WebsiteCredentialsSettings";
 import { UsageSettings } from "./components/UsageSettings";
 import { recordUsage, type UsageItem } from "./usage";
@@ -124,6 +125,7 @@ import {
   Square,
   Terminal,
   Trash2,
+  Volume2,
   X,
 } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
@@ -1204,6 +1206,28 @@ function AiChatPanel({
   const draftField = useRef<HTMLTextAreaElement>(null);
   const focusTranscript = useRef(false);
   const [autoSendError, setAutoSendError] = useState("");
+  const speechPlayback = useSpeechPlayback();
+  const speechTurn = useRef({ context: voiceContext, running, known: new Set(messages.map(entry => entry.id)), pending: running });
+  const readCompletedResponse = useEffectEvent((body: string, id: string) => {
+    if (fileStore.getItem(speechAutomaticKey) === "true") void playSpeech(id, body);
+  });
+  useEffect(() => () => { stopSpeech(); }, []);
+  useEffect(() => {
+    const turn = speechTurn.current;
+    if (turn.context !== voiceContext || !active) {
+      speechTurn.current = { context: voiceContext, running, known: new Set(messages.map(entry => entry.id)), pending: active && running };
+      stopSpeech();
+      return;
+    }
+    if (running && !turn.running) { turn.known = new Set(messages.map(entry => entry.id)); turn.pending = true; }
+    if (!running && turn.pending) {
+      const response = messages.filter(entry => entry.role === "assistant" && entry.body.trim() && !turn.known.has(entry.id)).at(-1);
+      const lastUser = messages.filter(entry => entry.role === "user").at(-1);
+      if (lastUser?.runStatus === "cancelled" || lastUser?.runStatus === "failed") turn.pending = false;
+      else if (response) { turn.pending = false; readCompletedResponse(response.body, response.id); }
+    }
+    turn.running = running;
+  }, [active, voiceContext, running, messages]);
   const currentVoiceContext = useRef(voiceContext);
   useLayoutEffect(() => { currentVoiceContext.current = active ? voiceContext : ""; }, [active, voiceContext]);
   const voice = useVoiceMessage({
@@ -1392,7 +1416,9 @@ function AiChatPanel({
                   >
                     <Copy size={13} />
                   </button>
+                  {entry.body.trim() && <button type="button" className="ios-chat-copy-button" aria-label={speechPlayback.id === entry.id ? "Stop reading response" : "Read response aloud"} title={speechPlayback.id === entry.id ? "Stop reading response" : "Read response aloud"} onClick={() => speechPlayback.id === entry.id ? stopSpeech() : void playSpeech(entry.id, entry.body)}>{speechPlayback.id === entry.id ? <Square size={13} /> : <Volume2 size={13} />}</button>}
                 </div>
+                {speechPlayback.errorId === entry.id && <p role="alert" className="text-xs text-[#FB7185]">{speechPlayback.error}</p>}
               </article>
             ))}
           {running && (
@@ -6485,7 +6511,6 @@ function App() {
       {settingsOpen && (
         <SettingsLayout page={settingsPage} onPageChange={setSettingsPage} onClose={closeSettings} browserSupported={browserSupported}>
           <div hidden={settingsPage !== "general"} data-settings-page="general">
-            {settingsOpen && settingsPage === "general" && <VoiceSettings />}
             <section className="mt-10">
               <h2 className="mb-4 text-[17px] font-semibold text-[#E8FFF0]">Notifications</h2>
               <div className="overflow-hidden rounded-xl border border-[#294536] bg-[#111A15] px-5">
@@ -6523,6 +6548,9 @@ function App() {
                 </label>
               </div>
             </section>
+          </div>
+          <div hidden={settingsPage !== "voice"} data-settings-page="voice">
+            {settingsPage === "voice" && <VoiceSettings />}
           </div>
           <div hidden={settingsPage !== "tasks"} data-settings-page="tasks">
             {repository && <section className="mt-10">
@@ -7282,7 +7310,7 @@ function App() {
             onApprovalReviewerChange={(value) => setApprovalReviewerOverrides((current) => ({ ...current, [taskMode ? selectedTask?.id ?? "" : "review"]: { mode: value, agent: activeApprovalAgent ?? null } }))}
             onSend={sendComposerMessage}
             onAutoSendVoice={(draft) => sendComposerMessage(draft, undefined, "voice-auto")}
-            onOpenVoiceSettings={() => { void openSettings("general", true); }}
+            onOpenVoiceSettings={() => { void openSettings("voice", true); }}
             voiceSuspended={settingsOpen}
             voiceContext={boardMode && !inlineTaskMode && !boardDrawerOpen ? "" : activeQueueKey ?? ""}
             queuedMessages={activeQueueKey ? chatQueues[activeQueueKey] ?? [] : []}

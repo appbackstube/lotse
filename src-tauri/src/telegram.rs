@@ -394,6 +394,55 @@ pub fn save_voice_key(app: AppHandle, key: String) -> Result<(), String> {
     crate::credentials::save(&app, VOICE_CREDENTIAL_KEY, Some(key))
 }
 
+#[derive(Serialize)]
+pub struct SpeechModel {
+    id: String,
+    name: String,
+    voices: Vec<String>,
+}
+
+fn speech_models_from_catalog(value: &Value) -> Result<Vec<SpeechModel>, String> {
+    let models = value.get("data").and_then(Value::as_array).ok_or("Invalid speech model list.")?;
+    Ok(models.iter().filter_map(|model| {
+        let id = model.get("id")?.as_str()?;
+        let speech = model.get("output_modalities")?.as_array()?.iter().find(|entry| entry.get("type").and_then(Value::as_str) == Some("speech"))?;
+        if !speech.pointer("/supported_parameters/response_format/values")?.as_array()?.iter().any(|format| format.as_str() == Some("mp3")) { return None; }
+        let voices: Vec<String> = speech.pointer("/supported_parameters/voice/values")?.as_array()?.iter().filter_map(Value::as_str).map(str::to_owned).collect();
+        if voices.is_empty() { return None; }
+        Some(SpeechModel { id: id.to_owned(), name: model.get("name").and_then(Value::as_str).unwrap_or(id).to_owned(), voices })
+    }).collect())
+}
+
+#[tauri::command]
+pub async fn speech_models() -> Result<Vec<SpeechModel>, String> {
+    run_blocking(move || {
+        let client = Client::builder().timeout(Duration::from_secs(20)).build().map_err(|_| "Cannot initialize speech model lookup.")?;
+        let response = client.get("https://openrouter.ai/api/v1/audio/speech/models").send().map_err(|_| "Cannot load speech models.")?;
+        if !response.status().is_success() { return Err("OpenRouter rejected the speech model lookup.".into()); }
+        let mut body = Vec::new();
+        response.take(4_000_001).read_to_end(&mut body).map_err(|_| "Cannot read speech models.")?;
+        if body.len() > 4_000_000 { return Err("Speech model list is too large.".into()); }
+        let value = serde_json::from_slice(&body).map_err(|_| "Invalid speech model list.")?;
+        speech_models_from_catalog(&value)
+    }).await
+}
+
+#[tauri::command]
+pub async fn synthesize_speech(app: AppHandle, input: String, model: String, voice: String) -> Result<String, String> {
+    if input.trim().is_empty() || input.len() > 100_000 { return Err("Speech text is empty or too long.".into()); }
+    if model.is_empty() || model.len() > 256 || voice.is_empty() || voice.len() > 256 || model.chars().any(char::is_whitespace) || voice.chars().any(char::is_whitespace) { return Err("Choose a valid speech model and voice.".into()); }
+    run_blocking(move || {
+        let key = crate::credentials::load(&app, VOICE_CREDENTIAL_KEY)?.filter(|value| !value.is_empty()).ok_or("Configure the OpenRouter voice API key first.")?;
+        let client = Client::builder().timeout(Duration::from_secs(120)).build().map_err(|_| "Cannot initialize speech output.")?;
+        let response = client.post("https://openrouter.ai/api/v1/audio/speech").bearer_auth(key).json(&json!({"model": model, "voice": voice, "input": input, "response_format": "mp3"})).send().map_err(|_| "Speech request failed; charges may have occurred.")?;
+        if !response.status().is_success() { return Err("OpenRouter rejected speech output. Check the model, voice, key, and credits.".into()); }
+        let mut body = Vec::new();
+        response.take(20_000_001).read_to_end(&mut body).map_err(|_| "Cannot read speech output; charges may have occurred.")?;
+        if body.is_empty() || body.len() > 20_000_000 { return Err("Speech output is empty or too large.".into()); }
+        Ok(STANDARD.encode(body))
+    }).await
+}
+
 fn composer_stt_model_supports_m4a_and_ogg(model: &str) -> bool {
     matches!(model, "openai/whisper-1" | "openai/gpt-4o-transcribe" | "openai/gpt-4o-mini-transcribe")
 }
@@ -426,7 +475,7 @@ pub async fn voice_models(app: AppHandle) -> Result<Vec<(String, String)>, Strin
 #[tauri::command]
 pub async fn transcribe_voice_stt(audio: String, model: String, language: Option<String>, app: AppHandle, window: WebviewWindow, state: State<'_, AppState>) -> Result<String, String> {
     let (settings, bytes, format) = composer_voice_input(&audio, &model)?;
-    if !composer_stt_model_supports_m4a_and_ogg(&settings.model) || !matches!(format, "m4a" | "ogg") { return Err("This model or recording format is not supported for voice messages. Choose a compatible model in Settings → General.".into()); }
+    if !composer_stt_model_supports_m4a_and_ogg(&settings.model) || !matches!(format, "m4a" | "ogg") { return Err("This model or recording format is not supported for voice messages. Choose a compatible model in Settings → Voice.".into()); }
     if language.as_deref().is_some_and(|code| code.len() != 2 || !code.bytes().all(|byte| byte.is_ascii_lowercase())) { return Err("Choose a valid spoken language.".into()); }
     let root = repository_path(&state, &window)?;
     let label = window.label().to_owned();
@@ -609,6 +658,20 @@ pub fn telegram_disconnect(app: AppHandle, window: WebviewWindow, state: State<'
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn speech_catalog_uses_only_speech_models_with_named_voices() {
+        let models = speech_models_from_catalog(&json!({"data": [
+            {"id":"example/tts", "name":"Speech", "output_modalities":[{"type":"speech", "supported_parameters":{"voice":{"values":["one", "two"]}, "response_format":{"values":["mp3"]}}}]},
+            {"id":"example/wav", "output_modalities":[{"type":"speech", "supported_parameters":{"voice":{"values":["one"]}, "response_format":{"values":["wav"]}}}]},
+            {"id":"example/no-voices", "output_modalities":[{"type":"speech"}]},
+            {"id":"example/text", "output_modalities":[{"type":"text"}]}
+        ]})).unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "example/tts");
+        assert_eq!(models[0].voices, ["one", "two"]);
+        assert!(speech_models_from_catalog(&json!({})).is_err());
+    }
 
     #[test]
     fn composer_stt_catalog_only_offers_models_with_verified_recording_formats() {
