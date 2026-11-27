@@ -1588,8 +1588,27 @@ fn parse_numstat(bytes: &[u8]) -> Vec<(Option<u32>, Option<u32>)> {
 }
 
 fn read_untracked_file(root: &Path, path: &str) -> Result<Option<Vec<u8>>, String> {
-    match fs::read(root.join(path)) {
-        Ok(bytes) => Ok(Some(bytes)),
+    let Some((mut input, _)) = open_untracked_snapshot(root, path)? else { return Ok(None); };
+    let mut bytes = Vec::new();
+    read_snapshot_chunks(&mut input, |chunk| bytes.extend_from_slice(chunk))
+        .map_err(|error| format!("Cannot read untracked file {path}: {error}"))?;
+    Ok(Some(bytes))
+}
+
+fn open_untracked_snapshot(root: &Path, path: &str) -> Result<Option<(Box<dyn Read>, bool)>, String> {
+    let target = root.join(path);
+    let metadata = match fs::symlink_metadata(&target) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("Cannot inspect untracked file {path}: {error}")),
+    };
+    if metadata.file_type().is_symlink() {
+        let link = fs::read_link(&target).map_err(|error| format!("Cannot read symlink {path}: {error}"))?;
+        return Ok(Some((Box::new(std::io::Cursor::new(link.as_os_str().as_encoded_bytes().to_vec())), true)));
+    }
+    if !metadata.is_file() { return Err(format!("Cannot read untracked file {path}: not a regular file or symlink")); }
+    match fs::File::open(target) {
+        Ok(input) => Ok(Some((Box::new(input), false))),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(format!("Cannot read untracked file {path}: {error}")),
     }
@@ -1631,11 +1650,7 @@ fn compare_working_repository_snapshots(root: &Path, head_oid: &str, pending_bas
     let untracked = run_git(root, &["ls-files", "--others", "--exclude-standard", "-z"])?;
     for path in untracked.split(|byte| *byte == 0).filter(|path| !path.is_empty()) {
         let path_text = String::from_utf8_lossy(path).into_owned();
-        let mut input = match fs::File::open(root.join(&path_text)) {
-            Ok(input) => input,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(format!("Cannot read untracked file {path_text}: {error}")),
-        };
+        let Some((mut input, _)) = open_untracked_snapshot(root, &path_text)? else { continue; };
         let mut file = ChangedFile { old_path: None, path: path_text, status: FileStatus::Added, snapshot_id: String::new(), additions: None, deletions: None, binary: false };
         let (mut file_hash, symlink) = changed_file_snapshot_header(root, &file)?;
         for hash in &mut snapshots { extend_snapshot_hash(hash, path); }
@@ -1649,7 +1664,7 @@ fn compare_working_repository_snapshots(root: &Path, head_oid: &str, pending_bas
             length += chunk.len();
             lines += chunk.iter().filter(|byte| **byte == b'\n').count();
             last = chunk.last().copied();
-        })?;
+        }).map_err(|error| format!("Cannot read untracked file {}: {error}", file.path))?;
         file.additions = if file.binary { None } else { Some((lines + usize::from(length > 0 && last != Some(b'\n'))) as u32) };
         file.deletions = file.additions.map(|_| 0);
         file.snapshot_id = format!("{file_hash:016x}");
@@ -2264,7 +2279,7 @@ fn changed_file_snapshot_header(root: &Path, file: &ChangedFile) -> Result<(u64,
     }
     let symlink = metadata.file_type().is_symlink();
     if symlink {
-        extend_snapshot_hash(&mut hash, fs::read_link(path).map_err(|error| error.to_string())?.to_string_lossy().as_bytes());
+        extend_snapshot_hash(&mut hash, fs::read_link(path).map_err(|error| format!("Cannot read symlink {}: {error}", file.path))?.as_os_str().as_encoded_bytes());
     }
     Ok((hash, symlink))
 }
@@ -2987,15 +3002,16 @@ fn untracked_file_diff(root: &Path, path: &str) -> Result<FileDiff, String> {
     if listed.is_empty() {
         return Err("File is not an untracked repository file".to_owned());
     }
-    let target = fs::canonicalize(root.join(path))
+    let relative = validated_relative_path(path)?;
+    let target = root.join(relative);
+    let parent = fs::canonicalize(target.parent().ok_or("Invalid file path")?)
         .map_err(|error| format!("Cannot open untracked file: {error}"))?;
     let canonical_root =
         fs::canonicalize(root).map_err(|error| format!("Cannot resolve repository: {error}"))?;
-    if !target.starts_with(canonical_root) {
+    if !parent.starts_with(canonical_root) {
         return Err("File is outside the repository".to_owned());
     }
-    let bytes =
-        fs::read(target).map_err(|error| format!("Cannot read untracked text file: {error}"))?;
+    let bytes = read_untracked_file(root, path)?.ok_or("Untracked file no longer exists")?;
     let text = String::from_utf8_lossy(&bytes);
     let rows = text
         .lines()
@@ -3145,13 +3161,10 @@ fn working_snapshot_from(root: &Path, base_oid: &str) -> Result<String, String> 
     let untracked = run_git(root, &["ls-files", "--others", "--exclude-standard", "-z"])?;
     for path in untracked.split(|byte| *byte == 0).filter(|path| !path.is_empty()) {
         let path_text = String::from_utf8_lossy(path);
-        let mut input = match fs::File::open(root.join(path_text.as_ref())) {
-            Ok(input) => input,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(format!("Cannot read untracked file {path_text}: {error}")),
-        };
+        let Some((mut input, _)) = open_untracked_snapshot(root, &path_text)? else { continue; };
         extend_snapshot_hash(&mut hash, path);
-        read_snapshot_chunks(&mut input, |chunk| extend_snapshot_hash(&mut hash, chunk))?;
+        read_snapshot_chunks(&mut input, |chunk| extend_snapshot_hash(&mut hash, chunk))
+            .map_err(|error| format!("Cannot read untracked file {path_text}: {error}"))?;
     }
     Ok(format!("{hash:016x}"))
 }
@@ -5284,8 +5297,9 @@ fn untracked_patch(root: &Path, path: &str) -> Result<String, String> {
     let text = String::from_utf8(bytes)
         .map_err(|_| format!("Cannot review non-UTF-8 untracked file {path}"))?;
     let count = text.lines().count();
+    let mode = if fs::symlink_metadata(root.join(path)).map_err(|error| format!("Cannot inspect untracked file {path}: {error}"))?.file_type().is_symlink() { "120000" } else { "100644" };
     let mut patch = format!(
-        "diff --git a/{path} b/{path}\nnew file mode 100644\n--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,{count} @@\n"
+        "diff --git a/{path} b/{path}\nnew file mode {mode}\n--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,{count} @@\n"
     );
     for line in text.lines() {
         patch.push('+');
@@ -7911,13 +7925,17 @@ mod tests {
         fs::write(root.join("untracked.txt"), "one\ntwo").unwrap();
         fs::write(root.join("empty.txt"), "").unwrap();
         fs::write(root.join("large.bin"), vec![0; 2 * 1024 * 1024]).unwrap();
-        #[cfg(unix)] std::os::unix::fs::symlink("tracked.txt", root.join("link.txt")).unwrap();
+        #[cfg(unix)] {
+            std::os::unix::fs::symlink("tracked.txt", root.join("link.txt")).unwrap();
+            std::os::unix::fs::symlink(".", root.join("directory-link")).unwrap();
+            std::os::unix::fs::symlink("missing-target", root.join("broken-link")).unwrap();
+        }
         let legacy_hash = |bytes: &[u8]| format!("{:016x}", bytes.iter().fold(0xcbf29ce484222325_u64, |hash, byte| (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)));
         let legacy_working = |base: &str| {
             let mut bytes = run_git(&root, &["diff", "--binary", base]).unwrap();
             for path in run_git(&root, &["ls-files", "--others", "--exclude-standard", "-z"]).unwrap().split(|byte| *byte == 0).filter(|path| !path.is_empty()) {
                 bytes.extend_from_slice(path);
-                bytes.extend_from_slice(&fs::read(root.join(String::from_utf8_lossy(path).as_ref())).unwrap());
+                bytes.extend_from_slice(&read_untracked_file(&root, &String::from_utf8_lossy(path)).unwrap().unwrap());
             }
             legacy_hash(&bytes)
         };
@@ -7925,6 +7943,20 @@ mod tests {
         assert_eq!(comparison.snapshot_id, legacy_working(&base));
         assert_eq!(pending.unwrap(), legacy_working("HEAD"));
         assert_eq!(working_snapshot(&root).unwrap(), legacy_working("HEAD"));
+        #[cfg(unix)] {
+            assert_eq!(read_untracked_file(&root, "directory-link").unwrap().unwrap(), b".");
+            assert_eq!(read_untracked_file(&root, "broken-link").unwrap().unwrap(), b"missing-target");
+            assert!(untracked_patch(&root, "broken-link").unwrap().contains("new file mode 120000\n"));
+            assert!(untracked_file_diff(&root, "directory-link").unwrap().hunks[0].rows[0].new.as_ref().unwrap().text == ".");
+            let before = working_snapshot(&root).unwrap();
+            fs::remove_file(root.join("broken-link")).unwrap();
+            std::os::unix::fs::symlink("another-target", root.join("broken-link")).unwrap();
+            let after = compare_working_repository(&root).unwrap();
+            assert_ne!(before, after.snapshot_id);
+            assert_eq!(after.snapshot_id, working_snapshot(&root).unwrap());
+            fs::remove_file(root.join("broken-link")).unwrap();
+            std::os::unix::fs::symlink("missing-target", root.join("broken-link")).unwrap();
+        }
         assert!(comparison.files.iter().find(|file| file.path == "large.bin").unwrap().binary);
         assert_eq!(comparison.files.iter().find(|file| file.path == "untracked.txt").unwrap().additions, Some(2));
         for file in &comparison.files {
