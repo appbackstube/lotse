@@ -6,10 +6,13 @@ import App from "../src/App";
 import { fileStore, initializeFileStore } from "../src/fileStore";
 import { loadPipelineRuns } from "../src/pipelineRuns";
 import { pipelinesStorageKey } from "../src/pipelines";
+import { speechAutomaticKey, speechModelKey, speechVoiceKey } from "../src/speech";
 import { normalizeTask, taskStorageKey } from "../src/tasks";
 import type { AgentTurnEvent, AiChatAccepted, AiChatEvent, Comparison, ReviewSession } from "../src/types";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+const options = new URLSearchParams(location.search);
+const speech = options.has("speech");
 const repo = { rootPath: "/synthetic-steer", name: "Steer regression", currentBranch: "main", hasOrigin: true };
 const task = normalizeTask({ id: "pipeline-task", title: "Pipeline task", location: "workspace" })!;
 const pipeline = { id: "verify", title: "Verify changes", description: "", steps: [{ id: "step", title: "Inspect", agentId: null, messages: ["Inspect the changes."] }] };
@@ -20,12 +23,21 @@ const storage: Record<string, string> = {
   "chaoticreview.auth-onboarding-v1": "complete",
   [pipelinesStorageKey]: JSON.stringify([pipeline]),
   [taskKey]: JSON.stringify([task, normalizeTask({ id: "other", title: "Another task", location: "workspace" })]),
+  ...(speech ? { [speechAutomaticKey]: "true", [speechModelKey]: "deepgram/aura-2", [speechVoiceKey]: "synthetic-voice" } : {}),
 };
 const reviews: { saved: ReviewSession | null } = { saved: null };
 const telegramNotices: string[] = [];
 let acknowledgeSteer: (() => void) | undefined;
 let finishWorkspaceSave: (() => void) | undefined;
 const runs: { accepted: AiChatAccepted; emit: (event: AgentTurnEvent) => void; mode: string }[] = [];
+const speechInputs: string[] = [];
+const previewText = "Hello! This is a preview of your selected voice.";
+const speechLimitError = "Deepgram Aura-2 accepts up to 2000 characters per request. Choose a different speech model to read this response.";
+let audioPlaying = false;
+if (speech) Object.assign(globalThis, { Audio: class {
+  async play() { audioPlaying = true; }
+  pause() { audioPlaying = false; }
+} });
 mockWindows("main"); mockConvertFileSrc("macos");
 mockIPC(async (command, args: any) => {
   if (command === "load_frontend_storage") return storage;
@@ -47,6 +59,14 @@ mockIPC(async (command, args: any) => {
     return;
   }
   if (command === "github_connection") return null;
+  if (speech && command === "voice_key_configured") return true;
+  if (speech && command === "voice_models") return [];
+  if (speech && command === "speech_models") return [{ id: "deepgram/aura-2", name: "Aura-2", voices: ["synthetic-voice"] }];
+  if (speech && command === "synthesize_speech") {
+    speechInputs.push(args.input);
+    if (args.input.length > 2_000) throw speechLimitError;
+    return "AA==";
+  }
   if (command === "telegram_connection") return { connected: true, enabled: true, remoteControlEnabled: true, userId: 10, chatId: 10, connectionId: "synthetic", journalId: "synthetic" };
   if (command === "telegram_poll") return new Promise(() => {});
   if (command === "telegram_send") { if (args.remoteControl) telegramNotices.push(args.text); return telegramNotices.length; }
@@ -74,7 +94,6 @@ mockIPC(async (command, args: any) => {
   throw new Error(`Unexpected synthetic IPC: ${command}`);
 }, { shouldMockEvents: true, telegram: true });
 
-const options = new URLSearchParams(location.search);
 const capture = options.has("evidence");
 const cancelledAfterStart = options.has("cancelled-after-start");
 const cancelled = options.has("cancelled") || cancelledAfterStart;
@@ -112,7 +131,8 @@ const result = document.getElementById("result")!;
 try {
   await initializeFileStore();
   await act(async () => root.render(<App />)); await settle();
-  if (options.has("workspace-queue")) {
+  if (speech) await checkWorkspaceSpeech();
+  else if (options.has("workspace-queue")) {
     await click("Workspace"); await click("Add to chat");
     await checkWorkspaceQueue();
   } else await checkTaskSteer();
@@ -120,6 +140,39 @@ try {
   result.textContent = `FAIL: ${String(error)}`;
 } finally {
   if (!capture) await act(async () => root.unmount());
+}
+
+async function checkWorkspaceSpeech() {
+  const sendMessage = (body: string) => send(body, "Send Review Agent message");
+  const finish = async (index: number, finalText: string) => {
+    await event(index, { kind: "assistantMessageCompleted", finalText });
+    await event(index, { kind: "completed" });
+  };
+  if (capture) Object.assign(result.style, { position: "fixed", top: "48px", left: "50%", transform: "translateX(-50%)", zIndex: "100", padding: "10px", background: "white", color: "black" });
+  await click("Workspace");
+  await sendMessage("Start a reply that I can stop.");
+  await event(0, { kind: "assistantDelta", delta: "A partial reply is retained." });
+  await click("Stop Review Agent response");
+  check(!speechInputs.length && !!findButton("Read response aloud") && [...document.querySelectorAll("[data-search-message] .chat-markdown")].some(element => element.textContent === "A partial reply is retained."), "Cancelled response must be retained without speech IPC");
+  result.textContent = "Stopped response retained; no speech request."; await checkpoint();
+
+  await sendMessage("Finish this reply while Voice is open.");
+  await click("Settings"); await click("Voice"); await click("Preview");
+  await finish(1, "This response finished behind Settings.");
+  check(audioPlaying && !!findButton("Stop") && speechInputs.join() === previewText, "Hidden completion must not interrupt the voice preview");
+  result.textContent = "Hidden completion did not interrupt the active preview."; await checkpoint();
+
+  await click("Close settings");
+  await sendMessage("Reply while the Workspace is visible.");
+  const visibleReply = "This visible response is read automatically.";
+  await finish(2, visibleReply);
+  check(audioPlaying && !!findButton("Stop reading response") && speechInputs.join() === [previewText, visibleReply].join(), "Only the visible successful response should start reading");
+  result.textContent = "Visible successful completion started automatic reading."; await checkpoint();
+
+  await sendMessage("Reply with text that exceeds Aura-2's limit.");
+  await finish(3, "Long response ".repeat(150));
+  check(!audioPlaying && speechInputs.length === 3 && [...document.querySelectorAll('[role="alert"]')].some(element => element.textContent === speechLimitError), "Long response must show a model limit, not a key or credits error");
+  result.textContent = "PASS: cancelled and hidden runs stay silent; preview is preserved; visible completion reads; limit is shown.";
 }
 
 async function checkTaskSteer() {
