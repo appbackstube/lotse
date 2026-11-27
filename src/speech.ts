@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { renderMarkdown } from "telegram-md-entities";
 import { fileStore } from "./fileStore";
 import type { ChatMessage } from "./types";
 
@@ -84,7 +85,8 @@ async function startSpeech(id: string, input: string, automatic: boolean) {
   automaticPlayback = automatic;
   update({ id, errorId: "", error: "" });
   try {
-    const encoded = await invoke<string>("synthesize_speech", { input, model, voice, language });
+    const spokenInput = renderMarkdown(input, { underline: false, spoiler: false }).text;
+    const encoded = await invoke<string>("synthesize_speech", { input: spokenInput, model, voice, language });
     if (request !== generation) return;
     if (automatic && !windowHasFocus()) { stopAutomaticSpeech(); return; }
     const bytes = Uint8Array.from(atob(encoded), character => character.charCodeAt(0));

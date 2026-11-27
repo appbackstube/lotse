@@ -42,6 +42,20 @@ test("chat cleanup and automatic reading do not interrupt a pending preview", ()
   stopSpeech();
 });
 
+test("removes markdown from manual and automatic speech requests", () => {
+  const markdown = "# Heading\n\nRead **this** [link](https://example.com) and `code`.";
+  const expected = { input: "Heading\n\nRead this link and code.", model: "example/tts", voice: "example-voice", language: "" };
+  requests.length = 0;
+  void playSpeech("manual", markdown);
+  assert.deepEqual(requests, [expected]);
+  stopSpeech();
+
+  requests.length = 0;
+  readCompletedResponse("workspace", "workspace", [{ ...reply, body: markdown }]);
+  assert.deepEqual(requests, [expected]);
+  stopSpeech();
+});
+
 test("queues subsequent messages without interrupting or duplicating the current one", () => {
   requests.length = 0;
   readCompletedResponse("workspace", "workspace", [entries[0]]);
