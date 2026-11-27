@@ -1,20 +1,26 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
+import { emit, TauriEvent } from "@tauri-apps/api/event";
 import { mockConvertFileSrc, mockWindows } from "@tauri-apps/api/mocks";
 import { mockIPC } from "./mockTauri";
-import { initializeFileStore } from "../src/fileStore";
+import { fileStore, initializeFileStore } from "../src/fileStore";
+import { chatQueueStorageKey } from "../src/chatQueue";
+import { voiceAutoSendKey, voiceLanguageKey, voiceModelKey } from "../src/components/VoiceSettings";
 import { normalizeTask, taskStorageKey } from "../src/tasks";
+import type { ChatAttachment } from "../src/types";
 import App from "../src/App";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const repo = { rootPath: "/synthetic-voice", name: "Voice", currentBranch: "main", hasOrigin: true };
 const comparison = { mode: "workingCopy", baseRef: null, compareRef: null, baseOid: "a".repeat(40), baseCommitOid: "a".repeat(40), compareCommitOid: "a".repeat(40), snapshotId: "snapshot", files: [] };
 const task = normalizeTask({ id: "12345678-1234-1234-1234-123456789abc", title: "Voice test task", manualStatus: "inbox", location: "workspace" })!;
-const storage: Record<string, string> = { "chaoticreview.auth-onboarding-v1": "complete", [taskStorageKey(repo.rootPath)]: JSON.stringify([task]) };
-const voiceModelKey = "chaoticreview.voice-transcription-model";
+const taskQueueKey = JSON.stringify([repo.rootPath, "task", task.id]);
+const queuedPrompt = { id: "older-prompt", body: "Older paused prompt", context: { mode: "auto", attachments: [] }, selection: null, mode: "default", model: "synthetic", effort: "medium" };
+const pausedQueue = { [taskQueueKey]: [queuedPrompt] };
+const storage: Record<string, string> = { "chaoticreview.auth-onboarding-v1": "complete", [voiceModelKey]: "synthetic/audio-model", [taskStorageKey(repo.rootPath)]: JSON.stringify([task]), [chatQueueStorageKey]: JSON.stringify(pausedQueue) };
 const existingDraft = "    indented code\n\nText with trailing spaces  ";
-const retryModel = "synthetic/retry-model";
 let resolveTranscript: ((text: string) => void) | undefined;
+let resolveImport: ((attachments: ChatAttachment[]) => void) | undefined;
 let transcriptions = 0;
 let sends = 0;
 let stopped = 0;
@@ -22,6 +28,9 @@ let microphoneDenied = false;
 let activeRecorder: FakeRecorder | undefined;
 let modelUsed = "";
 let failedAudio: string | undefined;
+let rejectInitialModelLookup: ((reason: Error) => void) | undefined;
+let deferInitialModelLookup = false;
+let voiceKeySaves = 0;
 mockWindows("main"); mockConvertFileSrc("macos");
 mockIPC(async (command, args: any) => {
   if (command === "load_frontend_storage") return storage;
@@ -30,11 +39,14 @@ mockIPC(async (command, args: any) => {
     storage[args.key] = args.value;
     return;
   }
-  if (command === "transcribe_composer_voice") {
+  if (command === "transcribe_voice_stt") {
     modelUsed = args.model;
     transcriptions++;
-    if (transcriptions === 1) return "Synthetic transcript";
-    if (transcriptions === 2 || transcriptions === 4) {
+    if (transcriptions === 1) {
+      check(args.language === null, "A three-letter system language must use automatic detection");
+      return "Synthetic transcript";
+    }
+    if (transcriptions === 2 || transcriptions === 4 || transcriptions === 8) {
       failedAudio = args.audio;
       throw new Error("Synthetic transcription error");
     }
@@ -42,9 +54,20 @@ mockIPC(async (command, args: any) => {
       check(args.audio && args.audio === failedAudio, "Retry must submit the same clip");
       return "Retried transcript";
     }
+    if (transcriptions === 9) {
+      check(args.audio && args.audio === failedAudio && args.model === "synthetic/replacement-model", "Retry after Settings must use the same clip and the newly saved model");
+      return "Transcript for paused queue";
+    }
     return new Promise(resolve => { resolveTranscript = resolve; });
   }
   if (command === "ai_chat_send") { sends++; return { requestId: "synthetic", threadId: "synthetic", turnId: "synthetic" }; }
+  if (command === "import_chat_files") return new Promise(resolve => { resolveImport = resolve; });
+  if (command === "voice_key_configured") return true;
+  if (command === "save_voice_key") { voiceKeySaves++; return; }
+  if (command === "voice_models") {
+    if (deferInitialModelLookup) return new Promise((_resolve, reject) => { rejectInitialModelLookup = reject; });
+    return [["synthetic/audio-model", "Original model"], ["synthetic/replacement-model", "Replacement model"]];
+  }
   if (command === "load_ai_settings") return { activeProvider: "openrouter", providers: [{ id: "openrouter", name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", envKey: "OPENROUTER_API_KEY" }], repositoryProviders: {}, ripgrepAvailable: true, mcpUrl: "" };
   if (command === "current_repository" || command === "refresh_repository") return repo;
   if (command === "list_branch_refs") return { refs: ["main"], remoteRefs: [], defaultBase: "main", pullCount: 0, pushCount: 0 };
@@ -59,6 +82,7 @@ mockIPC(async (command, args: any) => {
   throw new Error(`Unexpected IPC: ${command}`);
 }, { shouldMockEvents: true });
 
+Object.defineProperty(navigator, "language", { configurable: true, value: "fil-PH" });
 Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia: async () => { if (microphoneDenied) throw new Error("Synthetic microphone denial"); return { getTracks: () => [{ stop: () => { stopped++; } }] }; } } });
 class FakeRecorder {
   static isTypeSupported(type: string) { return type === "audio/mp4"; }
@@ -66,7 +90,8 @@ class FakeRecorder {
   mimeType = "audio/mp4";
   ondataavailable?: (event: { data: Blob }) => void;
   onstop?: () => void;
-  start() { this.state = "recording"; activeRecorder = this; }
+  onstart?: () => void;
+  start() { this.state = "recording"; activeRecorder = this; queueMicrotask(() => this.onstart?.()); }
   stop() { this.state = "inactive"; queueMicrotask(() => { this.ondataavailable?.({ data: new Blob([new Uint8Array([0, 0, 0, 24, 102, 116, 121, 112, 77, 52, 65, 32])]) }); this.onstop?.(); }); }
 }
 class FakeAudioContext {
@@ -77,14 +102,11 @@ class FakeAudioContext {
 }
 Object.assign(globalThis, { MediaRecorder: FakeRecorder, AudioContext: FakeAudioContext });
 const check = (condition: unknown, message: string) => { if (!condition) throw new Error(message); };
-const settle = async () => { await act(async () => { await new Promise(resolve => setTimeout(resolve, 200)); }); };
+const settle = async () => { await act(async () => { await new Promise(resolve => setTimeout(resolve, 650)); }); };
 const button = (label: string) => [...document.querySelectorAll<HTMLButtonElement>("button")].find(item => item.getBoundingClientRect().width > 0 && (item.textContent?.trim() === label || item.getAttribute("aria-label") === label));
 const click = async (label: string) => { const item = button(label); check(item, `Missing button: ${label}`); await act(async () => item!.click()); await settle(); };
-const modelInput = () => [...document.querySelectorAll<HTMLLabelElement>("label")].find(label => label.textContent === "OpenRouter audio model")?.control as HTMLInputElement | undefined;
-const editModel = (field: HTMLInputElement, model: string) => {
-  field.focus();
-  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, model);
-  field.dispatchEvent(new Event("input", { bubbles: true }));
+const updateOtherWindowSetting = async (key: string, value: string | null) => {
+  await act(async () => emit("frontend-storage-changed", { key, value, source: "another-window" }));
 };
 const evidence = new URLSearchParams(location.search).has("evidence");
 const holdForEvidence = async () => { if (evidence) await new Promise(resolve => setTimeout(resolve, 1000)); };
@@ -95,15 +117,6 @@ try {
   const draft = document.querySelector<HTMLTextAreaElement>('[aria-label="Review Agent message"]')!;
   check(draft, "Missing workspace draft");
   await act(async () => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(draft, existingDraft); draft.dispatchEvent(new Event("input", { bubbles: true })); });
-  await click("Add to chat");
-  const modelField = modelInput();
-  check(modelField?.value, "Missing model field in the Add to chat menu");
-  await act(async () => {
-    editModel(modelField!, "synthetic/audio-model");
-    modelField!.blur();
-    modelField!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-  });
-  await settle();
   check(storage[voiceModelKey] === "synthetic/audio-model", "Model must persist with the native storage namespace");
   await click("Record voice message");
   const canvas = document.querySelector<HTMLCanvasElement>(".ios-chat-voice-wave canvas");
@@ -126,14 +139,9 @@ try {
     check(document.querySelector('[role="alert"]')?.textContent?.includes("Synthetic transcription error") && draft.value.includes("Synthetic transcript") && sends === 0, "Transcription error must preserve the draft without sending");
     check(retry && !retry.disabled && document.activeElement === retry && button("Discard recording") && !button("Record voice message"), "Failure must keep the clip and offer focused retry or discard");
     const stoppedBeforeRetry = stopped;
-    const retryField = modelInput();
-    check(retryField?.getBoundingClientRect().width && retryField.value === "synthetic/audio-model", "Retry must expose the selected model without discarding the recording");
-    await act(async () => editModel(retryField!, " "));
-    check(retry?.disabled, "Retry must not submit a blank model");
-    await act(async () => { editModel(retryField!, retryModel); retry!.focus(); });
     await holdForEvidence();
     await click("Retry transcription");
-    check(transcriptions === 3 && stopped === stoppedBeforeRetry && modelUsed === retryModel && storage[voiceModelKey] === retryModel && draft.value === `${existingDraft}\n\nSynthetic transcript\n\nRetried transcript` && !document.querySelector('[role="alert"]') && sends === 0, "Retry must use and save the replacement model without reopening the microphone, altering the draft, or sending");
+    check(transcriptions === 3 && stopped === stoppedBeforeRetry && modelUsed === "synthetic/audio-model" && draft.value === `${existingDraft}\n\nSynthetic transcript\n\nRetried transcript` && !document.querySelector('[role="alert"]') && sends === 0, "Retry must reuse the clip without reopening the microphone, altering the draft, or sending");
     await holdForEvidence();
     await click("Record voice message"); await click("Stop recording"); await click("Transcribe for review");
     check(transcriptions === 4 && button("Retry transcription"), "Failure after stopping first must also allow retry");
@@ -180,7 +188,78 @@ try {
       check(resolveTranscript, "Expected a new task transcription");
       await act(async () => resolveTranscript!("Task transcript")); await settle();
       check(taskDraft?.value === "Existing task draft\n\nTask transcript" && sends === 0 && button("Send Review Agent message")?.disabled === false, "Task transcript must augment the draft and restore sending");
-      document.getElementById("result")!.textContent = "PASS: voice drafts, same-clip retry and discard, pending send and cancel, errors, task switch and close, and recorder interruption";
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(taskDraft, "");
+        taskDraft!.dispatchEvent(new Event("input", { bubbles: true }));
+        fileStore.setItem(voiceAutoSendKey, "true");
+      });
+      await click("Record voice message"); await click("Transcribe and send if possible");
+      deferInitialModelLookup = true;
+      await click("Open voice settings");
+      const voiceKey = document.querySelector<HTMLInputElement>("#voice-key")!;
+      const saveKey = voiceKey.parentElement!.querySelector("button")!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(voiceKey, "synthetic-replacement-key");
+        voiceKey.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      check(rejectInitialModelLookup && saveKey.disabled, "The key must not be saved while the initial model lookup is pending");
+      await holdForEvidence();
+      deferInitialModelLookup = false;
+      await act(async () => rejectInitialModelLookup!(new Error("Synthetic initial model lookup failure")));
+      check(!saveKey.disabled, "A failed initial lookup must re-enable key saving");
+      await act(async () => saveKey.click()); await settle();
+      check(voiceKeySaves === 1 && !voiceKey.value && document.body.textContent?.includes("transcription models refreshed"), "Saving the replacement key must refresh the models");
+      await holdForEvidence();
+      const model = document.querySelector<HTMLSelectElement>("#voice-model");
+      const language = document.querySelector<HTMLSelectElement>("#voice-language");
+      check(model?.getBoundingClientRect().width && !model.disabled, "The task's failed clip must lead to voice settings");
+      const autoSend = model!.closest("section")?.querySelector('[role="switch"]');
+      check(autoSend?.getAttribute("aria-checked") === "true", "Voice settings must show auto-send as enabled");
+      await updateOtherWindowSetting(voiceAutoSendKey, "false");
+      check(autoSend?.getAttribute("aria-checked") === "false", "The auto-send switch must reflect a change from another window");
+      await updateOtherWindowSetting(voiceAutoSendKey, "true");
+      await updateOtherWindowSetting(voiceModelKey, "synthetic/replacement-model");
+      await updateOtherWindowSetting(voiceLanguageKey, "de");
+      check(model?.value === "synthetic/replacement-model" && language?.value === "de", "The model and language must reflect changes from another window");
+      await updateOtherWindowSetting(voiceModelKey, "synthetic/audio-model");
+      await updateOtherWindowSetting(voiceLanguageKey, null);
+      check(model?.value === "synthetic/audio-model" && language?.value === "system", "The settings must show the previous model and the default language after resetting them");
+      await act(async () => {
+        model!.value = "synthetic/replacement-model";
+        model!.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      await settle();
+      check(storage[voiceModelKey] === "synthetic/replacement-model", "Updated settings must be persisted before retry");
+      await click("Settings");
+      await click("Retry and send if possible");
+      check(taskDraft?.value === "Transcript for paused queue" && button("Resume") && sends === 0 && JSON.stringify(JSON.parse(storage[chatQueueStorageKey])) === JSON.stringify(pausedQueue), "A paused queue must stay paused and unchanged while the transcript remains in the composer");
+      await holdForEvidence();
+      await click("Close task modal"); await click("Workspace");
+      const workspaceDraft = document.querySelector<HTMLTextAreaElement>('[aria-label="Review Agent message"]')!;
+      const clearWorkspaceDraft = async () => {
+        await act(async () => {
+          Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(workspaceDraft, "");
+          workspaceDraft.dispatchEvent(new Event("input", { bubbles: true }));
+        });
+      };
+      await clearWorkspaceDraft();
+      await updateOtherWindowSetting(voiceAutoSendKey, "false");
+      resolveTranscript = undefined;
+      await click("Record voice message"); await click("Transcribe for review");
+      check(resolveTranscript, "Expected a pending review-only transcription");
+      await updateOtherWindowSetting(voiceAutoSendKey, "true");
+      await act(async () => resolveTranscript!("Review-only transcript")); await settle();
+      check(workspaceDraft.value === "Review-only transcript" && sends === 0, "Enabling auto-send after submission must not send a review-only transcript");
+      await clearWorkspaceDraft();
+      resolveTranscript = undefined;
+      await click("Record voice message"); await click("Transcribe and send if possible");
+      check(resolveTranscript, "Expected pending auto-send transcription");
+      await act(async () => emit(TauriEvent.DRAG_DROP, { paths: ["/synthetic/report.txt"], position: { x: 1, y: 1 } }));
+      check(resolveImport, "Expected a pending file import");
+      await act(async () => resolveTranscript!("Transcript during file import")); await settle();
+      await act(async () => resolveImport!([{ kind: "localFile", path: "/managed/report.txt", name: "report.txt" }])); await settle();
+      check(workspaceDraft.value === "Transcript during file import" && document.body.textContent?.includes("report.txt") && sends === 0, "A pending import must keep the transcript and attachment in the composer");
+      document.getElementById("result")!.textContent = "PASS: voice drafts, same-clip retry, settings sync, auto-send guards, discard, errors, task switch and close, and recorder interruption";
       await act(async () => root.unmount());
     }
   }

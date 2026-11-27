@@ -1,22 +1,30 @@
-import { useCallback, useId, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowUp, Mic, Square, X } from "lucide-react";
 import { fileStore } from "../fileStore";
 import { startVoiceWaveform } from "./voiceWaveform";
+import { voiceAutoSendKey, voiceLanguageKey, voiceModelKey } from "./VoiceSettings";
 
-const modelKey = "chaoticreview.voice-transcription-model";
-const defaultModel = "google/gemini-2.5-flash";
 const maximumBytes = 20 * 1024 * 1024;
+
+function subscribeToAutoSend(notify: () => void) {
+  const onStorage = (event: StorageEvent) => { if (event.key === voiceAutoSendKey) notify(); };
+  window.addEventListener("storage", onStorage);
+  return () => window.removeEventListener("storage", onStorage);
+}
+
+const readAutoSend = () => fileStore.getItem(voiceAutoSendKey) === "true";
 
 type VoicePhase = "idle" | "starting" | "recording" | "stopping" | "recorded" | "transcribing" | "retry";
 
-export function useVoiceMessage({ context, disabled, onTranscript }: {
+export function useVoiceMessage({ context, suspended, disabled, onOpenSettings, onTranscript }: {
   context: string;
+  suspended: boolean;
   disabled: boolean;
-  onTranscript: (text: string) => void;
+  onOpenSettings: () => void;
+  onTranscript: (text: string, autoSendRequested: boolean) => void;
 }) {
-  const modelId = useId();
-  const [model, setModel] = useState(() => fileStore.getItem(modelKey) || defaultModel);
+  const autoSend = useSyncExternalStore(subscribeToAutoSend, readAutoSend);
   const [error, setError] = useState("");
   const [phase, setPhase] = useState<VoicePhase>("idle");
   const phaseRef = useRef<VoicePhase>("idle");
@@ -25,6 +33,7 @@ export function useVoiceMessage({ context, disabled, onTranscript }: {
   const recorder = useRef<MediaRecorder | null>(null);
   const audioContext = useRef<AudioContext | null>(null);
   const audio = useRef<Blob | null>(null);
+  const autoSendRequested = useRef(false);
   const stopWaveform = useRef<(() => void) | null>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const recordButton = useRef<HTMLButtonElement>(null);
@@ -58,6 +67,14 @@ export function useVoiceMessage({ context, disabled, onTranscript }: {
   }, [releaseMicrophone]);
 
   useLayoutEffect(() => {
+    if (suspended && phaseRef.current !== "idle" && phaseRef.current !== "retry") {
+      reset();
+      changePhase("idle");
+      setError("");
+    }
+  }, [suspended, changePhase, reset]);
+
+  useLayoutEffect(() => {
     restoreFocus.current = false;
     changePhase("idle");
     setError("");
@@ -65,6 +82,7 @@ export function useVoiceMessage({ context, disabled, onTranscript }: {
   }, [changePhase, context, reset]);
 
   useLayoutEffect(() => {
+    if (suspended) return;
     if (phase === "starting" || phase === "recording") cancelButton.current?.focus();
     if (phase === "recorded" || phase === "retry") transcribeButton.current?.focus();
     if (phase === "transcribing") cancelButton.current?.focus();
@@ -75,7 +93,7 @@ export function useVoiceMessage({ context, disabled, onTranscript }: {
     if (phase === "recording" && canvas.current && stream.current && audioContext.current) {
       stopWaveform.current = startVoiceWaveform(canvas.current, stream.current, audioContext.current) ?? null;
     }
-  }, [phase]);
+  }, [phase, suspended]);
 
   const cancel = () => {
     reset();
@@ -90,7 +108,8 @@ export function useVoiceMessage({ context, disabled, onTranscript }: {
   };
 
   const start = async () => {
-    if (!context || disabled || !model.trim() || phaseRef.current !== "idle") return;
+    if (!context || suspended || disabled || phaseRef.current !== "idle") return;
+    if (!fileStore.getItem(voiceModelKey)) { setError("Select a transcription model in Settings → General."); return; }
     setError("");
     const attempt = ++generation.current;
     changePhase("starting");
@@ -132,14 +151,19 @@ export function useVoiceMessage({ context, disabled, onTranscript }: {
         if (phaseRef.current === "transcribing") transcribe(blob, attempt);
         else changePhase("recorded");
       };
+      recording.onstart = () => {
+        window.setTimeout(() => {
+          if (attempt === generation.current && recorder.current === recording && recording.state === "recording") changePhase("recording");
+        }, 500);
+      };
       recording.start(1000);
-      changePhase("recording");
     } catch (reason) {
       if (attempt === generation.current) fail(reason instanceof Error ? reason.message : "Cannot access the microphone.");
     }
   };
 
   const transcribe = (blob: Blob, attempt: number) => {
+    const sendAfterTranscription = autoSendRequested.current;
     const failTranscription = (message: string) => {
       if (attempt !== generation.current) return;
       setError(message);
@@ -150,9 +174,13 @@ export function useVoiceMessage({ context, disabled, onTranscript }: {
     reader.onload = () => {
       if (attempt !== generation.current) return;
       const encoded = String(reader.result).split(",")[1];
-      void invoke<string>("transcribe_composer_voice", { audio: encoded, model: model.trim() }).then(text => {
+      const model = fileStore.getItem(voiceModelKey) ?? "";
+      const selectedLanguage = fileStore.getItem(voiceLanguageKey) ?? "system";
+      const languageCode = (selectedLanguage === "system" ? navigator.language : selectedLanguage).split(/[-_]/)[0].toLowerCase();
+      const language = /^[a-z]{2}$/.test(languageCode) ? languageCode : null;
+      void invoke<string>("transcribe_voice_stt", { audio: encoded, model, language }).then(text => {
         if (attempt !== generation.current) return;
-        transcriptCallback.current(text);
+        transcriptCallback.current(text, sendAfterTranscription);
         audio.current = null;
         changePhase("idle");
       }).catch(reason => failTranscription(String(reason)));
@@ -169,7 +197,8 @@ export function useVoiceMessage({ context, disabled, onTranscript }: {
   };
 
   const submitRecording = () => {
-    if (disabled || !model.trim()) return;
+    if (disabled || suspended) return;
+    autoSendRequested.current = autoSend;
     if (phaseRef.current === "recording") stop("transcribing");
     else if ((phaseRef.current === "recorded" || phaseRef.current === "retry") && audio.current) {
       setError("");
@@ -180,19 +209,15 @@ export function useVoiceMessage({ context, disabled, onTranscript }: {
 
   const busy = !!context && phase !== "idle";
   const retrying = phase === "retry";
-  const status = phase === "starting" ? "Starting microphone…" : phase === "transcribing" ? "Transcribing…" : phase === "stopping" ? "Stopping recording…" : retrying ? "Recording kept" : "";
-  const transcribeLabel = retrying ? "Retry transcription" : "Transcribe for review";
-  const modelSettings = <div className="ios-chat-voice-settings">
-    <label htmlFor={modelId}>OpenRouter audio model</label>
-    <input id={modelId} value={model} spellCheck={false} onChange={event => setModel(event.currentTarget.value)} onBlur={event => fileStore.setItem(modelKey, event.currentTarget.value.trim())} />
-    <p>Audio is sent to OpenRouter and the selected provider when you transcribe. Charges may apply even if canceled.</p>
-  </div>;
+  const status = phase === "starting" ? "Waiting for microphone…" : phase === "transcribing" ? "Transcribing…" : phase === "stopping" ? "Stopping recording…" : retrying ? "Recording kept" : "";
+  const transcribeLabel = autoSend
+    ? (retrying ? "Retry and send if possible" : "Transcribe and send if possible")
+    : (retrying ? "Retry transcription" : "Transcribe for review");
   return {
     busy,
     isBusy: () => phaseRef.current !== "idle",
-    recordButton: context && <button ref={recordButton} type="button" className="ios-chat-add-image" aria-label="Record voice message" title="Record voice message" disabled={disabled || !model.trim()} onClick={() => void start()}><Mic size={14} /></button>,
-    settings: context && !busy && modelSettings,
-    error: context && error && <p role="alert" className="ios-chat-voice-error">{error}</p>,
+    recordButton: context && <button ref={recordButton} type="button" className="ios-chat-add-image" aria-label="Record voice message" title="Record voice message" disabled={disabled || suspended} onClick={() => void start()}><Mic size={14} /></button>,
+    error: context && error && <p className="ios-chat-voice-error"><span role="alert">{error}</span>{retrying && <> <button type="button" className="underline" onClick={onOpenSettings}>Open voice settings</button></>}</p>,
     bar: busy && <><div className="ios-chat-voice-bar" onKeyDown={event => {
       if (event.key !== "Escape" || phaseRef.current !== "recording") return;
       event.preventDefault();
@@ -201,11 +226,12 @@ export function useVoiceMessage({ context, disabled, onTranscript }: {
     }}>
       <button ref={cancelButton} type="button" className="ios-chat-add-image" aria-label="Discard recording" title="Discard recording" onClick={cancel}><X size={14} /></button>
       <div className="ios-chat-voice-wave">
-        <canvas ref={canvas} aria-hidden="true" hidden={!!status} />
-        <span role="status" className={status ? "" : "sr-only"}>{status || (phase === "recording" ? "Recording…" : "Recording stopped")}</span>
+        <canvas ref={canvas} aria-hidden="true" className={phase === "recording" ? "is-visible" : ""} />
+        <span aria-hidden="true" className={`ios-chat-voice-spinner ${phase === "starting" ? "is-visible" : ""}`} />
+        <span role="status" className={status && phase !== "starting" ? "ios-chat-voice-status" : "sr-only"}>{status || (phase === "recording" ? "Recording…" : "Recording stopped")}</span>
       </div>
       {!retrying && <button type="button" className="ios-chat-add-image" aria-label="Stop recording" title="Stop recording (Esc)" disabled={phase !== "recording"} onClick={() => stop("stopping")}><Square size={14} fill="currentColor" /></button>}
-      <button ref={transcribeButton} type="button" className={`accent-button shrink-0 ${retrying ? "" : "!size-[30px] !p-0"}`} aria-label={transcribeLabel} title={transcribeLabel} disabled={disabled || !model.trim() || (phase !== "recording" && phase !== "recorded" && !retrying)} onClick={submitRecording}>{retrying ? "Retry" : <ArrowUp size={14} />}</button>
-    </div>{retrying && modelSettings}</>,
+      <button ref={transcribeButton} type="button" className={`accent-button shrink-0 ${retrying ? "" : "!size-[30px] !p-0"}`} aria-label={transcribeLabel} title={transcribeLabel} disabled={disabled || (phase !== "recording" && phase !== "recorded" && !retrying)} onClick={submitRecording}>{retrying ? "Retry" : <ArrowUp size={14} />}</button>
+    </div></>,
   };
 }

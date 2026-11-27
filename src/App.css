@@ -1130,7 +1130,13 @@ select { color-scheme: light dark; }
 .ios-chat-voice-bar { display: flex; align-items: center; gap: 8px; }
 .ios-chat-voice-bar button:disabled { opacity: .4; }
 .ios-chat-voice-wave { display: grid; flex: 1; min-width: 0; height: 24px; margin-inline: 5px; place-items: center; color: var(--ios-secondary-label); font-size: 12px; }
-.ios-chat-voice-wave canvas { width: 100%; height: 24px; background: radial-gradient(circle at 1px center, color-mix(in srgb, currentColor 22%, transparent) 1px, transparent 1.25px) 0 center / 5px 100% repeat-x; }
+.ios-chat-voice-wave canvas { grid-area: 1 / 1; width: 100%; height: 24px; opacity: 0; transition: opacity 350ms ease; background: radial-gradient(circle at 1px center, color-mix(in srgb, currentColor 22%, transparent) 1px, transparent 1.25px) 0 center / 5px 100% repeat-x; }
+.ios-chat-voice-wave canvas.is-visible { opacity: 1; }
+.ios-chat-voice-spinner { grid-area: 1 / 1; width: 15px; height: 15px; border: 1.5px solid var(--ios-fill-strong); border-top-color: var(--ios-secondary-label); border-radius: 50%; opacity: 0; transition: opacity 350ms ease; animation: voice-spinner 800ms linear infinite; }
+.ios-chat-voice-spinner.is-visible { opacity: 1; }
+.ios-chat-voice-status { grid-area: 1 / 1; }
+@keyframes voice-spinner { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .ios-chat-voice-wave canvas, .ios-chat-voice-spinner { transition: none; } .ios-chat-voice-spinner { animation: none; } }
 .ios-chat-voice-settings { margin-top: 4px; padding: 8px; border-top: 1px solid var(--ios-separator); font-size: 12px; }
 .ios-chat-voice-settings label { display: block; margin-bottom: 5px; font-weight: 500; }
 .ios-chat-voice-settings input { width: 100%; padding: 5px 7px; border: 1px solid var(--ios-separator); background: var(--ios-background); }

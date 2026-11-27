@@ -26,6 +26,7 @@ import { useTaskFieldDraft } from "./useTaskFieldDraft";
 import { readTaskDrawing } from "./taskDrawing";
 import { applyTaskSandboxUpdate } from "./taskSandbox";
 import { useVoiceMessage } from "./components/VoiceMessage";
+import { VoiceSettings, voiceAutoSendKey } from "./components/VoiceSettings";
 import { WebsiteCredentialsSettings } from "./components/WebsiteCredentialsSettings";
 import { UsageSettings } from "./components/UsageSettings";
 import { recordUsage, type UsageItem } from "./usage";
@@ -1086,12 +1087,18 @@ function AiChatPanel({
   onManageAgents,
   onSubmitPlaybookValues,
   onCancelPlaybook,
+  onAutoSendVoice,
+  onOpenVoiceSettings,
+  voiceSuspended,
   taskSelected = true,
   active = true,
   searchMessage,
   voiceContext = "",
 }: {
   voiceContext?: string;
+  voiceSuspended: boolean;
+  onOpenVoiceSettings: () => void;
+  onAutoSendVoice: (draft: string) => Promise<boolean>;
   messages: ChatMessage[];
   draft: string;
   running: boolean;
@@ -1190,23 +1197,52 @@ function AiChatPanel({
   const [showDebug, setShowDebug] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [composerDraft, setComposerDraft] = useState(draft);
+  const composerDraftRef = useRef(composerDraft);
+  useLayoutEffect(() => { composerDraftRef.current = composerDraft; }, [composerDraft]);
   const sendPendingRef = useRef(false);
   const [sendPending, setSendPending] = useState(false);
   const draftField = useRef<HTMLTextAreaElement>(null);
   const focusTranscript = useRef(false);
-  const [transcriptReady, setTranscriptReady] = useState(false);
+  const [autoSendError, setAutoSendError] = useState("");
+  const currentVoiceContext = useRef(voiceContext);
+  useLayoutEffect(() => { currentVoiceContext.current = active ? voiceContext : ""; }, [active, voiceContext]);
   const voice = useVoiceMessage({
     context: active ? voiceContext : "",
+    suspended: voiceSuspended,
     disabled: !comparison || sendPending || !taskSelected || !!variablePrompt,
-    onTranscript: (text) => {
+    onOpenSettings: onOpenVoiceSettings,
+    onTranscript: (text, autoSendRequested) => {
+      setAutoSendError("");
       const next = composerDraft ? `${composerDraft}\n\n${text}` : text;
+      composerDraftRef.current = next;
       focusTranscript.current = true;
-      setTranscriptReady(true);
       setComposerDraft(next);
       onDraftChange(next);
+      if (!autoSendRequested || fileStore.getItem(voiceAutoSendKey) !== "true") return;
+      if (!queuePaused && !composerDraft.trim() && !images.length && !selectedAssetIds.length && comparison && !sendPendingRef.current && !variablePrompt && (!taskMode || taskSelected)) {
+        const submittedContext = voiceContext;
+        sendPendingRef.current = true;
+        setSendPending(true);
+        void onAutoSendVoice(next).then((sent) => {
+          if (currentVoiceContext.current === submittedContext) {
+            if (sent) {
+              if (composerDraftRef.current === next) {
+                onDraftChange("");
+                setComposerDraft(current => current === next ? "" : current);
+              }
+            } else setAutoSendError("Could not send automatically. Your transcript is still in the composer.");
+          }
+        }).catch(() => {
+          if (currentVoiceContext.current === submittedContext) setAutoSendError("Automatic sending could not be confirmed. Check the chat before retrying; your transcript is still in the composer.");
+        }).finally(() => { sendPendingRef.current = false; setSendPending(false); });
+      } else if (queuePaused) {
+        setAutoSendError("Automatic sending was skipped because the queue is paused.");
+      } else if (composerDraft.trim() || images.length || selectedAssetIds.length) {
+        setAutoSendError("Automatic sending was skipped because the composer already contains a draft or attachments.");
+      }
     },
   });
-  useLayoutEffect(() => { setTranscriptReady(false); }, [voiceContext]);
+  useLayoutEffect(() => { setAutoSendError(""); }, [voiceContext]);
   useLayoutEffect(() => {
     if (voice.busy || !focusTranscript.current) return;
     focusTranscript.current = false;
@@ -1217,7 +1253,7 @@ function AiChatPanel({
   const [editingQueued, setEditingQueued] = useState<QueuedChatMessage | null>(null);
   const [queuedEditDraft, setQueuedEditDraft] = useState("");
   const addFilesRef = useRef(onAddFiles);
-  const dropEnabledRef = useRef({ comparison: !!comparison && active, running: sendPending });
+  const dropEnabledRef = useRef(!!comparison && active);
   useLayoutEffect(() => {
     const scroll = scrollRef.current;
     if (running && !wasRunningRef.current) {
@@ -1246,7 +1282,6 @@ function AiChatPanel({
     const submitted = composerDraft;
     try {
       if (await onSend(submitted)) {
-        setTranscriptReady(false);
         onDraftChange("");
         setComposerDraft((current) => current === submitted ? "" : current);
       }
@@ -1254,7 +1289,7 @@ function AiChatPanel({
   };
   useEffect(() => { setComposerDraft(draft); }, [draft]);
   useEffect(() => { addFilesRef.current = onAddFiles; }, [onAddFiles]);
-  useEffect(() => { dropEnabledRef.current = { comparison: !!comparison && active, running: sendPending }; }, [comparison, sendPending, active]);
+  useEffect(() => { dropEnabledRef.current = !!comparison && active; }, [comparison, active]);
   useEffect(() => { if (active && followChatRef.current) requestAnimationFrame(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }); }, [active]);
 
   useEffect(() => {
@@ -1263,7 +1298,7 @@ function AiChatPanel({
     void getCurrentWindow().onDragDropEvent((event) => {
       if (event.payload.type === "leave") { setDragging(false); return; }
       if (nativeDropHits("task-assets-dropzone", event.payload.position)) { setDragging(false); return; }
-      const enabled = dropEnabledRef.current.comparison && !dropEnabledRef.current.running;
+      const enabled = dropEnabledRef.current && !sendPendingRef.current;
       setDragging(enabled);
       // Native drop coordinates are window-relative and vary with title-bar mode;
       // accept drops while Agent Chat is visible instead of rejecting valid drops.
@@ -1400,7 +1435,7 @@ function AiChatPanel({
               </DropdownMenuContent></DropdownMenu>
           </div>)}
         </div>}
-        {!voice.busy && transcriptReady && composerDraft.trim() && <p role="status" className="ios-chat-voice-notice mx-auto w-full max-w-[960px]">Review the transcript, then send your message.</p>}
+        {!voice.busy && autoSendError && <p role="status" className="ios-chat-voice-notice mx-auto w-full max-w-[960px]">{autoSendError}</p>}
         <div className={`ios-chat-composer mx-auto w-full max-w-[960px] ${voice.busy ? "ios-chat-composer-recording" : ""} ${dragging ? "ios-chat-composer-dropping" : ""}`}>
           {voice.error}
           {voice.bar}
@@ -1441,7 +1476,6 @@ function AiChatPanel({
                   {taskMode && <button type="button" disabled={!taskSelected || !taskAssets.length} onClick={() => setAddMenuPage("assets")} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[#183522] disabled:opacity-40"><Folder size={15} className="text-[#7C9B88]" /><span className="flex-1">Assets</span>{selectedAssetIds.length > 0 && <span className="text-xs text-[#7C9B88]">{selectedAssetIds.length}</span>}<ChevronRight size={14} className="text-[#7C9B88]" /></button>}
                   <button type="button" role="switch" aria-checked={mode === "plan"} disabled={running || (taskMode && !taskSelected)} onClick={() => { onModeChange(mode === "plan" ? "default" : "plan"); setAddMenuOpen(false); }} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[#183522] disabled:opacity-40"><ListTodo size={15} className="text-[#7C9B88]" /><span className="flex-1">Plan</span><span className="text-xs text-[#7C9B88]">{mode === "plan" ? "On" : "Off"}</span></button>
                   <button type="button" role="switch" aria-checked={goalSettings.enabled} disabled={running || (taskMode && !taskSelected)} onClick={() => { onGoalSettingsChange({ ...goalSettings, enabled: !goalSettings.enabled }); setAddMenuOpen(false); }} className="flex w-full items-center justify-between gap-2.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[#183522] disabled:opacity-40"><span>Goal</span><span className="text-xs text-[#7C9B88]">{goalSettings.enabled ? "On" : "Off"}</span></button>
-                  {voice.settings}
                 </> : <>
                   <button type="button" onClick={() => setAddMenuPage("main")} className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs text-[#7C9B88] hover:bg-[#183522]"><ChevronLeft size={14} /> {addMenuPage === "playbooks" ? "Playbooks" : addMenuPage === "pipelines" ? "Pipelines" : "Assets"}</button>
                   {addMenuPage === "pipelines" ? <>
@@ -4807,11 +4841,13 @@ function App() {
     finally { startingPipelineRef.current.delete(task.id); taskStartingRef.current.delete(task.id); setTaskStartingIds((current) => { const next = new Set(current); next.delete(task.id); return next; }); }
   };
 
-  const sendComposerMessage = async (draft: string, playbook?: UsageItem): Promise<boolean> => {
+  const sendComposerMessage = async (draft: string, playbook?: UsageItem, source: "manual" | "voice-auto" = "manual"): Promise<boolean> => {
     const task = taskMode ? tasksRef.current.find((item) => item.id === selectedTaskId) : null;
     const key = activeQueueKey;
     if (!comparison || !review || !key || (taskMode && !task)) return false;
     const attachments = task ? [...task.attachments, ...taskAssetAttachments(task, taskAssetSelections[task.id] ?? [])] : chatRequestContext.attachments;
+    if (source === "voice-auto" && (pausedQueueKeysRef.current.has(key) || aiChatImageImportingRef.current
+      || (task ? attachments.length > 0 : attachments.some(isChatUpload)))) return false;
     const prompt = draft.trim();
     if (!prompt && !attachments.some((attachment) => isChatUpload(attachment) || attachment.kind === "taskAsset")) return false;
     if (!task && prompt.length > 20_000) { setError("Messages can be up to 20,000 characters."); return false; }
@@ -4826,7 +4862,7 @@ function App() {
       catch (reason) { setError(message(reason)); return false; }
     }
     changeQueue(key, (items) => [...items, item]);
-    if (running && !chatQueuesRef.current[key]?.some((entry) => entry.pipeline)) setQueuePaused(key, false);
+    if (source === "manual" && running && !chatQueuesRef.current[key]?.some((entry) => entry.pipeline)) setQueuePaused(key, false);
     if (task) {
       updateTask(task.id, (current) => ({ ...current, attachments: [] }));
       setTaskAssetSelections((current) => ({ ...current, [task.id]: [] }));
@@ -6449,6 +6485,7 @@ function App() {
       {settingsOpen && (
         <SettingsLayout page={settingsPage} onPageChange={setSettingsPage} onClose={closeSettings} browserSupported={browserSupported}>
           <div hidden={settingsPage !== "general"} data-settings-page="general">
+            {settingsOpen && settingsPage === "general" && <VoiceSettings />}
             <section className="mt-10">
               <h2 className="mb-4 text-[17px] font-semibold text-[#E8FFF0]">Notifications</h2>
               <div className="overflow-hidden rounded-xl border border-[#294536] bg-[#111A15] px-5">
@@ -7244,7 +7281,10 @@ function App() {
             onZenModeChange={setZenMode}
             onApprovalReviewerChange={(value) => setApprovalReviewerOverrides((current) => ({ ...current, [taskMode ? selectedTask?.id ?? "" : "review"]: { mode: value, agent: activeApprovalAgent ?? null } }))}
             onSend={sendComposerMessage}
-            voiceContext={settingsOpen || (boardMode && !inlineTaskMode && !boardDrawerOpen) ? "" : activeQueueKey ?? ""}
+            onAutoSendVoice={(draft) => sendComposerMessage(draft, undefined, "voice-auto")}
+            onOpenVoiceSettings={() => { void openSettings("general", true); }}
+            voiceSuspended={settingsOpen}
+            voiceContext={boardMode && !inlineTaskMode && !boardDrawerOpen ? "" : activeQueueKey ?? ""}
             queuedMessages={activeQueueKey ? chatQueues[activeQueueKey] ?? [] : []}
             queuePaused={activeQueueKey ? pausedQueueKeys.has(activeQueueKey) : false}
             canSteerQueued={taskMode ? !!selectedTaskRun : reviewRunQueueKeyRef.current === activeQueueKey}
