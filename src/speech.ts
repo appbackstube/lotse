@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { fileStore } from "./fileStore";
+import type { ChatMessage } from "./types";
 
 export const speechModelKey = "chaoticreview.speech-model";
 export const speechVoiceKey = "chaoticreview.speech-voice";
@@ -26,6 +27,16 @@ export function stopSpeech() {
 
 export function stopSpeechPreview() {
   if (playback.id === "preview") stopSpeech();
+}
+
+export function stopChatSpeech() {
+  if ((playback.id || playback.errorId) && playback.id !== "preview" && playback.errorId !== "preview") stopSpeech();
+}
+
+export function readCompletedResponse(visibleChat: string | null, completedChat: string | null, entries: ChatMessage[]) {
+  if (!visibleChat || visibleChat !== completedChat || playback.id === "preview" || fileStore.getItem(speechAutomaticKey) !== "true") return;
+  const response = entries.filter(entry => entry.role === "assistant" && entry.body.trim()).at(-1);
+  if (response) void playSpeech(response.id, response.body);
 }
 
 export async function playSpeech(id: string, input: string) {

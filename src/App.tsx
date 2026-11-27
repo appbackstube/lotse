@@ -27,7 +27,7 @@ import { readTaskDrawing } from "./taskDrawing";
 import { applyTaskSandboxUpdate } from "./taskSandbox";
 import { useVoiceMessage } from "./components/VoiceMessage";
 import { VoiceSettings, voiceAutoSendKey } from "./components/VoiceSettings";
-import { playSpeech, speechAutomaticKey, stopSpeech, useSpeechPlayback } from "./speech";
+import { playSpeech, readCompletedResponse, stopChatSpeech, stopSpeech, useSpeechPlayback } from "./speech";
 import { WebsiteCredentialsSettings } from "./components/WebsiteCredentialsSettings";
 import { UsageSettings } from "./components/UsageSettings";
 import { recordUsage, type UsageItem } from "./usage";
@@ -1207,27 +1207,6 @@ function AiChatPanel({
   const focusTranscript = useRef(false);
   const [autoSendError, setAutoSendError] = useState("");
   const speechPlayback = useSpeechPlayback();
-  const speechTurn = useRef({ context: voiceContext, running, known: new Set(messages.map(entry => entry.id)), pending: running });
-  const readCompletedResponse = useEffectEvent((body: string, id: string) => {
-    if (fileStore.getItem(speechAutomaticKey) === "true") void playSpeech(id, body);
-  });
-  useEffect(() => () => { stopSpeech(); }, []);
-  useEffect(() => {
-    const turn = speechTurn.current;
-    if (turn.context !== voiceContext || !active) {
-      speechTurn.current = { context: voiceContext, running, known: new Set(messages.map(entry => entry.id)), pending: active && running };
-      stopSpeech();
-      return;
-    }
-    if (running && !turn.running) { turn.known = new Set(messages.map(entry => entry.id)); turn.pending = true; }
-    if (!running && turn.pending) {
-      const response = messages.filter(entry => entry.role === "assistant" && entry.body.trim() && !turn.known.has(entry.id)).at(-1);
-      const lastUser = messages.filter(entry => entry.role === "user").at(-1);
-      if (lastUser?.runStatus === "cancelled" || lastUser?.runStatus === "failed") turn.pending = false;
-      else if (response) { turn.pending = false; readCompletedResponse(response.body, response.id); }
-    }
-    turn.running = running;
-  }, [active, voiceContext, running, messages]);
   const currentVoiceContext = useRef(voiceContext);
   useLayoutEffect(() => { currentVoiceContext.current = active ? voiceContext : ""; }, [active, voiceContext]);
   const voice = useVoiceMessage({
@@ -2598,6 +2577,13 @@ function App() {
     return { mode: "auto", attachments: [...attachments, ...aiChatUploads] };
   }, [selectedFile, selection, aiChatUploads]);
   const activeQueueKey = taskMode ? selectedTaskId && repository ? taskQueueKey(repository.rootPath, selectedTaskId) : null : review ? reviewQueueKey(review) : null;
+  const visibleSpeechChat = repository && !settingsOpen && !memoryMode
+    && (!taskMode || (selectedTaskId && (!boardMode || ((inlineTaskMode || boardDrawerOpen) && boardChatHost)))) ? activeQueueKey : null;
+  const visibleSpeechChatRef = useRef(visibleSpeechChat);
+  useLayoutEffect(() => {
+    visibleSpeechChatRef.current = visibleSpeechChat;
+    return () => { visibleSpeechChatRef.current = null; stopChatSpeech(); };
+  }, [visibleSpeechChat]);
   const changeQueue = (key: string, change: (items: QueuedChatMessage[]) => QueuedChatMessage[]) => {
     const next = { ...chatQueuesRef.current, [key]: change(chatQueuesRef.current[key] ?? []) };
     if (!next[key].length) delete next[key];
@@ -3056,6 +3042,7 @@ function App() {
       if (run.schedule) void finishSchedule(run.schedule, update.kind, update.kind === "failed" ? update.message ?? "Agent failed" : null).catch((reason) => setError(message(reason)));
       const nextRuns = { ...taskRunsRef.current }; delete nextRuns[taskId]; taskRunsRef.current = nextRuns; setTaskRuns(nextRuns);
       const key = repositoryRef.current ? taskQueueKey(repositoryRef.current.rootPath, taskId) : null;
+      if (update.kind === "completed") readCompletedResponse(visibleSpeechChatRef.current, key, messages);
       if (key && run.pipeline) {
         updatePipelineMessage(key, run.pipeline.runId, run.messageId, update.kind, update.kind === "failed" ? update.message ?? "Agent failed" : null, [...(run.savedResultIds ?? []), ...messages.map((entry) => entry.id)]);
         if (update.kind === "completed") removeQueued(key, run.messageId);
@@ -3229,12 +3216,14 @@ function App() {
         setAiChatTimeline(plan.timeline);
       }
       workspaceChatFinishingRef.current = true;
+      const entries = persistedChatEntries(aiChatTimelineRef.current);
       const saved = persistAiChatTimeline(plan?.savedPlan);
       aiChatTimelineRef.current = [];
       setAiChatTimeline([]);
       aiChatRunningRef.current = false;
       setAiChatRunning(false); setAiChatStatus(""); setAiChatPlan(null); setAgentUserInput(null); aiChatTurnRef.current = null;
       const key = reviewRunQueueKeyRef.current;
+      readCompletedResponse(visibleSpeechChatRef.current, key, entries);
       if (telegramRun && key) telegramSendingKeysRef.current.add(key);
       void saved.then(async (ok) => {
         reviewRunSessionRef.current = null;

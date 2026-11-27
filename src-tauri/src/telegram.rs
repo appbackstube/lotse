@@ -427,15 +427,34 @@ pub async fn speech_models() -> Result<Vec<SpeechModel>, String> {
     }).await
 }
 
+fn validate_speech_input(input: &str, model: &str) -> Result<(), String> {
+    const AURA_2_CHARACTER_LIMIT: usize = 2_000;
+    if input.trim().is_empty() || input.len() > 100_000 { return Err("Speech text is empty or too long.".into()); }
+    if model == "deepgram/aura-2" && input.chars().count() > AURA_2_CHARACTER_LIMIT {
+        return Err(format!("Deepgram Aura-2 accepts up to {AURA_2_CHARACTER_LIMIT} characters per request. Choose a different speech model to read this response."));
+    }
+    Ok(())
+}
+
+fn speech_rejection_message(status: reqwest::StatusCode) -> &'static str {
+    match status.as_u16() {
+        401 | 403 => "OpenRouter denied access to speech output. Check the voice API key and its permissions.",
+        402 => "OpenRouter requires more credits for this speech request.",
+        413 => "The text exceeds the speech request size limit. Try a shorter response or a different model.",
+        400 | 422 => "The speech model rejected the text or voice. Check the selected voice and the model’s input limits.",
+        _ => "OpenRouter could not generate speech output.",
+    }
+}
+
 #[tauri::command]
 pub async fn synthesize_speech(app: AppHandle, input: String, model: String, voice: String) -> Result<String, String> {
-    if input.trim().is_empty() || input.len() > 100_000 { return Err("Speech text is empty or too long.".into()); }
+    validate_speech_input(&input, &model)?;
     if model.is_empty() || model.len() > 256 || voice.is_empty() || voice.len() > 256 || model.chars().any(char::is_whitespace) || voice.chars().any(char::is_whitespace) { return Err("Choose a valid speech model and voice.".into()); }
     run_blocking(move || {
         let key = crate::credentials::load(&app, VOICE_CREDENTIAL_KEY)?.filter(|value| !value.is_empty()).ok_or("Configure the OpenRouter voice API key first.")?;
         let client = Client::builder().timeout(Duration::from_secs(120)).build().map_err(|_| "Cannot initialize speech output.")?;
         let response = client.post("https://openrouter.ai/api/v1/audio/speech").bearer_auth(key).json(&json!({"model": model, "voice": voice, "input": input, "response_format": "mp3"})).send().map_err(|_| "Speech request failed; charges may have occurred.")?;
-        if !response.status().is_success() { return Err("OpenRouter rejected speech output. Check the model, voice, key, and credits.".into()); }
+        if !response.status().is_success() { return Err(speech_rejection_message(response.status()).into()); }
         let mut body = Vec::new();
         response.take(20_000_001).read_to_end(&mut body).map_err(|_| "Cannot read speech output; charges may have occurred.")?;
         if body.is_empty() || body.len() > 20_000_000 { return Err("Speech output is empty or too large.".into()); }
@@ -658,6 +677,20 @@ pub fn telegram_disconnect(app: AppHandle, window: WebviewWindow, state: State<'
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn aura_2_rejects_only_above_its_character_limit() {
+        let at_limit = "é".repeat(2_000);
+        let over_limit = format!("{at_limit}é");
+        assert!(validate_speech_input(&at_limit, "deepgram/aura-2").is_ok());
+        assert!(validate_speech_input(&over_limit, "example/tts").is_ok());
+        assert!(validate_speech_input(&over_limit, "deepgram/aura-2").unwrap_err().contains("2000 characters"));
+    }
+
+    #[test]
+    fn speech_payload_rejection_reports_the_input_limit() {
+        assert!(speech_rejection_message(reqwest::StatusCode::PAYLOAD_TOO_LARGE).contains("size limit"));
+    }
 
     #[test]
     fn speech_catalog_uses_only_speech_models_with_named_voices() {
