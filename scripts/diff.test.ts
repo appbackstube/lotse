@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
 import { findCodeLanguage } from "../src/codeLanguage.ts";
 import { isLargeCodeDocument, LARGE_FILE_MAX_CHARACTERS, LARGE_FILE_MAX_LINES } from "../src/codeMirror.ts";
-import { diffChangeBlocks, isVeryLargeChangedFile, isVeryLargeDiff, isVeryLargePatch, parseUnifiedDiff, unchangedLineCount } from "../src/diff.ts";
+import { appliedPatchSegments, diffChangeBlocks, isVeryLargeChangedFile, isVeryLargeDiff, isVeryLargePatch, parseUnifiedDiff, unchangedLineCount } from "../src/diff.ts";
 import { parseFileReference } from "../src/fileReference.ts";
+
+const appliedPatch = `--- old\n+++ new\n@@ -1,2 +1,2 @@\n-old\n+${"long".repeat(10000)}\n context\n${"+added\n".repeat(5001)}\\ No newline at end of file`;
+const segments = appliedPatchSegments(appliedPatch);
+assert.equal(segments.map((segment) => segment.text).join(""), appliedPatch);
+assert.deepEqual(segments.map((segment) => segment.kind), ["context", "removed", "added", "context", "added", "context"]);
+assert.equal(appliedPatchSegments("binary patch without hunks")[0].text, "binary patch without hunks");
 
 const [hunk] = parseUnifiedDiff("@@ -25,3 +25,5 @@\n same\n-old\n+new\n+added\n tail\n");
 assert.deepEqual(hunk.rows.map(({ kind, old, new: next }) => [kind, old?.lineNumber, next?.lineNumber]), [

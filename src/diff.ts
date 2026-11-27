@@ -2,6 +2,20 @@ import type { ChangedFile, CommentSide, DiffCell, FileDiff } from "./types";
 
 const maxVisibleDiffLines = 5000;
 
+export function appliedPatchSegments(patch: string): { kind: "added" | "removed" | "context"; text: string }[] {
+  const segments: { kind: "added" | "removed" | "context"; text: string }[] = [];
+  let inHunk = false;
+  for (const line of patch.match(/[^\n]*\n|[^\n]+$/g) ?? []) {
+    if (line.startsWith("@@ ")) inHunk = true;
+    else if (line.startsWith("diff --git ")) inHunk = false;
+    const kind = inHunk && line.startsWith("+") ? "added" : inHunk && line.startsWith("-") ? "removed" : "context";
+    const previous = segments[segments.length - 1];
+    if (previous?.kind === kind) previous.text += line;
+    else segments.push({ kind, text: line });
+  }
+  return segments;
+}
+
 export function isVeryLargeChangedFile(file: ChangedFile): boolean {
   return (file.additions ?? 0) + (file.deletions ?? 0) > maxVisibleDiffLines;
 }

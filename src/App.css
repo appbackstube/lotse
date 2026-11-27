@@ -1042,15 +1042,9 @@ select { color-scheme: light dark; }
 }
 .ios-chat-copy-button:hover { background: var(--ios-fill); color: var(--ios-label); }
 .ios-chat-thinking { display: flex; flex-direction: column; gap: 24px; padding: 0 2px; }
-.applied-diff { max-height: 360px; overflow: auto; }
-.applied-diff.codemirror-diff > .cm-editor { height: auto; }
-.applied-diff .cm-changedLine,
-.applied-diff .cm-inlineChangedLine { background: var(--diff-added-fill) !important; }
-.applied-diff .cm-deletedChunk { background: var(--diff-removed-fill) !important; }
-.applied-diff .cm-changedText,
-.applied-diff .cm-deletedText { background: transparent !important; }
-.applied-diff ins,
-.applied-diff del { text-decoration: none; }
+.applied-diff { margin: 0; padding: 8px 10px; background: var(--ios-elevated-background); color: var(--ios-label); font: 13px/22px var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 4; }
+.applied-diff-added { background: var(--diff-added-fill); }
+.applied-diff-removed { background: var(--diff-removed-fill); }
 .codemirror-diff { background: var(--ios-grouped-background); color: var(--ios-label); }
 .cm-code-keyword { color: var(--code-keyword); }
 .cm-code-type { color: var(--code-type); }

@@ -50,7 +50,7 @@ import { Feedback } from "@dnd-kit/dom";
 import { pointerIntersection } from "@dnd-kit/collision";
 import { Combobox } from "@base-ui/react/combobox";
 import { Tabs } from "@base-ui/react/tabs";
-import { MergeView, unifiedMergeView } from "@codemirror/merge";
+import { MergeView } from "@codemirror/merge";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { openSearchPanel, search, searchKeymap } from "@codemirror/search";
 import { Compartment, EditorState, RangeSetBuilder, type Extension } from "@codemirror/state";
@@ -152,7 +152,7 @@ import { isLargeCodeDocument } from "./codeMirror";
 import { findCodeLanguage } from "./codeLanguage";
 import { chatEfforts, chatConfigurationError, chatModelLabel, modelEfforts, normalizeChatDefaults, normalizeChatModelFavorites, validChatModel, type ChatModel, type ChatDefaults, type ChatEffort } from "./chatDefaults";
 import { applyChatEvent, AssistantSteerBoundary, carryReviewChat, finalizePlanOutput, persistedChatEntries, type ChatTimelineEvent } from "./chatTimeline";
-import { diffChangeBlocks, isVeryLargeChangedFile, isVeryLargeDiff, isVeryLargePatch, parseUnifiedDiff, unchangedLineCount, type DiffChangeBlock } from "./diff";
+import { appliedPatchSegments, diffChangeBlocks, isVeryLargeChangedFile, isVeryLargeDiff, unchangedLineCount, type DiffChangeBlock } from "./diff";
 import { defaultTaskColumnRatios, resizeTaskColumn, taskColumnPixels, type TaskColumnRatios, type TaskDivider } from "./taskColumns";
 import { parseFileReference, type FileReference } from "./fileReference";
 import { newPlaybook, normalizePlaybooks, playbookContent, preparePlaybookPrompt, renderPlaybookPrompt, type Playbook } from "./playbooks";
@@ -813,7 +813,7 @@ function AppliedDiffs({ changes }: { changes: AppliedDiff[] }) {
   return <div className="mt-3 space-y-2">{changes.map((change, index) => (
     <section key={`${change.path}-${change.kind}-${index}`} className="overflow-hidden rounded-md border border-[#294536]">
       <div className="flex items-center gap-2 bg-[#111A15] px-2.5 py-2 text-xs"><FileCode2 size={13} className="shrink-0 text-[#39FF88]" /><strong className="min-w-0 flex-1 truncate text-left font-mono text-[#E8FFF0] [direction:rtl]"><bdi dir="ltr">{change.path}</bdi></strong><span className="shrink-0 text-[#7C9B88]">{change.kind}</span></div>
-      {change.patch ? isVeryLargePatch(change.patch) ? <p className="px-2.5 py-2 text-xs text-[#7C9B88]">Large diff hidden.</p> : <CodeMirrorDiff path={change.path} patch={change.patch} /> : <p className="px-2.5 py-2 text-xs text-[#7C9B88]">Applied</p>}
+      {change.patch ? <AppliedPatch patch={change.patch} /> : <p className="px-2.5 py-2 text-xs text-[#7C9B88]">Applied</p>}
     </section>
   ))}</div>;
 }
@@ -888,31 +888,9 @@ function FileReferenceDialog({ reference, compareRef, onClose }: { reference: Fi
   </DialogContent></Dialog>;
 }
 
-function CodeMirrorDiff({ path, patch }: { path: string; patch: string }) {
-  const host = useRef<HTMLDivElement>(null);
-  const language = useCodeMirrorLanguage(path);
-  useEffect(() => {
-    if (!host.current) return;
-    const hunks = parseUnifiedDiff(patch);
-    const original = hunks.flatMap((hunk) => hunk.rows.flatMap((row) => row.old ? [row.old.text] : [])).join("\n");
-    const modified = hunks.flatMap((hunk) => hunk.rows.flatMap((row) => row.new ? [row.new.text] : [])).join("\n");
-    if (!hunks.length) return;
-    const view = new EditorView({
-      doc: modified,
-      parent: host.current,
-      extensions: [
-        EditorState.readOnly.of(true),
-        EditorView.editable.of(false),
-        lineNumbers(),
-        appliedDiffTheme,
-        ...codeSearch,
-        ...language,
-        unifiedMergeView({ original, collapseUnchanged: { margin: 2, minSize: 4 }, mergeControls: false }),
-      ],
-    });
-    return () => view.destroy();
-  }, [language, patch]);
-  return <div ref={host} aria-label="Applied diff" className="applied-diff codemirror-diff" />;
+function AppliedPatch({ patch }: { patch: string }) {
+  const segments = useMemo(() => appliedPatchSegments(patch), [patch]);
+  return <pre aria-label="Applied diff" className="applied-diff">{segments.map((segment, index) => <span key={index} className={`applied-diff-${segment.kind}`}>{segment.text}</span>)}</pre>;
 }
 
 
