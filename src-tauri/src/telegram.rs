@@ -447,13 +447,17 @@ fn speech_rejection_message(status: reqwest::StatusCode) -> &'static str {
 }
 
 #[tauri::command]
-pub async fn synthesize_speech(app: AppHandle, input: String, model: String, voice: String) -> Result<String, String> {
+pub async fn synthesize_speech(app: AppHandle, input: String, model: String, voice: String, language: Option<String>) -> Result<String, String> {
     validate_speech_input(&input, &model)?;
     if model.is_empty() || model.len() > 256 || voice.is_empty() || voice.len() > 256 || model.chars().any(char::is_whitespace) || voice.chars().any(char::is_whitespace) { return Err("Choose a valid speech model and voice.".into()); }
     run_blocking(move || {
         let key = crate::credentials::load(&app, VOICE_CREDENTIAL_KEY)?.filter(|value| !value.is_empty()).ok_or("Configure the OpenRouter voice API key first.")?;
         let client = Client::builder().timeout(Duration::from_secs(120)).build().map_err(|_| "Cannot initialize speech output.")?;
-        let response = client.post("https://openrouter.ai/api/v1/audio/speech").bearer_auth(key).json(&json!({"model": model, "voice": voice, "input": input, "response_format": "mp3"})).send().map_err(|_| "Speech request failed; charges may have occurred.")?;
+        let mut payload = json!({"model": model, "voice": voice, "input": input, "response_format": "mp3"});
+        if let Some(language) = language.filter(|value| matches!(value.as_str(), "German" | "English" | "Spanish" | "French" | "Italian")) {
+            payload["instructions"] = json!(format!("Use {language} pronunciation. Read the text as written without translating it."));
+        }
+        let response = client.post("https://openrouter.ai/api/v1/audio/speech").bearer_auth(key).json(&payload).send().map_err(|_| "Speech request failed; charges may have occurred.")?;
         if !response.status().is_success() { return Err(speech_rejection_message(response.status()).into()); }
         let mut body = Vec::new();
         response.take(20_000_001).read_to_end(&mut body).map_err(|_| "Cannot read speech output; charges may have occurred.")?;

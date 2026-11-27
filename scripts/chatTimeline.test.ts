@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { applyChatEvent, AssistantSteerBoundary, carryReviewChat, finalizePlanOutput, persistedChatEntries } from "../src/chatTimeline.ts";
 import type { AiChatEvent, ChatMessage, ReviewSession } from "../src/types.ts";
+import { insertComposerTranscript } from "../src/composerTranscript.ts";
+
+assert.deepEqual(insertComposerTranscript("Hello world", "brave ", 6, 6), { text: "Hello brave world", cursor: 12 });
+assert.deepEqual(insertComposerTranscript("Hello world", "there", 6, 11), { text: "Hello there", cursor: 11 });
+assert.deepEqual(insertComposerTranscript("", "Hello", 0, 0), { text: "Hello", cursor: 5 });
+assert.deepEqual(insertComposerTranscript("short", "!", 20, 20), { text: "short!", cursor: 6 });
 
 const entry = (body: string, appliedDiffs?: ChatMessage["appliedDiffs"]): ChatMessage => ({
   id: body || "diff",

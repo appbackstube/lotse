@@ -17,11 +17,12 @@ const readAutoSend = () => fileStore.getItem(voiceAutoSendKey) === "true";
 
 type VoicePhase = "idle" | "starting" | "recording" | "stopping" | "recorded" | "transcribing" | "retry";
 
-export function useVoiceMessage({ context, suspended, disabled, onOpenSettings, onTranscript }: {
+export function useVoiceMessage({ context, suspended, disabled, onOpenSettings, onStart, onTranscript }: {
   context: string;
   suspended: boolean;
   disabled: boolean;
   onOpenSettings: () => void;
+  onStart: () => void;
   onTranscript: (text: string, autoSendRequested: boolean) => void;
 }) {
   const autoSend = useSyncExternalStore(subscribeToAutoSend, readAutoSend);
@@ -110,6 +111,7 @@ export function useVoiceMessage({ context, suspended, disabled, onOpenSettings, 
   const start = async () => {
     if (!context || suspended || disabled || phaseRef.current !== "idle") return;
     if (!fileStore.getItem(voiceModelKey)) { setError("Select a transcription model in Settings → Voice."); return; }
+    onStart();
     setError("");
     const attempt = ++generation.current;
     changePhase("starting");
