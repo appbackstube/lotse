@@ -6779,6 +6779,8 @@ pub fn run() {
             telegram::voice_key_configured,
             telegram::save_voice_key,
             telegram::voice_models,
+            telegram::speech_models,
+            telegram::synthesize_speech,
             telegram::transcribe_voice_stt,
             telegram::telegram_set_transcription_settings,
             telegram::telegram_save_connection,

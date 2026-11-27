@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { fileStore } from "../fileStore";
 import { Switch } from "./ui/switch";
+import { SpeechSettings } from "./SpeechSettings";
 
 export const voiceModelKey = "chaoticreview.voice-stt-model";
 export const voiceLanguageKey = "chaoticreview.voice-stt-language";
@@ -75,14 +76,15 @@ export function VoiceSettings() {
     } finally { setBusy(false); }
   };
 
-  return <section className="mt-10">
-    <h2 className="mb-4 text-[17px] font-semibold">Voice transcription</h2>
+  return <><section className="mt-10">
+    <h2 className="mb-4 text-[17px] font-semibold">OpenRouter</h2>
     <div className="overflow-hidden rounded-xl border border-[#294536] bg-[#111A15] px-5">
       <div className="flex flex-wrap items-center justify-between gap-5 py-5">
-        <div><label className="font-semibold" htmlFor="voice-key">OpenRouter API key</label><p className="mt-1 text-sm text-[#7C9B88]">Used only for voice transcription. Stored in ~/.lotse/credentials.json.</p></div>
+        <div><label className="font-semibold" htmlFor="voice-key">OpenRouter API key</label><p className="mt-1 text-sm text-[#7C9B88]">API key for voice features. Stored in ~/.lotse/credentials.json.</p></div>
         <div className="flex gap-2"><input id="voice-key" className="h-9 rounded-lg border border-[#294536] bg-[#050807] px-3" type="password" autoComplete="off" value={key} placeholder={configured ? "Key configured" : "Enter API key"} onChange={event => setKey(event.currentTarget.value)} /><button className="quiet-button" disabled={loadingInitialModels || busy || !key.trim()} onClick={() => void saveKey()}>Save</button></div>
       </div>
-      <div className="flex flex-wrap items-center justify-between gap-5 border-t border-[#294536] py-5">
+    </div></section><section className="mt-10"><h2 className="mb-4 text-[17px] font-semibold">Speech to text</h2><div className="overflow-hidden rounded-xl border border-[#294536] bg-[#111A15] px-5">
+      <div className="flex flex-wrap items-center justify-between gap-5 py-5">
         <div><label htmlFor="voice-model" className="font-semibold">Transcription model</label><p className="mt-1 text-sm text-[#7C9B88]">Only models compatible with Lotse recordings are listed.</p></div>
         <select id="voice-model" className="h-9 w-56 rounded-lg border border-[#294536] bg-[#050807] px-3" value={model} disabled={!configured || busy || !models.length} onChange={event => { const value = event.currentTarget.value; setModel(value); void saveSetting(voiceModelKey, value); }}><option value="">Choose a model</option>{model && !models.some(([id]) => id === model) && <option value={model} disabled>{model} (unavailable)</option>}{models.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select>
       </div>
@@ -95,5 +97,5 @@ export function VoiceSettings() {
     <p className="mt-2 text-xs text-[#7C9B88]">Audio is sent to OpenRouter and the model provider. Charges may apply.</p>
     {configured && <button className="quiet-button mt-2" disabled={busy} onClick={() => { setBusy(true); setError(""); void loadModels().catch(reason => setError(String(reason))).finally(() => setBusy(false)); }}>Refresh models</button>}
     {notice && <p role="status" className="mt-2 text-xs">{notice}</p>}{error && <p role="alert" className="mt-2 text-xs text-[#FB7185]">{error}</p>}
-  </section>;
+  </section><SpeechSettings /></>;
 }

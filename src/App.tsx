@@ -27,6 +27,7 @@ import { readTaskDrawing } from "./taskDrawing";
 import { applyTaskSandboxUpdate } from "./taskSandbox";
 import { useVoiceMessage } from "./components/VoiceMessage";
 import { VoiceSettings, voiceAutoSendKey } from "./components/VoiceSettings";
+import { playSpeech, readCompletedResponse, stopChatSpeech, stopSpeech, useSpeechPlayback } from "./speech";
 import { WebsiteCredentialsSettings } from "./components/WebsiteCredentialsSettings";
 import { UsageSettings } from "./components/UsageSettings";
 import { recordUsage, type UsageItem } from "./usage";
@@ -124,6 +125,7 @@ import {
   Square,
   Terminal,
   Trash2,
+  Volume2,
   X,
 } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
@@ -1204,6 +1206,7 @@ function AiChatPanel({
   const draftField = useRef<HTMLTextAreaElement>(null);
   const focusTranscript = useRef(false);
   const [autoSendError, setAutoSendError] = useState("");
+  const speechPlayback = useSpeechPlayback();
   const currentVoiceContext = useRef(voiceContext);
   useLayoutEffect(() => { currentVoiceContext.current = active ? voiceContext : ""; }, [active, voiceContext]);
   const voice = useVoiceMessage({
@@ -1392,7 +1395,9 @@ function AiChatPanel({
                   >
                     <Copy size={13} />
                   </button>
+                  {entry.body.trim() && <button type="button" className="ios-chat-copy-button" aria-label={speechPlayback.id === entry.id ? "Stop reading response" : "Read response aloud"} title={speechPlayback.id === entry.id ? "Stop reading response" : "Read response aloud"} onClick={() => speechPlayback.id === entry.id ? stopSpeech() : void playSpeech(entry.id, entry.body)}>{speechPlayback.id === entry.id ? <Square size={13} /> : <Volume2 size={13} />}</button>}
                 </div>
+                {speechPlayback.errorId === entry.id && <p role="alert" className="text-xs text-[#FB7185]">{speechPlayback.error}</p>}
               </article>
             ))}
           {running && (
@@ -2578,6 +2583,13 @@ function App() {
     return { mode: "auto", attachments: [...attachments, ...aiChatUploads] };
   }, [selectedFile, selection, aiChatUploads]);
   const activeQueueKey = taskMode ? selectedTaskId && repository ? taskQueueKey(repository.rootPath, selectedTaskId) : null : review ? reviewQueueKey(review) : null;
+  const visibleSpeechChat = repository && !settingsOpen && !memoryMode
+    && (!taskMode || (selectedTaskId && (!boardMode || ((inlineTaskMode || boardDrawerOpen) && boardChatHost)))) ? activeQueueKey : null;
+  const visibleSpeechChatRef = useRef(visibleSpeechChat);
+  useLayoutEffect(() => {
+    visibleSpeechChatRef.current = visibleSpeechChat;
+    return () => { visibleSpeechChatRef.current = null; stopChatSpeech(); };
+  }, [visibleSpeechChat]);
   const changeQueue = (key: string, change: (items: QueuedChatMessage[]) => QueuedChatMessage[]) => {
     const next = { ...chatQueuesRef.current, [key]: change(chatQueuesRef.current[key] ?? []) };
     if (!next[key].length) delete next[key];
@@ -3036,6 +3048,7 @@ function App() {
       if (run.schedule) void finishSchedule(run.schedule, update.kind, update.kind === "failed" ? update.message ?? "Agent failed" : null).catch((reason) => setError(message(reason)));
       const nextRuns = { ...taskRunsRef.current }; delete nextRuns[taskId]; taskRunsRef.current = nextRuns; setTaskRuns(nextRuns);
       const key = repositoryRef.current ? taskQueueKey(repositoryRef.current.rootPath, taskId) : null;
+      if (update.kind === "completed") readCompletedResponse(visibleSpeechChatRef.current, key, messages);
       if (key && run.pipeline) {
         updatePipelineMessage(key, run.pipeline.runId, run.messageId, update.kind, update.kind === "failed" ? update.message ?? "Agent failed" : null, [...(run.savedResultIds ?? []), ...messages.map((entry) => entry.id)]);
         if (update.kind === "completed") removeQueued(key, run.messageId);
@@ -3209,12 +3222,14 @@ function App() {
         setAiChatTimeline(plan.timeline);
       }
       workspaceChatFinishingRef.current = true;
+      const entries = persistedChatEntries(aiChatTimelineRef.current);
       const saved = persistAiChatTimeline(plan?.savedPlan);
       aiChatTimelineRef.current = [];
       setAiChatTimeline([]);
       aiChatRunningRef.current = false;
       setAiChatRunning(false); setAiChatStatus(""); setAiChatPlan(null); setAgentUserInput(null); aiChatTurnRef.current = null;
       const key = reviewRunQueueKeyRef.current;
+      readCompletedResponse(visibleSpeechChatRef.current, key, entries);
       if (telegramRun && key) telegramSendingKeysRef.current.add(key);
       void saved.then(async (ok) => {
         reviewRunSessionRef.current = null;
@@ -6491,7 +6506,6 @@ function App() {
       {settingsOpen && (
         <SettingsLayout page={settingsPage} onPageChange={setSettingsPage} onClose={closeSettings} browserSupported={browserSupported}>
           <div hidden={settingsPage !== "general"} data-settings-page="general">
-            {settingsOpen && settingsPage === "general" && <VoiceSettings />}
             <section className="mt-10">
               <h2 className="mb-4 text-[17px] font-semibold text-[#E8FFF0]">Notifications</h2>
               <div className="overflow-hidden rounded-xl border border-[#294536] bg-[#111A15] px-5">
@@ -6529,6 +6543,9 @@ function App() {
                 </label>
               </div>
             </section>
+          </div>
+          <div hidden={settingsPage !== "voice"} data-settings-page="voice">
+            {settingsPage === "voice" && <VoiceSettings />}
           </div>
           <div hidden={settingsPage !== "tasks"} data-settings-page="tasks">
             {repository && <section className="mt-10">
@@ -7288,7 +7305,7 @@ function App() {
             onApprovalReviewerChange={(value) => setApprovalReviewerOverrides((current) => ({ ...current, [taskMode ? selectedTask?.id ?? "" : "review"]: { mode: value, agent: activeApprovalAgent ?? null } }))}
             onSend={sendComposerMessage}
             onAutoSendVoice={(draft) => sendComposerMessage(draft, undefined, "voice-auto")}
-            onOpenVoiceSettings={() => { void openSettings("general", true); }}
+            onOpenVoiceSettings={() => { void openSettings("voice", true); }}
             voiceSuspended={settingsOpen}
             voiceContext={boardMode && !inlineTaskMode && !boardDrawerOpen ? "" : activeQueueKey ?? ""}
             queuedMessages={activeQueueKey ? chatQueues[activeQueueKey] ?? [] : []}
