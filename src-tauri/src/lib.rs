@@ -1157,15 +1157,30 @@ fn existing_task_worktree(app: &AppHandle, repository: &Path, id: &str) -> Resul
 }
 
 fn verify_task_worktree(repository: &Path, path: &Path, id: &str) -> Result<(), String> {
+    verify_task_worktree_allow_detached(repository, path, id, false)
+}
+
+fn verify_task_worktree_allow_detached(repository: &Path, path: &Path, id: &str, allow_detached: bool) -> Result<(), String> {
     let branch = if path.with_extension("task.json").try_exists().map_err(|error| error.to_string())? {
         read_task_worktree_info(path, id)?.branch
     } else { task_branch(id)? };
-    if !path.is_dir() || git_text(path, &["symbolic-ref", "--quiet", "--short", "HEAD"])? != branch
-        || fs::canonicalize(path).map_err(|error| error.to_string())? != git_text(path, &["rev-parse", "--show-toplevel"])? {
+    if !path.is_dir() || fs::canonicalize(path).map_err(|error| error.to_string())? != git_text(path, &["rev-parse", "--show-toplevel"])? {
         return Err("Task worktree is unavailable or changed. Restore it before continuing.".to_owned());
     }
     if git_text(path, &["rev-parse", "--git-common-dir"])? != git_text(repository, &["rev-parse", "--absolute-git-dir"])? {
         return Err("Task worktree belongs to another repository.".to_owned());
+    }
+    let current = git_text(path, &["branch", "--show-current"])?;
+    if current != branch && !(allow_detached && current.is_empty()) {
+        return Err("Task worktree is unavailable or changed. Restore it before continuing.".to_owned());
+    }
+    Ok(())
+}
+
+fn verify_detached_worktree_removal(root: &Path) -> Result<(), String> {
+    if git_text(root, &["branch", "--show-current"])?.is_empty()
+        && git_text(root, &["for-each-ref", "--format=%(refname)", "--contains", "HEAD", "refs/heads", "refs/remotes", "refs/tags"])?.is_empty() {
+        return Err("Detached worktree has commits not preserved by a branch or tag. Save them before deleting the task.".to_owned());
     }
     Ok(())
 }
@@ -1889,7 +1904,11 @@ async fn task_git_status(
     let repository = repository_path(&state, &window)?;
     run_blocking(move || {
         let root = match task_id {
-            Some(id) => existing_task_worktree(&app, &repository, &id)?,
+            Some(id) => {
+                let path = task_worktree_path(&app, &repository, &id)?;
+                verify_task_worktree_allow_detached(&repository, &path, &id, true)?;
+                path
+            },
             None => repository,
         };
         task_git_status_at(&root)
@@ -2503,7 +2522,9 @@ async fn delete_task_worktree(
             }
             return Ok(());
         }
-        let root = existing_task_worktree(&app, &repository, &task_id)?;
+        let root = path;
+        verify_task_worktree_allow_detached(&repository, &root, &task_id, true)?;
+        verify_detached_worktree_removal(&root)?;
         if agent.has_active_root(&root) { return Err("An agent is using this worktree.".to_owned()); }
         let terminals = {
             let state = app.state::<AppState>();
@@ -8986,6 +9007,15 @@ mod tests {
         fs::write(&metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
         assert!(verify_task_worktree(&repository, &path, id).is_err());
         fs::write(&metadata_path, original).unwrap();
+        run_git(&path, &["switch", "--detach"]).unwrap();
+        assert!(verify_task_worktree(&repository, &path, id).is_err());
+        verify_task_worktree_allow_detached(&repository, &path, id, true).unwrap();
+        assert!(task_git_status_at(&path).unwrap().repository.current_branch.is_none());
+        run_git(&path, &["commit", "--allow-empty", "-qm", "detached work"]).unwrap();
+        assert!(verify_detached_worktree_removal(&path).unwrap_err().contains("not preserved"));
+        run_git(&path, &["branch", "saved-detached-work"]).unwrap();
+        verify_detached_worktree_removal(&path).unwrap();
+        run_git(&path, &["switch", "feature/my-task"]).unwrap();
         remove_unstarted_task_worktree(&repository, &path, &prepared.info).unwrap();
         assert!(!path.exists() && !metadata_path.exists());
         assert!(run_git(&repository, &["show-ref", "--verify", "refs/heads/feature/my-task"]).is_err());
