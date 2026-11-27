@@ -376,6 +376,17 @@
   background: var(--ios-grouped-background) !important;
   border-color: var(--ios-separator) !important;
 }
+.window-repository-title {
+  position: absolute;
+  left: 88px;
+  max-width: min(220px, calc(50% - 230px));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ios-label);
+  font-size: 14px;
+  font-weight: 600;
+}
 .ios-sidebar-titlebar {
   background: var(--ios-background);
   border-color: var(--ios-separator) !important;

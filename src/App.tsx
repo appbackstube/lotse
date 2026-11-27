@@ -77,6 +77,7 @@ import { MemoryWorkspace } from "@/components/MemoryWorkspace";
 import { TaskGantt, TaskScheduleFields } from "@/components/TaskGantt";
 import { TaskAssetThumbnail } from "@/components/TaskAssetThumbnail";
 import { TaskGitToolbar } from "@/components/TaskGitToolbar";
+import { WindowRepositoryTitle } from "@/components/WindowRepositoryTitle";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from "@/components/ui/popover";
@@ -6415,12 +6416,12 @@ function App() {
     <TooltipProvider>
     <main className="ios-app flex h-screen min-h-0 flex-col overflow-hidden bg-[#050807] text-[#E8FFF0]">
       <header
-        style={zenMode ? { display: "none" } : undefined}
         data-tauri-drag-region
         onMouseDown={startDragging}
         className="ios-navigation-bar relative flex shrink-0 items-center justify-end border-b border-[#294536] px-3"
       >
-        {!settingsOpen && repository && <div className="workspace-mode-switch" role="group" aria-label="Workspace mode">
+        <WindowRepositoryTitle repository={repository} />
+        {!zenMode && !settingsOpen && repository && <div className="workspace-mode-switch" role="group" aria-label="Workspace mode">
           <button
             type="button"
             onClick={() => selectWorkspaceMode("workspace")}
@@ -6443,7 +6444,7 @@ function App() {
           </button>
           <button type="button" onClick={() => selectWorkspaceMode("memory")} aria-pressed={memoryMode} aria-keyshortcuts="Meta+3 Control+3" className="workspace-mode-button" title="Memory (⌘3 / Ctrl+3)"><FileText size={14} /> Memory</button>
         </div>}
-        <div className="ios-nav-actions relative flex shrink-0 items-center justify-end gap-1">
+        <div className={`ios-nav-actions relative shrink-0 items-center justify-end gap-1 ${zenMode ? "hidden" : "flex"}`}>
           {repository && taskStorageRoot === repository.rootPath && <SpotlightSearch key={repository.rootPath} repositoryRoot={repository.rootPath} repositoryName={repository.name} tasks={tasks} review={review} onOpening={() => { window.dispatchEvent(new Event("flush-task-fields")); }} onNavigate={openSearchDocument} />}
           <PomodoroTimer onSettings={openPomodoroSettings} />
           {!settingsOpen && <>
@@ -6845,14 +6846,7 @@ function App() {
         }}
       >
         {repository && <MemoryWorkspace key={repository.rootPath} repositoryRoot={repository.rootPath} flushRef={memoryFlushRef} openRef={memoryOpenRef} visible={memoryMode} workspaceErrorBanner={memoryMode ? workspaceErrorBanner : null} />}
-        {!zenMode && !tasksTabActive && !memoryMode && !emptyWorkspaceComparison && <aside className="ios-file-list relative z-10 mt-[-52px] flex h-[calc(100%+52px)] min-h-0 flex-col border-r border-[#294536] bg-[#0B110E]">
-          <div
-            data-tauri-drag-region
-            onMouseDown={startDragging}
-            className="ios-sidebar-titlebar flex h-[52px] shrink-0 items-center border-b border-[#294536] pl-[88px] pr-2"
-          >
-            <span className="truncate text-sm font-semibold text-[#E8FFF0]">{repository ? repository.name : "Open repository"}</span>
-          </div>
+        {!zenMode && !tasksTabActive && !memoryMode && !emptyWorkspaceComparison && <aside className="ios-file-list relative z-10 flex min-h-0 flex-col border-r border-[#294536] bg-[#0B110E]">
           <div className="ios-file-sidebar-header">
             <div className="flex items-center justify-between gap-3">
               <h2 className="text-[13px] font-semibold text-[#7C9B88]">Changes</h2>
@@ -6940,10 +6934,9 @@ function App() {
         </aside>}
 
         <section
-          className={`ios-workspace min-h-0 min-w-0 flex-col bg-[#0B110E] ${tasksTabActive ? "task-mode-list relative border-r border-[#294536]" : ""} ${tasksTabActive && !boardMode ? "mt-[-52px] h-[calc(100%+52px)]" : ""} ${memoryMode || agentChatExpanded || zenMode ? "hidden" : "flex"}`}
+          className={`ios-workspace min-h-0 min-w-0 flex-col bg-[#0B110E] ${tasksTabActive ? "task-mode-list relative border-r border-[#294536]" : ""} ${memoryMode || agentChatExpanded || zenMode ? "hidden" : "flex"}`}
           style={{ gridColumn: tasksTabActive ? "1" : "2" }}
         >
-          {tasksTabActive && !boardMode && <div data-tauri-drag-region onMouseDown={startDragging} className="ios-sidebar-titlebar flex h-[52px] shrink-0 items-center border-b border-[#294536] pl-[88px] pr-2"><span className="truncate text-sm font-semibold text-[#E8FFF0]">{repository?.name ?? "Tasks"}</span></div>}
           {!memoryMode && !tasksTabActive && workspaceErrorBanner}
           <div className="min-h-0 flex flex-1 flex-col">
           {tasksTabActive ? (
