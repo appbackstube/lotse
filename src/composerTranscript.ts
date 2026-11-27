@@ -4,9 +4,9 @@ export function insertComposerTranscript(draft: string, transcript: string, star
   const before = draft.slice(0, from);
   const after = draft.slice(to);
   const startsWithWord = /^[\p{L}\p{M}\p{N}]/u;
-  const endsWithWord = /[\p{L}\p{M}\p{N}]$/u;
-  const leadingSpace = endsWithWord.test(before) && startsWithWord.test(transcript) ? " " : "";
-  const trailingSpace = endsWithWord.test(transcript) && startsWithWord.test(after) ? " " : "";
+  const endsWithWordOrSentencePunctuation = /[\p{L}\p{M}\p{N}.!?…]$/u;
+  const leadingSpace = endsWithWordOrSentencePunctuation.test(before) && startsWithWord.test(transcript) ? " " : "";
+  const trailingSpace = endsWithWordOrSentencePunctuation.test(transcript) && startsWithWord.test(after) ? " " : "";
   return {
     text: before + leadingSpace + transcript + trailingSpace + after,
     cursor: from + leadingSpace.length + transcript.length,
