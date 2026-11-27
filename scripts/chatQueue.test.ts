@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { loadChatQueues, moveQueuedMessage, type QueuedChatMessage } from "../src/chatQueue.ts";
+import { loadChatQueues, moveQueuedMessage, pauseRestoredChatQueues, type QueuedChatMessage } from "../src/chatQueue.ts";
 import { fileStore } from "../src/fileStore.ts";
 
 const item = (id: string): QueuedChatMessage => ({ id, body: id, context: { mode: "auto", attachments: [] }, selection: null, mode: "default", model: "test", effort: "low" });
@@ -10,6 +10,20 @@ assert.deepEqual(moveQueuedMessage(queue, "first", 1).map((entry) => entry.id), 
 assert.equal(moveQueuedMessage(queue, "first", -1), queue);
 assert.equal(moveQueuedMessage(queue, "missing", 1), queue);
 assert.deepEqual(queue.map((entry) => entry.id), ["first", "second", "third"]);
+
+const ownedRoot = '/repo "with quotes"';
+const runningKey = JSON.stringify([ownedRoot, "task", "running"]);
+const pausedKey = JSON.stringify([ownedRoot, "task", "paused"]);
+const foreignKey = JSON.stringify([`${ownedRoot}-other`, "task", "pipeline"]);
+const lateKey = JSON.stringify([ownedRoot, "workingCopy", "main", "main", "commit"]);
+const previousQueues = { [runningKey]: queue, [pausedKey]: queue, [foreignKey]: queue };
+const paused = new Set([pausedKey]);
+const synced = pauseRestoredChatQueues(paused, { ...previousQueues, [runningKey]: queue.slice(1) }, ownedRoot, previousQueues);
+assert.deepEqual(synced, new Set([pausedKey, foreignKey]));
+assert.deepEqual(paused, new Set([pausedKey]));
+assert.equal(pauseRestoredChatQueues(synced, previousQueues, ownedRoot, previousQueues), synced);
+assert.deepEqual(pauseRestoredChatQueues(synced, { ...previousQueues, [lateKey]: queue }, ownedRoot, previousQueues), new Set([pausedKey, foreignKey, lateKey]));
+assert.deepEqual(pauseRestoredChatQueues(synced, previousQueues, null, {}), new Set([pausedKey, foreignKey, runningKey]));
 
 const originalGet = fileStore.getItem;
 fileStore.getItem = () => JSON.stringify({ thread: [item("kept"), { id: 2 }, null], broken: "not a queue" });

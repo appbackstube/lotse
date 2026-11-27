@@ -148,7 +148,7 @@ import { agentMetadata, argumentsFor, getTask, metadataKeys, playbookMetadata, r
 import { loadTaskStatuses, reconcileTaskStatuses, resolveTaskStatus, saveTaskStatuses, taskStatusFields, taskStatusStorageKey, type TaskStatusSettings as StatusSettings, type TaskStatus } from "./taskStatuses";
 import { TaskStatusSettings } from "./components/TaskStatusSettings";
 import { finishSchedule, type PromptSchedule } from "./promptSchedules";
-import { chatQueueStorageKey, loadChatQueues, moveQueuedMessage, saveChatQueues, type ChatQueues, type QueuedChatMessage } from "./chatQueue";
+import { chatQueueStorageKey, loadChatQueues, moveQueuedMessage, pauseRestoredChatQueues, saveChatQueues, type ChatQueues, type QueuedChatMessage } from "./chatQueue";
 import { isLargeCodeDocument } from "./codeMirror";
 import { findCodeLanguage } from "./codeLanguage";
 import { chatEfforts, chatConfigurationError, chatModelLabel, modelEfforts, normalizeChatDefaults, normalizeChatModelFavorites, validChatModel, type ChatModel, type ChatDefaults, type ChatEffort } from "./chatDefaults";
@@ -2379,7 +2379,7 @@ function App() {
   const [chatQueues, setChatQueues] = useState<ChatQueues>(loadChatQueues);
   const chatQueuesRef = useRef(chatQueues);
   const startingPipelineRef = useRef(new Map<string, string>());
-  const [pausedQueueKeys, setPausedQueueKeys] = useState<Set<string>>(() => new Set(Object.keys(loadChatQueues())));
+  const [pausedQueueKeys, setPausedQueueKeys] = useState<Set<string>>(() => pauseRestoredChatQueues(new Set(), chatQueues, null, {}));
   const pausedQueueKeysRef = useRef(pausedQueueKeys);
   const initiallyPausedQueueKeysRef = useRef(new Set(pausedQueueKeys));
   const queueDispatchRef = useRef<(key: string) => void>(() => {});
@@ -2613,11 +2613,15 @@ function App() {
     setChatQueues(next);
     saveChatQueues(next);
   };
+  const updatePausedQueues = (next: Set<string>) => {
+    if (next === pausedQueueKeysRef.current) return;
+    pausedQueueKeysRef.current = next;
+    setPausedQueueKeys(next);
+  };
   const setQueuePaused = (key: string, paused: boolean) => {
     const next = new Set(pausedQueueKeysRef.current);
     if (paused) next.add(key); else next.delete(key);
-    pausedQueueKeysRef.current = next;
-    setPausedQueueKeys(next);
+    updatePausedQueues(next);
   };
   const removeQueued = (key: string, id: string, deleteImages = false) => {
     const item = chatQueuesRef.current[key]?.find((entry) => entry.id === id);
@@ -2905,6 +2909,7 @@ function App() {
       if (event.key === chatDefaultsStorageKey) setChatDefaults(storedChatDefaults());
       if (event.key === chatQueueStorageKey) {
         const queues = loadChatQueues();
+        updatePausedQueues(pauseRestoredChatQueues(pausedQueueKeysRef.current, queues, repositoryRef.current?.rootPath ?? null, chatQueuesRef.current));
         chatQueuesRef.current = queues; setChatQueues(queues);
       }
       if (event.key === chatModelFavoritesStorageKey) setFavoriteModels(storedChatModelFavorites());
@@ -3892,6 +3897,9 @@ function App() {
   };
 
   const activateRepository = async (repo: RepositoryInfo) => {
+    if (repositoryRef.current?.rootPath !== repo.rootPath) {
+      updatePausedQueues(pauseRestoredChatQueues(pausedQueueKeysRef.current, chatQueuesRef.current, null, {}));
+    }
     setRepository(repo);
     const refs = await invoke<BranchRefs>("list_branch_refs");
     setBranchRefs(refs);
